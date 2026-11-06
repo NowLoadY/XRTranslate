@@ -333,11 +333,7 @@ impl MediaController {
                 Err(error) => self.error = Some(error),
             }
             backend.select_audio(task.playback_audio())?;
-            backend.set_channel_routing(if task.play_speech_track {
-                &[]
-            } else {
-                &task.audio_channels
-            });
+            backend.set_channel_routing(task.playback_channels());
         }
 
         if let Some(t) = self.store.get_mut(task_id) {
@@ -632,11 +628,7 @@ impl MediaController {
             task.recognition.preprocessing = Some(xrtranslate_protocol::AudioPreprocessing::None);
         }
         if let Some(backend) = &mut self.backend {
-            backend.set_channel_routing(if task.play_speech_track {
-                &[]
-            } else {
-                &task.audio_channels
-            });
+            backend.set_channel_routing(task.playback_channels());
             if let Err(error) = backend.select_audio(task.playback_audio()) {
                 self.error = Some(error);
             }
@@ -872,7 +864,7 @@ impl MediaController {
                 && let Some(detected_count) = backend.get_audio_channel_count()
                 && detected_count > 0
                 && let Some(task) = self.store.get_mut(active_id)
-                && !task.play_speech_track
+                && task.plays_recognition_source()
                 && task.audio_channels.len() != detected_count
             {
                 task.audio_channels = AudioChannelItem::default_for_count(detected_count);

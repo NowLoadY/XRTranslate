@@ -24,6 +24,7 @@ pub(super) enum Action {
         finished: bool,
     },
     AuditionSpeech(String),
+    DeleteSpeech(String),
     CancelTrim,
 }
 
@@ -43,6 +44,7 @@ impl Action {
                 finished,
             } => controller.move_speech(&clip, start, position, finished),
             Self::AuditionSpeech(clip) => controller.audition_speech(&clip),
+            Self::DeleteSpeech(clip) => controller.delete_speech(&clip),
             Self::CancelTrim => controller.cancel_subtitle_trim(),
             Self::Select(_) => {}
         }
@@ -554,6 +556,17 @@ pub(super) fn overview(
     }
     if let Some(clip) = speech_hovered {
         let clicked = response.clicked();
+        let click_id = id.with("speech_click");
+        let delete = editable
+            && response.double_clicked()
+            && ui.data(|data| data.get_temp::<String>(click_id)).as_deref() == Some(&clip.id);
+        if clicked {
+            ui.data_mut(|data| data.insert_temp(click_id, clip.id.clone()));
+        }
+        if delete {
+            ui.data_mut(|data| data.remove::<String>(click_id));
+            return Some(Action::DeleteSpeech(clip.id.clone()));
+        }
         response
             .on_hover_cursor(if editable {
                 egui::CursorIcon::Grab

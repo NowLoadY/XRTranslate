@@ -1116,6 +1116,14 @@ fn provider_runtime_config(
     issues: &mut Vec<String>,
 ) -> LocalModelRuntimeConfig {
     let object = providers.get(provider).and_then(Value::as_object);
+    // Online context capacity is independent of the local runtime's memory limit.
+    let context_maximum = match object
+        .and_then(|provider| provider.get("transport"))
+        .and_then(Value::as_str)
+    {
+        None | Some("local" | "onnx-cpu") => 32_768,
+        Some(_) => 1_048_576,
+    };
     let mut value = |field: &str, default: u32, minimum: u32, maximum: u32| {
         let Some(raw) = object.and_then(|provider| provider.get(field)) else {
             return default;
@@ -1137,7 +1145,7 @@ fn provider_runtime_config(
             "context_window_tokens",
             defaults.context_window_tokens,
             256,
-            32_768,
+            context_maximum,
         ),
         max_tokens: value("max_tokens", defaults.max_tokens, 16, 4_096),
         parallel_slots: value("parallel_slots", u32::from(defaults.parallel_slots), 1, 16) as u16,

@@ -17,6 +17,58 @@ fn selection(provider: &str, model: &str) -> TextModelSelection {
 }
 
 #[test]
+fn online_context_can_exceed_local_limits_without_expanding_translation_history() {
+    let base = config();
+    let mut raw = base.raw.clone();
+    raw["translation"]["provider"] = json!("ChatGPT Account");
+    raw["translation"]["providers"]["ChatGPT Account"]["model"] = json!("account-model");
+    let configured = AppConfig::from_value(raw.clone()).unwrap();
+    assert_eq!(
+        configured
+            .agent_provider()
+            .unwrap()
+            .runtime
+            .context_window_tokens,
+        131_072
+    );
+    assert!(
+        configured.for_agent().unwrap().is_none(),
+        "following shares the translation runtime"
+    );
+    assert_eq!(configured.raw["prompt_context"], base.raw["prompt_context"]);
+
+    for window in [8_192, 262_144, 1_048_576] {
+        raw["translation"]["providers"]["ChatGPT Account"]["context_window_tokens"] = json!(window);
+        let configured = AppConfig::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            configured
+                .agent_provider()
+                .unwrap()
+                .runtime
+                .context_window_tokens,
+            window
+        );
+    }
+    raw["translation"]["providers"]["ChatGPT Account"]["context_window_tokens"] = json!(1_048_577);
+    assert!(
+        AppConfig::from_value(raw)
+            .unwrap()
+            .native_model_route()
+            .is_err()
+    );
+
+    let mut local = base.raw.clone();
+    local["translation"]["provider"] = json!("hunyuan");
+    local["translation"]["providers"]["hunyuan"]["context_window_tokens"] = json!(131_072);
+    assert!(
+        AppConfig::from_value(local)
+            .unwrap()
+            .native_model_route()
+            .is_err()
+    );
+}
+
+#[test]
 fn independent_agent_reuses_credentials_without_changing_translation() {
     let base = config();
     assert!(base.for_agent().unwrap().is_none());

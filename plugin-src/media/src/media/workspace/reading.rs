@@ -129,6 +129,7 @@ impl MediaPlugin {
             "document":document,"title":task.title,"source_language":task.source_language,
             "target_language":task.target_language,"character_limit":task.subtitle_char_limit,
             "recognition":recognition,"audio_track":audio_track,"available_preprocessing":self.available_preprocessing,
+            "trials_remaining":workspace.trials_remaining(),
             "count":timeline.count(),"cues":cues,"next_offset":next_offset}),
         )
     }

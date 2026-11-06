@@ -11,7 +11,7 @@
             "connector": "chatgpt-responses",
             "url": "https://api.openai.com/v1/responses",
             "model": "",
-            "context_window_tokens": 32768,
+            "context_window_tokens": 131072,
             "max_tokens": 1024,
             "parallel_slots": 2
           },

@@ -232,14 +232,11 @@ fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio<'_>) -> Result<(), St
             .ok_or_else(|| "Could not load the selected export audio".into())
     };
     let speech = track_id(path)?;
-    let graph = if let Some(background) = background {
-        let background = track_id(background)?;
-        format!(
-            "[aid{speech}]aformat=channel_layouts=stereo[voice];[aid{background}]aformat=channel_layouts=stereo[bg];[voice][bg]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:level=0:latency=1[ao]"
-        )
-    } else {
-        format!("[aid{speech}]anull[ao]")
-    };
+    let mut ids = vec![speech];
+    if let Some(background) = background {
+        ids.push(track_id(background)?);
+    }
+    let graph = super::tracks::mix_graph(&ids);
     mpv.command(&["set", "lavfi-complex", &graph])?;
     // A moved speech clip must not extend the original video's duration.
     if let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0) {

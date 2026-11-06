@@ -102,7 +102,11 @@ impl MpvHandle {
             if asynchronous {
                 libmpv_sys::mpv_command_async(
                     self.handle,
-                    u64::from(args.first() == Some(&"loadfile")),
+                    match args.first() {
+                        Some(&"loadfile") => 1,
+                        Some(&"audio-reload") => 2,
+                        _ => 0,
+                    },
                     ptrs.as_mut_ptr(),
                 )
             } else {
@@ -345,6 +349,10 @@ pub struct MpvBackend {
     error: Option<String>,
     active_channels: Vec<super::AudioChannelItem>,
     audio_selection: super::PlaybackAudio,
+    audio_loading: std::collections::HashSet<PathBuf>,
+    applied_audio: Option<Vec<i64>>,
+    audio_reloads: usize,
+    audio_resume: Option<(i64, PlaybackStatus)>,
     loading: bool,
     subtitle_style: super::SubtitleStyle,
     subtitle_text: String,
@@ -405,14 +413,83 @@ impl MpvBackend {
             error: None,
             active_channels: Vec::new(),
             audio_selection: Default::default(),
+            audio_loading: Default::default(),
+            applied_audio: None,
+            audio_reloads: 0,
+            audio_resume: None,
             loading: false,
             subtitle_style: Default::default(),
             subtitle_text: String::new(),
         })
     }
 
+    fn sync_audio(&mut self) -> Result<(), String> {
+        use super::PlaybackAudio;
+        if self.loading || self.audio_reloads > 0 {
+            return Ok(());
+        }
+        let mut ids = Vec::new();
+        let mut ready = true;
+        for source in self.audio_selection.sources() {
+            let track = match source {
+                PlaybackAudio::Original(id) => {
+                    self.snapshot.audio_tracks.iter().find(|track| {
+                        track.external.is_none() && id.is_none_or(|id| id == track.id)
+                    })
+                }
+                PlaybackAudio::External(path) => self
+                    .snapshot
+                    .audio_tracks
+                    .iter()
+                    .find(|track| track.external.as_ref() == Some(path)),
+                PlaybackAudio::Mix(_) => unreachable!(),
+            };
+            if let Some(track) = track {
+                ids.push(track.id);
+            } else if let PlaybackAudio::External(path) = source {
+                ready = false;
+                if self.audio_loading.insert(path.clone()) {
+                    self.mpv
+                        .command_async(&["audio-add", &path.to_string_lossy(), "auto"])?;
+                }
+            } else {
+                ready = false;
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        if !ready || self.applied_audio.as_ref() == Some(&ids) {
+            return Ok(());
+        }
+        if ids.len() > 1 {
+            self.mpv.set_property_string("aid", "no")?;
+            self.mpv
+                .set_property_string("lavfi-complex", &tracks::mix_graph(&ids))?;
+        } else {
+            self.mpv.set_property_string("lavfi-complex", "")?;
+            self.mpv
+                .set_property_string("aid", &ids.first().map_or("no".into(), i64::to_string))?;
+        }
+        self.applied_audio = Some(ids);
+        if let Some((position, status)) = self.audio_resume.take() {
+            self.seek(position);
+            if status == PlaybackStatus::Playing {
+                self.play();
+            } else {
+                self.pause();
+            }
+        }
+        Ok(())
+    }
+
     fn load(&mut self, source: &str) -> Result<(), String> {
+        self.mpv.set_property_string("lavfi-complex", "")?;
+        self.mpv.set_property_string("aid", "auto")?;
         self.mpv.command_async(&["loadfile", source])?;
+        self.audio_loading.clear();
+        self.audio_reloads = 0;
+        self.audio_resume = None;
+        self.applied_audio = None;
         self.loading = true;
         self.snapshot.audio_tracks.clear();
         self.snapshot.channels = None;
@@ -433,16 +510,27 @@ impl MpvBackend {
 
 impl MediaBackend for MpvBackend {
     fn refresh_audio(&mut self) -> Result<(), String> {
-        if !self.loading
-            && let super::PlaybackAudio::External(path) = &self.audio_selection
-            && let Some(track) = self
-                .snapshot
-                .audio_tracks
-                .iter()
-                .find(|track| track.external.as_ref() == Some(path))
-        {
-            self.mpv
-                .command_async(&["audio-reload", &track.id.to_string()])?;
+        if !self.loading {
+            for source in self.audio_selection.sources() {
+                if let super::PlaybackAudio::External(path) = source
+                    && let Some(track) = self
+                        .snapshot
+                        .audio_tracks
+                        .iter()
+                        .find(|track| track.external.as_ref() == Some(path))
+                {
+                    if self.audio_reloads == 0 {
+                        self.audio_resume = Some((self.snapshot.time_ms, self.status));
+                        // mpv cannot remove/reload tracks still connected to a complex graph.
+                        self.mpv.set_property_string("lavfi-complex", "")?;
+                        self.mpv.set_property_string("aid", "no")?;
+                        self.applied_audio = None;
+                    }
+                    self.mpv
+                        .command_async(&["audio-reload", &track.id.to_string()])?;
+                    self.audio_reloads += 1;
+                }
+            }
         }
         Ok(())
     }
@@ -456,38 +544,7 @@ impl MediaBackend for MpvBackend {
             self.snapshot.channels = None;
         }
         self.audio_selection = selection;
-        if self.loading {
-            return Ok(());
-        }
-        match &self.audio_selection {
-            super::PlaybackAudio::Original(id) => self.mpv.set_property_string(
-                "aid",
-                &id.map(|id| id.to_string()).unwrap_or_else(|| "auto".into()),
-            ),
-            super::PlaybackAudio::External(path) => {
-                if let Some(track) = self
-                    .snapshot
-                    .audio_tracks
-                    .iter()
-                    .find(|t| t.external.as_ref() == Some(path))
-                {
-                    self.mpv.set_property_string("aid", &track.id.to_string())
-                } else {
-                    self.mpv
-                        .command_async(&["audio-add", &path.to_string_lossy(), "select"])?;
-                    for track in self
-                        .snapshot
-                        .audio_tracks
-                        .iter()
-                        .filter(|track| track.external.is_some())
-                    {
-                        self.mpv
-                            .command_async(&["audio-remove", &track.id.to_string()])?;
-                    }
-                    Ok(())
-                }
-            }
-        }
+        self.sync_audio()
     }
 
     fn take_error(&mut self) -> Option<String> {
@@ -503,6 +560,12 @@ impl MediaBackend for MpvBackend {
     }
 
     fn play(&mut self) {
+        if let Some((_, status)) = &mut self.audio_resume {
+            *status = PlaybackStatus::Playing;
+            self.snapshot.paused = Some(false);
+            self.status = PlaybackStatus::Playing;
+            return;
+        }
         if self.snapshot.eof || self.status == PlaybackStatus::Stopped {
             let _ = self.mpv.command_async(&["seek", "0", "absolute"]);
             self.snapshot.eof = false;
@@ -513,12 +576,16 @@ impl MediaBackend for MpvBackend {
     }
 
     fn pause(&mut self) {
+        if let Some((_, status)) = &mut self.audio_resume {
+            *status = PlaybackStatus::Paused;
+        }
         self.snapshot.paused = Some(true);
         let _ = self.mpv.set_property_bool("pause", true);
         self.status = PlaybackStatus::Paused;
     }
 
     fn stop(&mut self) {
+        self.audio_resume = None;
         let _ = self.mpv.command_async(&["stop"]);
         let _ = self.mpv.command_async(&["show-text", "", "0", "1"]);
         self.subtitle_text.clear();
@@ -526,6 +593,11 @@ impl MediaBackend for MpvBackend {
     }
 
     fn seek(&mut self, ms: i64) {
+        if let Some((position, _)) = &mut self.audio_resume {
+            *position = ms.max(0);
+            self.snapshot.time_ms = ms.max(0);
+            return;
+        }
         let was_stopped = self.status == PlaybackStatus::Stopped;
         if was_stopped {
             let _ = self.mpv.set_property_bool("pause", true);
@@ -576,23 +648,33 @@ impl MediaBackend for MpvBackend {
             mpv_event_id_MPV_EVENT_VIDEO_RECONFIG as VIDEO_RECONFIG, mpv_event_property,
             mpv_wait_event,
         };
+        let audio_transition = self.audio_resume.is_some();
         let mut end_file_event = false;
         let mut refresh = false;
+        let mut tracks_changed = false;
         // A bounded, non-blocking drain keeps bursts of property events from
         // monopolizing a UI frame. mpv coalesces changes to observed properties.
         for _ in 0..256 {
             let event = unsafe { mpv_wait_event(self.mpv.handle, 0.0).as_ref() };
             let Some(event) = event else { break };
+            if event.event_id == COMMAND_REPLY && event.reply_userdata == 2 {
+                self.audio_reloads = self.audio_reloads.saturating_sub(1);
+                if self.audio_reloads == 0 {
+                    self.snapshot.audio_tracks.clear();
+                    refresh = true;
+                }
+            }
             match event.event_id {
                 NONE => break,
                 PROPERTY_CHANGE | GET_PROPERTY_REPLY if !event.data.is_null() => {
                     unsafe {
-                        self.snapshot
-                            .update(&*(event.data as *const mpv_event_property))
+                        let property = &*(event.data as *const mpv_event_property);
+                        tracks_changed |= CStr::from_ptr(property.name).to_bytes() == b"track-list";
+                        self.snapshot.update(property)
                     };
                 }
                 END_FILE => {
-                    end_file_event = true;
+                    end_file_event = !audio_transition;
                     if let Some(end) = unsafe { (event.data as *const mpv_event_end_file).as_ref() }
                         && end.error < 0
                     {
@@ -628,6 +710,7 @@ impl MediaBackend for MpvBackend {
                 }
                 AUDIO_RECONFIG | VIDEO_RECONFIG => refresh = true,
                 COMMAND_REPLY if event.error < 0 => {
+                    self.audio_loading.clear();
                     self.error = Some(
                         unsafe { CStr::from_ptr(mpv_error_string(event.error)) }
                             .to_string_lossy()
@@ -638,13 +721,16 @@ impl MediaBackend for MpvBackend {
                 _ => {}
             }
         }
+        if tracks_changed && let Err(error) = self.sync_audio() {
+            self.error = Some(error);
+        }
         if refresh {
             self.mpv.refresh_properties();
         }
         self.status = reconcile_playback_status(
             self.status,
             end_file_event,
-            self.snapshot.eof,
+            self.snapshot.eof && !audio_transition,
             self.snapshot.paused,
         );
     }

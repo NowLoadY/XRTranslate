@@ -34,6 +34,8 @@ log = "0.4"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 egui_extras = { version = "0.37", features = ["svg", "image", "http"] }
+# Shared previews must decode in independently built plugins as well as the host.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = "0.37.0"
@@ -61,7 +63,6 @@ eframe = { version = "0.37.0", features = ["glow"] }
 
 [dev-dependencies]
 tempfile = "3"
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.build-dependencies]
 find-msvc-tools = "0.1.15"

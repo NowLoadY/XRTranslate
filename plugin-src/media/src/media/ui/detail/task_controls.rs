@@ -66,6 +66,7 @@ pub(super) fn render_task_control_card(
         return MediaAction::None;
     };
     let mut recognition = task.recognition.clone();
+    let mut source_changed = false;
     if mode_changed {
         task.subtitle_mode = if subtitles {
             crate::media::task::SubtitleMode::TranslateExisting
@@ -102,7 +103,7 @@ pub(super) fn render_task_control_card(
         .as_ref()
         .filter(|job| job.task_id == id)
         .map(|job| (job.progress(), job.is_waiting()));
-    let mut generate_speech = false;
+    let mut generate_speech = None;
     let mut cancel_speech = false;
     let card_top = ui.next_widget_position();
     components::card(ui, |ui| {
@@ -242,27 +243,56 @@ pub(super) fn render_task_control_card(
             });
             ui.add(egui::ProgressBar::new(progress).show_percentage());
         } else if snapshot.can_synthesize && local_file && count > 0 {
-            generate_speech = components::secondary_button_enabled(
-                ui,
-                tr(
-                    language,
-                    if task.speech_track.as_ref().is_some_and(|track| {
-                        let completed = track.completed(task);
-                        completed > 0 && completed < count
-                    }) {
-                        "Continue speech track"
-                    } else {
-                        "Generate speech track"
-                    },
-                ),
-                !task.is_task_running
-                    && !optimizing
-                    && can_edit
-                    && translated == count
-                    && controller.speech_job.is_none(),
-            )
-            .on_disabled_hover_text(tr(language, "Finish translating the subtitles first."))
-            .clicked();
+            let enabled = !task.is_task_running
+                && !optimizing
+                && can_edit
+                && translated == count
+                && controller.speech_job.is_none();
+            let partial = task.speech_track.as_ref().is_some_and(|track| {
+                let completed = track.completed(task);
+                completed > 0 && completed < count
+            });
+            crate::ui::layout::flow_row(ui, |ui| {
+                if components::secondary_button_enabled(
+                    ui,
+                    tr(
+                        language,
+                        if partial {
+                            "Continue speech track"
+                        } else if task.speech_track.is_some() {
+                            "Regenerate speech track"
+                        } else {
+                            "Generate speech track"
+                        },
+                    ),
+                    enabled,
+                )
+                .on_disabled_hover_text(tr(language, "Finish translating the subtitles first."))
+                .clicked()
+                {
+                    generate_speech = Some(!partial && task.speech_track.is_some());
+                }
+                if partial {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        components::icon_menu(
+                            ui,
+                            tr(language, "Task actions"),
+                            xrtranslate_client_core::ui::icon!("more.svg"),
+                            |ui| {
+                                if components::secondary_button(
+                                    ui,
+                                    tr(language, "Regenerate speech track"),
+                                )
+                                .clicked()
+                                {
+                                    generate_speech = Some(true);
+                                    ui.close();
+                                }
+                            },
+                        );
+                    });
+                }
+            });
         }
         if subtitles && task.is_task_running {
             let progress = if count == 0 {
@@ -301,6 +331,24 @@ pub(super) fn render_task_control_card(
             crate::ui::components::CollapsingHeader::new(tr(language, "Recognition Settings"))
                 .show(ui, |ui| {
                     ui.add_enabled_ui(!task.is_task_running, |ui| {
+                        source_changed = super::audio_tracks::recognition_source(
+                            task,
+                            controller
+                                .backend
+                                .as_ref()
+                                .map(|backend| backend.audio_tracks())
+                                .unwrap_or_default(),
+                            language,
+                            ui,
+                        );
+                        if source_changed
+                            && task.audio_track != crate::media::task::AudioTrackSelection::Original
+                            && recognition.preprocessing
+                                == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
+                        {
+                            recognition.preprocessing =
+                                Some(xrtranslate_protocol::AudioPreprocessing::None);
+                        }
                         changed |= components::ModernSlider::new(
                             tr(language, "Filter strength"),
                             &mut recognition.background_noise,
@@ -413,6 +461,9 @@ pub(super) fn render_task_control_card(
     if recognition_changed && let Err(error) = controller.set_task_recognition(&id, recognition) {
         controller.error = Some(error);
     }
+    if source_changed {
+        controller.apply_audio_selection(true);
+    }
     let request = ((start || restart) && !subtitles)
         .then(|| controller.store.get(&id).unwrap().translation_request());
     if routing {
@@ -429,8 +480,8 @@ pub(super) fn render_task_control_card(
     }
     if pause {
         MediaAction::StopTranslation
-    } else if generate_speech {
-        MediaAction::GenerateSpeech
+    } else if let Some(restart) = generate_speech {
+        MediaAction::GenerateSpeech { restart }
     } else if let Some(action) = preprocessing_action {
         MediaAction::AudioPreprocessing(action)
     } else if repair {

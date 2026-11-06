@@ -32,7 +32,7 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
         clock += 1.0 / 60.0;
         let mut view = None;
         let mut action = None;
-        let output = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 time: Some(clock),
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -63,6 +63,7 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                 _ => None,
             })
             .unwrap();
+        output.textures_delta.clear();
         if let Some(action) = action {
             action.apply(controller);
         }
@@ -320,4 +321,93 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
         start
     );
     assert_eq!(controller.subtitles.export_srt(), saved_subtitles);
+    frame(
+        &mut controller,
+        vec![button(press, false), egui::Event::PointerGone],
+    );
+    for clip_id in ["speech", "next"] {
+        for _ in 0..40 {
+            view = frame(&mut controller, vec![]).0;
+        }
+        let clip = controller
+            .store
+            .get(&task_id)
+            .unwrap()
+            .speech_track
+            .as_ref()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .unwrap()
+            .clone();
+        let pointer = egui::pos2(
+            rect.left() + view.fraction((clip.start_ms + 300) as f64) as f32 * rect.width(),
+            rect.center().y + 30.0,
+        );
+        for _ in 0..2 {
+            frame(
+                &mut controller,
+                vec![egui::Event::PointerMoved(pointer), button(pointer, true)],
+            );
+            frame(&mut controller, vec![button(pointer, false)]);
+        }
+        assert!(
+            !controller
+                .store
+                .get(&task_id)
+                .unwrap()
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips
+                .iter()
+                .any(|clip| clip.id == clip_id),
+            "double-click deletes the audio clip"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            controller.poll_speech_render();
+            let track = controller
+                .store
+                .get(&task_id)
+                .unwrap()
+                .speech_track
+                .as_ref();
+            if track.is_none_or(|track| track.rendered) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                controller.error
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let stored = MediaTaskStore::load_from_dir(storage.path());
+        if clip_id == "speech" {
+            let remaining = stored.get(&task_id).unwrap().speech_track.as_ref().unwrap();
+            assert_eq!(remaining.clips.len(), 1);
+            assert!(
+                remaining.clips[0].path.is_file(),
+                "a shared clip file must be retained"
+            );
+            let samples = hound::WavReader::open(&remaining.path)
+                .unwrap()
+                .into_samples::<i16>()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            assert!(
+                samples[clip.start_ms as usize * 48..(clip.start_ms + 1_000) as usize * 48]
+                    .iter()
+                    .all(|&sample| sample == 0),
+                "deleted audio must leave the rendered mix"
+            );
+        } else {
+            assert!(stored.get(&task_id).unwrap().speech_track.is_none());
+            assert!(!clip.path.exists());
+            assert!(!directory.join("mix.wav").exists());
+        }
+        assert_eq!(controller.subtitles.export_srt(), saved_subtitles);
+    }
 }

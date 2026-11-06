@@ -110,7 +110,9 @@ impl MediaTranslationRequest {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum MediaAction {
-    GenerateSpeech,
+    GenerateSpeech {
+        restart: bool,
+    },
     OptimizeSubtitles,
     StopOptimization,
     #[default]

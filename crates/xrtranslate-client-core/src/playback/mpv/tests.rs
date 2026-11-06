@@ -26,6 +26,10 @@ pub fn player() -> MpvBackend {
         error: None,
         active_channels: Vec::new(),
         audio_selection: Default::default(),
+        audio_loading: Default::default(),
+        applied_audio: None,
+        audio_reloads: 0,
+        audio_resume: None,
         loading: false,
         subtitle_style: Default::default(),
         subtitle_text: String::new(),
@@ -141,4 +145,118 @@ fn asynchronous_load_failure_reaches_the_controller() {
     assert_eq!(player.get_status(), PlaybackStatus::Stopped);
     assert!(!player.take_error().unwrap().is_empty());
     assert!(player.take_error().is_none());
+}
+
+#[test]
+#[ignore = "requires the installed libmpv playback runtime"]
+fn mixed_tracks_share_playback_seek_and_reload() {
+    use crate::playback::PlaybackAudio;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.wav");
+    let background = directory.path().join("background.wav");
+    let speech = directory.path().join("speech.wav");
+    for path in [&source, &background, &speech] {
+        silent_wav(path);
+    }
+    let mut player = player();
+    player.load_local_file(source.clone()).unwrap();
+    let mix = PlaybackAudio::Mix(vec![
+        PlaybackAudio::External(background.clone()),
+        PlaybackAudio::External(speech.clone()),
+    ]);
+    player.select_audio(mix.clone()).unwrap();
+    wait_until(&mut player, |p| {
+        p.snapshot
+            .audio_tracks
+            .iter()
+            .filter(|t| t.selected)
+            .count()
+            == 2
+    });
+    assert!(
+        player
+            .snapshot
+            .audio_tracks
+            .iter()
+            .filter(|t| t.selected)
+            .all(|t| t.external.is_some())
+    );
+    assert!(player.error.is_none(), "{:?}", player.error);
+    player.seek(1_000);
+    player.play();
+    wait_until(&mut player, |p| (1_100..2_000).contains(&p.get_time_ms()));
+    player.pause();
+    player.refresh_audio().unwrap();
+    // Allow asynchronous reloads, including the track-list changes they generate.
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < deadline {
+        player.tick();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(player.error.is_none(), "{:?}", player.error);
+    assert_eq!(
+        player
+            .snapshot
+            .audio_tracks
+            .iter()
+            .filter(|t| t.selected)
+            .count(),
+        2
+    );
+    assert_eq!(player.get_status(), PlaybackStatus::Paused);
+    player
+        .select_audio(PlaybackAudio::External(speech))
+        .unwrap();
+    wait_until(&mut player, |p| {
+        p.snapshot
+            .audio_tracks
+            .iter()
+            .filter(|t| t.selected)
+            .count()
+            == 1
+    });
+    assert_eq!(player.get_status(), PlaybackStatus::Paused);
+    player.select_audio(mix).unwrap();
+    wait_until(&mut player, |p| {
+        p.snapshot
+            .audio_tracks
+            .iter()
+            .filter(|t| t.selected)
+            .count()
+            == 2
+    });
+    assert_eq!(
+        player.snapshot.audio_tracks.len(),
+        3,
+        "switching must reuse external tracks"
+    );
+    assert_eq!(player.get_status(), PlaybackStatus::Paused);
+    player.play();
+    wait_until(&mut player, |p| {
+        p.get_status() == PlaybackStatus::Playing && p.get_time_ms() > 1_300
+    });
+    player.refresh_audio().unwrap();
+    wait_until(&mut player, |p| {
+        p.audio_resume.is_none()
+            && p.get_status() == PlaybackStatus::Playing
+            && p.get_time_ms() > 1_500
+    });
+    player.refresh_audio().unwrap();
+    player.pause();
+    player.seek(2_500);
+    wait_until(&mut player, |p| {
+        p.audio_resume.is_none()
+            && p.get_status() == PlaybackStatus::Paused
+            && (2_400..2_700).contains(&p.get_time_ms())
+    });
+    player.select_audio(PlaybackAudio::Mix(Vec::new())).unwrap();
+    wait_until(&mut player, |p| {
+        p.snapshot.audio_tracks.iter().all(|t| !t.selected)
+    });
+    player.load_local_file(source).unwrap();
+    player.select_audio(PlaybackAudio::Original(None)).unwrap();
+    wait_until(&mut player, |p| {
+        p.snapshot.audio_tracks.len() == 1 && p.snapshot.audio_tracks[0].selected
+    });
+    assert!(player.error.is_none(), "{:?}", player.error);
 }

@@ -27,6 +27,10 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
+    pub(super) fn trials_remaining(&self) -> usize {
+        trials::MAX_TRIALS.saturating_sub(self.trials.len())
+    }
+
     pub(super) fn recover(&mut self) {
         for trial in &mut self.trials {
             trial.recover();
@@ -145,6 +149,13 @@ struct Merge {
 struct Split {
     workspace: String,
     revision: u64,
+    cue: Option<String>,
+    parts: Option<Vec<SplitPart>>,
+    splits: Option<Vec<CueSplit>>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CueSplit {
     cue: String,
     parts: Vec<SplitPart>,
 }
@@ -158,6 +169,17 @@ struct SplitPart {
 pub(crate) fn tools() -> Vec<Tool> {
     let scope = json!({"workspace":{"type":"string"}});
     let revision = json!({"workspace":{"type":"string"},"revision":{"type":"integer","minimum":0}});
+    let parts = json!({"type":"array","minItems":2,"maxItems":16,"items":{"type":"object","properties":{"original":{"type":"string","minLength":1,"maxLength":8000},"translation":{"type":"string","minLength":1,"maxLength":8000}},"required":["original","translation"],"additionalProperties":false}});
+    let mut split = Tool::new(
+        "media.split",
+        "Atomically split one cue (cue/parts), or batch 1 to 8 distinct cues (splits) from a reviewed passage in one call. Supply each part's original text and nonempty translation in the task's target language. Originals must be exact consecutive source substrings, preserving every word and punctuation. Local code assigns proportional timestamps, at least 1 second per part. Any invalid item leaves the entire draft unchanged. Use either cue/parts or splits, never both.",
+        json!({"workspace":{"type":"string"},"revision":{"type":"integer"},"cue":{"type":"string"},"parts":parts,"splits":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"cue":{"type":"string"},"parts":parts},"required":["cue","parts"],"additionalProperties":false}}}),
+        &["workspace", "revision"],
+    );
+    split.input_schema["oneOf"] = json!([
+        {"required":["cue","parts"],"not":{"required":["splits"]}},
+        {"required":["splits"],"not":{"anyOf":[{"required":["cue"]},{"required":["parts"]}]}}
+    ]);
     let mut tools = vec![
         Tool::new(
             "media.tasks",
@@ -192,16 +214,11 @@ pub(crate) fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "media.merge",
-            "Merge two adjacent cues using the subtitle editor's merge operation. Text is joined in timeline order, outer timestamps and the target cue's ID are retained. Review the joined text and translation; use media.split if a better boundary is needed. Changes stay in the working copy until commit.",
+            "Merge two adjacent cues using the subtitle editor's merge operation. Use this to repair a phrase or sentence incorrectly divided across neighbors; if the combined cue is too long, use media.split to repartition it at better boundaries. Text is joined in timeline order, outer timestamps and the target cue's ID are retained. Review and align the joined translation. Changes stay in the working copy until commit.",
             json!({"workspace":{"type":"string"},"revision":{"type":"integer","minimum":0},"source_cue":{"type":"string"},"target_cue":{"type":"string"}}),
             &["workspace", "revision", "source_cue", "target_cue"],
         ),
-        Tool::new(
-            "media.split",
-            "Atomically split one cue with each part's original text and nonempty translation in the task's target language. Originals must be exact consecutive source substrings, preserving every word and punctuation. Local code assigns proportional timestamps, at least 1 second per part. Invalid input leaves the cue unchanged.",
-            json!({"workspace":{"type":"string"},"revision":{"type":"integer"},"cue":{"type":"string"},"parts":{"type":"array","minItems":2,"maxItems":16,"items":{"type":"object","properties":{"original":{"type":"string","minLength":1,"maxLength":8000},"translation":{"type":"string","minLength":1,"maxLength":8000}},"required":["original","translation"],"additionalProperties":false}}}),
-            &["workspace", "revision", "cue", "parts"],
-        ),
+        split,
         Tool::new(
             "media.commit",
             "Publish the working copy after checking it. Fails if the user changed the task's subtitles since opening. Unresolved issues are retained in the result.",
@@ -436,8 +453,8 @@ impl MediaPlugin {
                         .check_base(task, timeline)?;
                 }
                 let workspace = task.optimization.as_ref().unwrap();
-                let result =
-                    json!({"workspace":workspace.id,"revision":workspace.revision,"task":task.id});
+                let result = json!({"workspace":workspace.id,"revision":workspace.revision,"task":task.id,
+                    "trials_remaining":workspace.trials_remaining()});
                 self.controller.dirty = true;
                 Ok(result)
             }
@@ -638,6 +655,11 @@ impl MediaPlugin {
             }
             "media.split" => {
                 let args: Split = arguments(call)?;
+                let splits = match (args.cue, args.parts, args.splits) {
+                    (Some(cue), Some(parts), None) => vec![CueSplit { cue, parts }],
+                    (None, None, Some(splits)) if (1..=8).contains(&splits.len()) => splits,
+                    _ => return Err("Supply either cue/parts or 1 to 8 splits".into()),
+                };
                 let task = self
                     .workspace_task(&args.workspace)
                     .ok_or("Workspace not found")?;
@@ -645,44 +667,58 @@ impl MediaPlugin {
                 let target_language = task.target_language.clone();
                 let workspace = self.workspace_mut(&args.workspace)?;
                 workspace.check_revision(args.revision)?;
-                let index = workspace
-                    .draft
-                    .cues()
-                    .iter()
-                    .position(|cue| cue.id == args.cue)
-                    .ok_or("Cue not found")?;
-                let originals = args
-                    .parts
-                    .iter()
-                    .map(|part| part.original.as_str())
-                    .collect::<Vec<_>>();
-                let mut parts = super::subtitle_split::validated_split(
-                    &workspace.draft.cues()[index],
-                    workspace.draft.effective_end_at(index),
-                    &originals,
-                ).ok_or("Invalid split: preserve every source word and punctuation, use word boundaries and at least one second per part")?;
-                for (cue, part) in parts.iter_mut().zip(args.parts) {
-                    cue.translated_text = Some(part.translation);
-                    cue.target_language = target_language.clone();
-                    cue.normalize_text();
-                    let translation = cue
-                        .translated_text
-                        .as_deref()
-                        .ok_or("Supply a nonempty translation for every split part")?;
-                    if cue.original_text.chars().count() > 8_000
-                        || translation.chars().count() > 8_000
-                    {
-                        return Err("Each text field must contain at most 8000 characters".into());
+                let mut draft = workspace.draft.clone();
+                let mut seen = std::collections::HashSet::new();
+                let mut ids = Vec::new();
+                let mut affected = Vec::new();
+                let mut before = Vec::new();
+                let mut after = Vec::new();
+                for split in splits {
+                    if !seen.insert(split.cue.clone()) {
+                        return Err("Each cue may appear only once in a split batch".into());
                     }
+                    let index = draft
+                        .cues()
+                        .iter()
+                        .position(|cue| cue.id == split.cue)
+                        .ok_or("Cue not found")?;
+                    let originals = split
+                        .parts
+                        .iter()
+                        .map(|part| part.original.as_str())
+                        .collect::<Vec<_>>();
+                    let mut parts = super::subtitle_split::validated_split(
+                        &draft.cues()[index],
+                        draft.effective_end_at(index),
+                        &originals,
+                    )
+                    .ok_or(concat!(
+                        "Invalid split: preserve every source word and punctuation, ",
+                        "use word boundaries and at least one second per part"
+                    ))?;
+                    for (cue, part) in parts.iter_mut().zip(split.parts) {
+                        cue.translated_text = Some(part.translation);
+                        cue.target_language = target_language.clone();
+                        cue.normalize_text();
+                        let translation = cue
+                            .translated_text
+                            .as_deref()
+                            .ok_or("Supply a nonempty translation for every split part")?;
+                        if cue.original_text.chars().count() > 8_000
+                            || translation.chars().count() > 8_000
+                        {
+                            return Err(
+                                "Each text field must contain at most 8000 characters".into()
+                            );
+                        }
+                    }
+                    ids.extend(parts.iter().map(|cue| cue.id.clone()));
+                    affected.extend(parts.iter().map(|cue| cue_location(cue, cue.end_ms)));
+                    before.extend(feedback::items(&task_id, [&draft.cues()[index]]));
+                    after.extend(feedback::items(&task_id, &parts));
+                    draft.replace_split(index, parts);
                 }
-                let ids = parts.iter().map(|cue| cue.id.clone()).collect::<Vec<_>>();
-                let affected = parts
-                    .iter()
-                    .map(|cue| cue_location(cue, cue.end_ms))
-                    .collect::<Vec<_>>();
-                let before = feedback::items(&task_id, [&workspace.draft.cues()[index]]);
-                let after = feedback::items(&task_id, &parts);
-                workspace.draft.replace_split(index, parts);
+                workspace.draft = draft;
                 feedback::changed(&task_id, before, after);
                 workspace.revision += 1;
                 let result = json!({"revision":workspace.revision,"cues":ids,"affected":affected});
@@ -953,6 +989,88 @@ mod tests {
     }
 
     #[test]
+    fn split_batch_is_atomic_and_preserves_independent_timing() {
+        let (mut plugin, _storage, workspace) = fixture();
+        let timeline = SubtitleTimeline::parse(concat!(
+            "1\n00:00:01,000 --> 00:00:09,000\nHello world. Goodbye world.\n\n",
+            "2\n00:00:12,000 --> 00:00:20,000\nHello world. Goodbye world.\n"
+        ))
+        .unwrap();
+        plugin.workspace_mut(&workspace).unwrap().draft = timeline.clone();
+        let split = |index: usize| {
+            json!({"cue":timeline.cues()[index].id,"parts":[
+                {"original":"Hello world.","translation":"你好，世界。"},
+                {"original":"Goodbye world.","translation":"再见，世界。"}
+            ]})
+        };
+        let mut invalid = split(1);
+        invalid["parts"][1]["translation"] = json!(" ");
+        for splits in [
+            json!([split(0), invalid]),
+            json!([split(0), split(0)]),
+            json!([]),
+            json!(vec![split(0); 9]),
+        ] {
+            assert!(
+                call(
+                    &mut plugin,
+                    "media.split",
+                    json!({
+                        "workspace":workspace,"revision":0,"splits":splits
+                    })
+                )
+                .is_err()
+            );
+            let unchanged = plugin.workspace_mut(&workspace).unwrap();
+            assert!(same_timeline(&unchanged.draft, &timeline));
+            assert_eq!(unchanged.revision, 0);
+            assert!(unchanged.records.is_empty());
+        }
+        assert!(
+            call(
+                &mut plugin,
+                "media.split",
+                json!({
+                    "workspace":workspace,"revision":0,"splits":[split(0)],
+                    "cue":timeline.cues()[0].id,"parts":split(0)["parts"]
+                })
+            )
+            .is_err()
+        );
+        let result = call(
+            &mut plugin,
+            "media.split",
+            json!({
+                "workspace":workspace,"revision":0,"splits":[split(1),split(0)]
+            }),
+        )
+        .unwrap();
+        assert_eq!(result["revision"], 1);
+        assert_eq!(result["cues"].as_array().unwrap().len(), 4);
+        let draft = &plugin.workspace_mut(&workspace).unwrap().draft;
+        let cues = draft.cues();
+        for (parts, original) in cues.chunks(2).zip(timeline.cues()) {
+            assert_eq!(parts[0].start_ms, original.start_ms);
+            assert_eq!(parts[0].end_ms, parts[1].start_ms);
+            assert_eq!(parts[1].end_ms, original.end_ms);
+            assert_eq!(
+                format!("{} {}", parts[0].original_text, parts[1].original_text),
+                original.original_text
+            );
+            assert!(
+                parts
+                    .iter()
+                    .all(|cue| cue.translated_text.is_some() && cue.target_language == "zh")
+            );
+        }
+        assert_eq!(
+            plugin.controller.subtitles.count(),
+            1,
+            "draft is not published until commit"
+        );
+    }
+
+    #[test]
     fn merge_rejects_invalid_pairs_and_publishes_only_on_commit() {
         let (mut plugin, storage, workspace) = fixture();
         let original = plugin.controller.subtitles.clone();
@@ -1036,6 +1154,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(receipt["document"], "candidate");
+        assert_eq!(receipt["trials_remaining"], 7);
         assert!(receipt.get("timeline").is_none() && receipt.get("source").is_none());
         let first = call(
             &mut plugin,
@@ -1046,6 +1165,7 @@ mod tests {
         assert_eq!(first["cues"].as_array().unwrap().len(), 1);
         assert_eq!(first["recognition"]["preprocessing"], "gtcrn");
         assert_eq!(first["audio_track"], "Original");
+        assert_eq!(first["trials_remaining"], 7);
         assert_eq!(first["next_offset"], 1);
         let second = call(&mut plugin, "media.read", json!({"workspace":workspace,"document":"candidate","query":"world","offset":first["next_offset"],"limit":1})).unwrap();
         assert_eq!(second["cues"][0]["index"], 1);

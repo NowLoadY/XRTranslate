@@ -36,6 +36,7 @@ pub(super) struct SpeechJob {
     progress: Arc<SpeechProgress>,
     total: usize,
     input_key: u64,
+    replace_track: bool,
 }
 
 enum SpeechEvent {
@@ -445,7 +446,7 @@ fn fit(samples: Vec<i16>, available: usize, cancelled: &AtomicBool) -> Result<Ve
 }
 
 impl MediaController {
-    pub(crate) fn start_speech(&mut self) {
+    pub(crate) fn start_speech(&mut self, restart: bool) {
         if self.speech_job.is_some() || self.subtitle_edit.is_some() {
             return;
         }
@@ -463,13 +464,14 @@ impl MediaController {
         }
         self.error = None;
         let mut pending = task.clone();
-        // An incomplete run resumes. An explicitly regenerated complete run replaces
-        // clips one by one, keeping each old clip until its replacement is ready.
-        if pending
-            .speech_track
-            .as_ref()
-            .is_some_and(|track| track.completed(task) == task.subtitles.count())
-        {
+        // Keep the old track until the first new clip is saved. A fresh run must
+        // not mix the previously selected voice with its replacement.
+        let replace_track = restart
+            || pending
+                .speech_track
+                .as_ref()
+                .is_some_and(|track| track.completed(task) == task.subtitles.count());
+        if replace_track {
             pending.speech_track = None;
         }
         self.speech_job = Some(SpeechJob {
@@ -477,6 +479,7 @@ impl MediaController {
             language: task.target_language.clone(),
             total: task.subtitles.count(),
             input_key: input_key(task),
+            replace_track,
             pending: Some(pending),
             preparing: None,
             result: None,
@@ -488,6 +491,49 @@ impl MediaController {
     pub(crate) fn cancel_speech(&mut self) {
         if let Some(job) = &self.speech_job {
             job.cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(in crate::media) fn delete_speech(&mut self, id: &str) {
+        if self.subtitle_edit.is_some() || self.speech_edit.is_some() {
+            return;
+        }
+        let Some(task_id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(task) = self.store.get_mut(&task_id) else {
+            return;
+        };
+        let Some(track) = &mut task.speech_track else {
+            return;
+        };
+        let Some(index) = track.clips.iter().position(|clip| clip.id == id) else {
+            return;
+        };
+        let old = track.clone();
+        let removed = track.clips.remove(index);
+        let retired = if track.clips.iter().any(|clip| clip.path == removed.path) {
+            Vec::new()
+        } else {
+            vec![removed.path]
+        };
+        track.rendered = false;
+        if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+            self.store.get_mut(&task_id).unwrap().speech_track = Some(old);
+            self.error = Some(error.to_string());
+            return;
+        }
+        self.cancel_subtitle_trim();
+        if self
+            .store
+            .get(&task_id)
+            .is_some_and(|task| task.play_speech_track)
+            && let Some(backend) = &mut self.backend
+        {
+            backend.pause();
+        }
+        if let Err(error) = self.queue_speech_render(&task_id, retired) {
+            self.error = Some(error);
         }
     }
 
@@ -506,8 +552,12 @@ impl MediaController {
                 }
                 SpeechEvent::Clip(mut clip, temporary) => {
                     let job = self.speech_job.as_ref().unwrap();
-                    let (task_id, language, key) =
-                        (job.task_id.clone(), job.language.clone(), job.input_key);
+                    let (task_id, language, key, replace_track) = (
+                        job.task_id.clone(),
+                        job.language.clone(),
+                        job.input_key,
+                        job.replace_track,
+                    );
                     self.save_active();
                     let result = (|| -> Result<(), String> {
                         let task = self
@@ -529,7 +579,8 @@ impl MediaController {
                             clips: Vec::new(),
                             rendered: false,
                         });
-                        if track.language != language
+                        if replace_track
+                            || track.language != language
                             || track.clips.iter().all(|clip| clip.text.is_empty())
                         {
                             track.language = language;
@@ -555,6 +606,7 @@ impl MediaController {
                             self.remove_speech_file(&clip.path);
                             return Err(error.to_string());
                         }
+                        self.speech_job.as_mut().unwrap().replace_track = false;
                         let current = self
                             .store
                             .get(&task_id)
@@ -615,6 +667,7 @@ impl MediaController {
         // Existing mixed tracks remain usable as one movable clip; new synthesis
         // publishes individual clips without trying to infer their old boundaries.
         if track.clips.is_empty()
+            && track.rendered
             && let Ok(reader) = hound::WavReader::open(&track.path)
         {
             track.clips.push(SpeechClip {
@@ -665,6 +718,11 @@ impl MediaController {
                 Ok(()) => {
                     track.rendered = true;
                     let selected = task.play_speech_track;
+                    let empty = track.clips.is_empty();
+                    if empty {
+                        task.speech_track = None;
+                        task.play_speech_track = false;
+                    }
                     if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
                         self.error = Some(error.to_string());
                     }
@@ -675,6 +733,9 @@ impl MediaController {
                         {
                             self.error = Some(error);
                         }
+                    }
+                    if empty {
+                        self.remove_speech_file(&result.path);
                     }
                 }
                 Err(error) => {
@@ -704,6 +765,72 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::time::Instant;
+
+    #[test]
+    fn restarting_partial_speech_keeps_old_audio_until_a_replacement_arrives() {
+        use super::super::{backend::MediaSource, subtitles::SubtitleTimeline, task::SubtitleMode};
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = MediaTask::new(
+            "voice-change".into(),
+            MediaSource::LocalFile("source.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::TranslateExisting,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:01,000 --> 00:00:03,000\nHello.\n\n2\n00:00:04,000 --> 00:00:06,000\nGoodbye.\n"
+        ).unwrap();
+        let ids = task
+            .subtitles
+            .cues()
+            .iter()
+            .map(|cue| cue.id.clone())
+            .collect::<Vec<_>>();
+        task.subtitles
+            .set_translation(&ids[0], "你好。".into(), "en", "zh");
+        task.subtitles
+            .set_translation(&ids[1], "再见。".into(), "en", "zh");
+        let clip = SpeechClip {
+            id: ids[0].clone(),
+            path: directory.path().join("old.wav"),
+            start_ms: 1000,
+            duration_ms: 2000,
+            text: "你好。".into(),
+            peaks: Vec::new(),
+        };
+        std::fs::write(&clip.path, b"previous audio").unwrap();
+        task.speech_track = Some(SpeechTrack {
+            path: directory.path().join("track.wav"),
+            language: "zh".into(),
+            clips: vec![clip.clone()],
+            rendered: true,
+        });
+        let mut controller = MediaController::open(directory.path().into(), None);
+        controller.backend = None;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.tasks = vec![task];
+        for restart in [false, true] {
+            controller.start_speech(restart);
+            let job = controller.speech_job.as_ref().unwrap();
+            assert_eq!(job.replace_track, restart);
+            assert_eq!(
+                job.pending.as_ref().unwrap().speech_track.is_none(),
+                restart
+            );
+            assert_eq!(
+                controller.store.tasks[0]
+                    .speech_track
+                    .as_ref()
+                    .unwrap()
+                    .clips,
+                [clip.clone()]
+            );
+            assert_eq!(std::fs::read(&clip.path).unwrap(), b"previous audio");
+            controller.speech_job = None;
+        }
+    }
 
     #[test]
     #[ignore = "requires the installed media playback runtime for pitch-preserving alignment"]

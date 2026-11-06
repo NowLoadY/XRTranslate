@@ -100,6 +100,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "더빙 생성 중",
         "Создание озвучки",
     ),
+    (
+        "Regenerate speech track",
+        "重新生成全部配音",
+        "吹き替え音声をすべて再生成",
+        "전체 더빙 다시 생성",
+        "Пересоздать всю озвучку",
+    ),
     ("Speech track", "配音", "吹き替え", "더빙", "Озвучка"),
     (
         "Waiting for service",

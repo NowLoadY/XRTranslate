@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ui_director::{Tool, ToolCall, ToolResult, arguments};
 
+pub(super) const MAX_TRIALS: usize = 8;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Trial {
     pub(super) id: String,
@@ -72,7 +74,7 @@ pub(super) fn tools() -> Vec<Tool> {
     let operation = json!({"workspace":{"type":"string"},"operation":{"type":"string"}});
     let mut trial = Tool::new(
         "media.trial",
-        "Re-recognize and translate up to 60 seconds to investigate recognition problems; use media.edit for translation-only corrections. Prefer first_cue/last_cue for replacement. start_ms/end_ms also permits gaps, but a range cutting through an existing cue is inspection-only and cannot be adopted. Uses the selected track and current recognition options; media.settings does not change the track. Current subtitles stay untouched. Read the candidate with media.read before judging or adopting it.",
+        "Re-recognize and translate up to 60 seconds to investigate recognition problems; use media.edit for translation-only corrections. Each workspace allows eight trials total; media.read reports trials_remaining. Reserve trials for specific doubts and reuse completed candidates from media.records. Prefer first_cue/last_cue for replacement. start_ms/end_ms also permits gaps, but a range cutting through an existing cue is inspection-only and cannot be adopted. Uses the selected track and current recognition options; media.settings does not change the track. Current subtitles stay untouched. Read the candidate with media.read before judging or adopting it.",
         json!({"workspace":{"type":"string"},"revision":{"type":"integer"},"first_cue":{"type":"string"},"last_cue":{"type":"string"},"start_ms":{"type":"integer","minimum":0},"end_ms":{"type":"integer","minimum":1}}),
         &["workspace", "revision"],
     );
@@ -161,8 +163,8 @@ impl MediaPlugin {
                     return Err("Trial interval must be at most 60 seconds".into());
                 }
                 let range = cue_interval(&workspace.draft, start_ms, end_ms);
-                if workspace.trials.len() >= 8 {
-                    return Err("This workspace has reached its eight-trial budget".into());
+                if workspace.trials_remaining() == 0 {
+                    return Err("Trial budget exhausted. Reuse completed candidates from media.records or continue editing the draft.".into());
                 }
                 let mut recognition = task.recognition.clone();
                 recognition.continuous_recognition = false;
@@ -246,6 +248,7 @@ impl MediaPlugin {
                         json!({"id":trial.id,"status":trial.status,"error":trial.error,
                         "document":trial.id,"start_ms":trial.start_ms,"end_ms":trial.end_ms,
                         "cue_count":trial.timeline.count(),"source_cue_count":trial.source.len(),
+                        "trials_remaining":workspace.trials_remaining(),
                         "recognition":trial.recognition,"audio_track":trial.audio_track}),
                     )
                 }

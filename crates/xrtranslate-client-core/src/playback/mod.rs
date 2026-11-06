@@ -64,6 +64,16 @@ pub struct PlayerDiagnostics {
 pub enum PlaybackAudio {
     Original(Option<i64>),
     External(PathBuf),
+    Mix(Vec<PlaybackAudio>),
+}
+
+impl PlaybackAudio {
+    pub(crate) fn sources(&self) -> Vec<&Self> {
+        match self {
+            Self::Mix(sources) => sources.iter().flat_map(Self::sources).collect(),
+            source => vec![source],
+        }
+    }
 }
 
 impl Default for PlaybackAudio {
@@ -90,7 +100,7 @@ pub trait MediaBackend: Send {
     fn select_audio(&mut self, selection: PlaybackAudio) -> Result<(), String> {
         match selection {
             PlaybackAudio::Original(_) => Ok(()),
-            PlaybackAudio::External(_) => Err("Audio track switching is unavailable".into()),
+            _ => Err("Audio track switching is unavailable".into()),
         }
     }
 

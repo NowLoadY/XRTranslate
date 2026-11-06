@@ -7,6 +7,25 @@ use libmpv_sys::{
 use serde_json::Value;
 use std::ffi::CStr;
 
+/// Use the same levels and peak protection for preview and export.
+pub(super) fn mix_graph(ids: &[i64]) -> String {
+    if let [id] = ids {
+        return format!("[aid{id}]anull[ao]");
+    }
+    let inputs = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!("[aid{id}]aformat=channel_layouts=stereo[a{i}];"))
+        .collect::<String>();
+    let labels = (0..ids.len())
+        .map(|i| format!("[a{i}]"))
+        .collect::<String>();
+    format!(
+        "{inputs}{labels}amix=inputs={}:duration=longest:normalize=0,alimiter=limit=0.95:level=0:latency=1[ao]",
+        ids.len()
+    )
+}
+
 /// Copy property-event data while libmpv owns its lifetime.
 pub unsafe fn read(node: &mpv_node) -> Vec<AudioTrack> {
     let value = unsafe { value(node) };

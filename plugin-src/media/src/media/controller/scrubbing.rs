@@ -23,11 +23,7 @@ impl ScrubAudio {
             }
         }
         player.select_audio(task.playback_audio())?;
-        player.set_channel_routing(if task.play_speech_track {
-            &[]
-        } else {
-            &task.audio_channels
-        });
+        player.set_channel_routing(task.playback_channels());
         Ok(Self {
             player,
             pending: None,
@@ -195,6 +191,9 @@ impl MediaController {
             if !finished && self.can_play() {
                 let mut reference = task.clone();
                 reference.play_speech_track = false;
+                if reference.playback_sources().is_empty() {
+                    reference.playback_tracks = None;
+                }
                 match ScrubAudio::new(&reference, self.volume, self.muted) {
                     Ok(audio) => self.scrub_audio = Some(audio),
                     Err(error) => log::warn!("Timeline scrub audio unavailable: {error}"),

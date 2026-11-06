@@ -58,6 +58,13 @@ pub enum AudioTrackSelection {
     Background,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaybackTrack {
+    Original(Option<i64>),
+    Vocals,
+    Background,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeechTrack {
     pub path: PathBuf,
@@ -114,6 +121,9 @@ pub struct MediaTask {
     pub speech_track: Option<SpeechTrack>,
     #[serde(default)]
     pub play_speech_track: bool,
+    /// None preserves the playback choice of tasks saved before multi-selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playback_tracks: Option<Vec<PlaybackTrack>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_export_settings: Option<super::video_export::ExportSettings>,
     #[serde(default)]
@@ -170,13 +180,63 @@ impl MediaTask {
     }
 
     pub(super) fn playback_audio(&self) -> super::backend::PlaybackAudio {
+        use super::backend::PlaybackAudio;
+        let mut sources = self
+            .playback_sources()
+            .into_iter()
+            .filter_map(|source| match source {
+                PlaybackTrack::Original(id) => Some(PlaybackAudio::Original(id)),
+                PlaybackTrack::Vocals => self
+                    .separated_audio
+                    .as_ref()
+                    .filter(|stems| stems.vocals.is_file())
+                    .map(|stems| PlaybackAudio::External(stems.vocals.clone())),
+                PlaybackTrack::Background => self
+                    .separated_audio
+                    .as_ref()
+                    .filter(|stems| stems.background.is_file())
+                    .map(|stems| PlaybackAudio::External(stems.background.clone())),
+            })
+            .collect::<Vec<_>>();
         if self.play_speech_track
             && let Some(track) = &self.speech_track
             && track.path.is_file()
         {
-            return super::backend::PlaybackAudio::External(track.path.clone());
+            sources.push(PlaybackAudio::External(track.path.clone()));
         }
-        self.source_audio()
+        if sources.len() == 1 {
+            sources.remove(0)
+        } else {
+            PlaybackAudio::Mix(sources)
+        }
+    }
+
+    pub(super) fn playback_sources(&self) -> Vec<PlaybackTrack> {
+        self.playback_tracks.clone().unwrap_or_else(|| {
+            if self.play_speech_track {
+                Vec::new()
+            } else {
+                vec![match self.audio_track {
+                    AudioTrackSelection::Original => {
+                        PlaybackTrack::Original(self.original_audio_track)
+                    }
+                    AudioTrackSelection::Vocals => PlaybackTrack::Vocals,
+                    AudioTrackSelection::Background => PlaybackTrack::Background,
+                }]
+            }
+        })
+    }
+
+    pub(super) fn plays_recognition_source(&self) -> bool {
+        !self.play_speech_track && self.playback_audio() == self.source_audio()
+    }
+
+    pub(super) fn playback_channels(&self) -> &[AudioChannelItem] {
+        if self.plays_recognition_source() {
+            &self.audio_channels
+        } else {
+            &[]
+        }
     }
 
     fn source_audio(&self) -> super::backend::PlaybackAudio {
@@ -250,6 +310,7 @@ impl MediaTask {
             separated_audio: None,
             speech_track: None,
             play_speech_track: false,
+            playback_tracks: None,
             video_export_settings: None,
             is_task_running: false,
             created_at_sec: now,
@@ -328,6 +389,65 @@ impl MediaTaskStore {
 mod tests {
     use super::*;
     use crate::media::subtitles::{SubtitleCue, SubtitleMetadata};
+
+    #[test]
+    fn preview_mix_is_persisted_without_changing_recognition() {
+        use super::super::backend::PlaybackAudio;
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = MediaTask::new(
+            "Preview".into(),
+            MediaSource::LocalFile("video.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            default_video_recognition(),
+        );
+        let background = directory.path().join("background.wav");
+        let speech = directory.path().join("speech.wav");
+        std::fs::write(&background, []).unwrap();
+        std::fs::write(&speech, []).unwrap();
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+            vocals: directory.path().join("vocals.wav"),
+            background: background.clone(),
+        });
+        task.speech_track = Some(SpeechTrack {
+            path: speech.clone(),
+            language: "zh".into(),
+            clips: Vec::new(),
+            rendered: true,
+        });
+        let request = task.translation_request();
+        assert_eq!(task.playback_audio(), PlaybackAudio::Original(None));
+        task.play_speech_track = true;
+        assert_eq!(
+            task.playback_audio(),
+            PlaybackAudio::External(speech.clone()),
+            "legacy speech-only selection"
+        );
+        task.playback_tracks = Some(vec![PlaybackTrack::Background]);
+        let store = MediaTaskStore { tasks: vec![task] };
+        store.save_to_dir(directory.path()).unwrap();
+        let mut restored = MediaTaskStore::load_from_dir(directory.path())
+            .tasks
+            .remove(0);
+        assert_eq!(
+            restored.playback_audio(),
+            PlaybackAudio::Mix(vec![
+                PlaybackAudio::External(background.clone()),
+                PlaybackAudio::External(speech),
+            ])
+        );
+        assert_eq!(restored.translation_request(), request);
+        assert!(!restored.plays_recognition_source());
+        restored.play_speech_track = false;
+        assert_eq!(
+            restored.playback_audio(),
+            PlaybackAudio::External(background)
+        );
+        restored.playback_tracks = Some(Vec::new());
+        assert_eq!(restored.playback_audio(), PlaybackAudio::Mix(Vec::new()));
+        assert_eq!(restored.translation_request(), request);
+    }
 
     #[test]
     fn audio_processing_choice_roundtrips_without_changing_legacy_tasks() {
