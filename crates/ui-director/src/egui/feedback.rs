@@ -155,22 +155,17 @@ pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color
             && painted.insert(item.feedback.target)
         {
             let (color, width, lift) = match item.feedback.effect {
-                Effect::Read => (accent, 1.6, 0.0),
-                Effect::Pending => (accent, 1.7 + 0.25 * (age * 4.0).sin(), 0.0),
+                Effect::Read => (accent, 1.2, 0.0),
+                Effect::Pending => (accent, 1.3 + 0.12 * (age * 4.0).sin(), 0.0),
                 Effect::Failed(_) => {
                     let recoil = (age * 18.0).sin().abs() * (-age * 5.0).exp();
                     (
                         ctx.global_style().visuals.error_fg_color.to_opaque(),
-                        2.0,
-                        recoil * 2.0,
+                        1.6,
+                        recoil * 1.5,
                     )
                 }
-                _ => {
-                    // A small response at the receiving edge, as the blue pulse arrives.
-                    let hit =
-                        (std::f32::consts::PI * ((age / 1.15).fract() - 0.8).max(0.0) * 5.0).sin();
-                    (accent, 2.0 + hit * 0.5, hit)
-                }
+                _ => (accent, 1.5, 0.0),
             };
             painter.rect_stroke(
                 rect.expand(2.0 + lift * reveal),
@@ -194,9 +189,9 @@ pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color
     let start = head + direction.normalized() * radius;
     painter.extend(egui::Shape::dashed_line(
         &[start, end],
-        Stroke::new(1.7 * reveal, accent),
-        5.0,
-        5.0,
+        Stroke::new(reveal, accent),
+        3.5,
+        6.0,
     ));
     pulses(
         painter,
@@ -223,37 +218,34 @@ fn pulses(
     accent: Color32,
 ) {
     let reading = matches!(effect, Effect::Read);
-    let (period, lanes, stretch, width) = match effect {
+    let (period, length, width): (f32, f32, f32) = match effect {
         Effect::Failed(_) => return,
-        Effect::Read => (1.85, 2, 12.0, 1.6),
-        Effect::Pending => (2.4, 2, 8.0, 1.7),
-        _ => (1.15, 4, 28.0, 2.4),
+        Effect::Read => (1.85, 7.0, 1.3),
+        Effect::Pending => (2.4, 6.0, 1.3),
+        _ => (1.45, 10.0, 1.7),
     };
     if reading {
         path.swap(0, 1);
     }
     let distance = path[0].distance(path[1]);
     let direction = (path[1] - path[0]) / distance;
-    let normal = egui::vec2(-direction.y, direction.x);
-    let phase = (age / period).fract();
-    let speed = 16.0 * phase.powi(2) * (1.0 - phase).powi(2);
-    let envelope = ease(phase / 0.12) * ease((1.0 - phase) / 0.12) * reveal;
-    let center = ease(phase) * distance;
-    // Stretch the current bars with speed; never draw translucent trailing copies.
-    for (offset, size) in [(-6.0, 1.0), (6.0, 0.75), (-11.0, 0.55), (11.0, 0.4)]
-        .into_iter()
-        .take(lanes)
-    {
-        let length = (4.0 + stretch * speed) * size * envelope;
+    let count = (distance / 160.0).ceil().clamp(1.0, 3.0) as usize;
+    // Even phases and constant speed keep pulses separated along one quiet path.
+    // Only their size eases at the endpoints, so they never bunch up there.
+    for index in 0..count {
+        let phase = (age / period + index as f32 / count as f32).fract();
+        let envelope = ease(phase / 0.12) * ease((1.0 - phase) / 0.12) * reveal;
+        let center = phase * distance;
+        let length = length.min(distance * 0.2) * envelope;
         let points = [
-            path[0] + direction * (center - length * 0.5).max(0.0) + normal * offset,
-            path[0] + direction * (center + length * 0.5).min(distance) + normal * offset,
+            path[0] + direction * (center - length * 0.5).max(0.0),
+            path[0] + direction * (center + length * 0.5).min(distance),
         ];
         if reading {
             // A solid hairline keeps white readable on light surfaces.
             painter.line_segment(
                 points,
-                Stroke::new((width + 1.2) * envelope, Color32::from_rgb(166, 185, 214)),
+                Stroke::new((width + 1.0) * envelope, Color32::from_rgb(166, 185, 214)),
             );
         }
         painter.line_segment(

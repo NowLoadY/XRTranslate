@@ -11,6 +11,17 @@ pub(super) struct PageState {
     scenes: BTreeMap<String, (u64, scene::Scene)>,
 }
 impl Host {
+    pub fn page_content_bounds(
+        &self,
+        id: PluginId,
+    ) -> Option<&xrtranslate_plugin::surface::ContentBounds> {
+        self.installed
+            .get(id.as_str())?
+            .page
+            .surface
+            .content_bounds()
+    }
+
     pub fn composer(&mut self, id: PluginId) -> &mut components::text_composer::TextComposer {
         &mut self
             .installed

@@ -1,6 +1,7 @@
 //! Find quiet space in the painted page without adding hooks to its controls.
 use super::placement;
-use eframe::egui::{self, Pos2, Rect, Shape, TextureId};
+use eframe::egui::{self, Pos2, Rect, TextureId};
+use xrtranslate_plugin::surface::ContentBounds;
 
 const SCAN_INTERVAL: f64 = 0.5;
 const DESTINATION_DWELL: f64 = 1.2;
@@ -41,6 +42,7 @@ impl Parking {
         radius: f32,
         now: f64,
         background: Option<TextureId>,
+        content: Option<&ContentBounds>,
     ) -> Option<Spot> {
         let bounds = bounds.intersect(ctx.viewport_rect());
         if now < self.next_check && self.bounds == Some(bounds) {
@@ -49,14 +51,26 @@ impl Parking {
         self.next_check = now + SCAN_INTERVAL;
         self.bounds = Some(bounds);
         self.occupied.clear();
-        let mut heading = None;
+        if let Some(content) = content {
+            // Shared GPU surfaces are page containers, not full-page obstacles.
+            self.occupied
+                .extend(content.occupied.iter().filter_map(|rect| {
+                    let rect = rect.intersect(bounds);
+                    (rect.is_finite() && rect.is_positive()).then_some(rect)
+                }));
+            return self.settle(bounds, radius, content.heading, now);
+        }
+        let mut content = ContentBounds::default();
         let layers = ctx.memory(|memory| {
             memory
                 .layer_ids()
                 // Include page content and floating toolbars, excluding the
                 // foreground companion itself, popups and tooltips.
                 .filter(|candidate| {
-                    matches!(candidate.order, egui::Order::Background | egui::Order::Middle)
+                    matches!(
+                        candidate.order,
+                        egui::Order::Background | egui::Order::Middle
+                    )
                 })
                 .collect::<Vec<_>>()
         });
@@ -73,20 +87,19 @@ impl Parking {
             for (layer, transform) in layers {
                 if let Some(paint) = graphics.get(layer) {
                     for entry in paint.all_entries() {
-                        collect(
+                        content.collect(
                             &entry.shape,
                             transform.mul_rect(entry.clip_rect).intersect(bounds),
                             bounds,
                             transform,
                             background,
-                            &mut self.occupied,
-                            &mut heading,
                         );
                     }
                 }
             }
         });
-        self.settle(bounds, radius, heading, now)
+        self.occupied = content.occupied;
+        self.settle(bounds, radius, content.heading, now)
     }
 
     fn settle(
@@ -224,52 +237,4 @@ fn find_space(bounds: Rect, occupied: &[Rect], preferred: Pos2, radius: f32) -> 
         consider(left, allowed.right());
     }
     best
-}
-
-fn collect(
-    shape: &Shape,
-    clip: Rect,
-    page: Rect,
-    transform: egui::emath::TSTransform,
-    background: Option<TextureId>,
-    occupied: &mut Vec<Rect>,
-    heading: &mut Option<Rect>,
-) {
-    if let Shape::Vec(shapes) = shape {
-        for shape in shapes {
-            collect(shape, clip, page, transform, background, occupied, heading);
-        }
-        return;
-    }
-    // Only the application's backdrop is exempt; content images remain obstacles.
-    if matches!(shape, Shape::Mesh(mesh) if Some(mesh.texture_id) == background) {
-        return;
-    }
-    // Page/section backdrops are surfaces we can rest on, not foreground content.
-    if matches!(shape, Shape::Rect(rect) if rect.rect.area() > page.area() * 0.15) {
-        return;
-    }
-    // Empty text can have infinite visual bounds. Clipping it first would turn
-    // an invisible label into an obstacle covering the entire page.
-    let rect = shape.visual_bounding_rect();
-    if !rect.is_positive() || !rect.is_finite() {
-        return;
-    }
-    let rect = transform.mul_rect(rect).intersect(clip);
-    if !rect.is_positive() {
-        return;
-    }
-    if let Shape::Text(text) = shape
-        && rect.top() < page.top() + 100.0
-        && text
-            .galley
-            .job
-            .sections
-            .iter()
-            .any(|section| section.format.font_id.size >= 18.0)
-        && heading.is_none_or(|current| rect.top() < current.top())
-    {
-        *heading = Some(rect);
-    }
-    occupied.push(rect);
 }

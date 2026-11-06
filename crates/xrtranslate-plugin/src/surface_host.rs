@@ -27,6 +27,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    pub fn content_bounds(&self) -> Option<&super::ContentBounds> {
+        self.frame.as_ref()?.content_bounds.as_ref()
+    }
+
     pub fn accept(&mut self, ctx: &egui::Context, mut frame: Frame) {
         if let Some(shared) = frame.shared.take() {
             if let Some(compositor) = &mut self.compositor {
@@ -328,6 +332,7 @@ mod tests {
             drawings: Vec::new(),
             reuse_drawings: false,
             shared: None,
+            content_bounds: None,
             textures: Vec::new(),
             free: Vec::new(),
             platform,

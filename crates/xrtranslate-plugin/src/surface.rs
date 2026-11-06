@@ -5,6 +5,9 @@
 mod host;
 #[cfg(feature = "host")]
 pub use host::Renderer;
+#[path = "surface_layout.rs"]
+mod layout;
+pub use layout::ContentBounds;
 #[path = "surface_textures.rs"]
 mod textures;
 #[path = "surface_wire.rs"]
@@ -128,6 +131,8 @@ pub struct Frame {
     pub reuse_drawings: bool,
     #[serde(default, rename = "d3d12_v1", skip_serializing_if = "Option::is_none")]
     pub shared: Option<SharedFrame>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_bounds: Option<ContentBounds>,
     #[serde(with = "textures")]
     pub textures: Vec<(egui::TextureId, Vec<ImageDelta>)>,
     pub free: Vec<egui::TextureId>,
@@ -227,6 +232,16 @@ impl<P: UiPlugin> Page<P> {
             ui_director::egui::finish_frame(&input.page);
         });
         self.rendering.store(false, Ordering::Release);
+        let mut content_bounds = ContentBounds::default();
+        for item in &output.shapes {
+            content_bounds.collect(
+                &item.shape,
+                item.clip_rect.intersect(input.rect),
+                input.rect,
+                egui::emath::TSTransform::IDENTITY,
+                None,
+            );
+        }
         let mut drawings = Vec::new();
         let primitives = self
             .context
@@ -276,6 +291,7 @@ impl<P: UiPlugin> Page<P> {
             drawings,
             reuse_drawings,
             shared,
+            content_bounds: Some(content_bounds),
             textures: output
                 .textures_delta
                 .set

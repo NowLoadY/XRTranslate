@@ -66,6 +66,10 @@ mod tests {
             ],
             reuse_drawings: false,
             shared: None,
+            content_bounds: Some(crate::surface::ContentBounds {
+                occupied: vec![rect],
+                heading: Some(rect),
+            }),
             textures: vec![(
                 TextureId::Managed(0),
                 vec![ImageDelta::full(
@@ -91,6 +95,7 @@ mod tests {
         let mut input = Cursor::new(&bytes[1..]);
         let decoded = read(&mut input).unwrap();
         assert!(decoded.drawings == frame.drawings);
+        assert_eq!(decoded.content_bounds, frame.content_bounds);
         assert_eq!(decoded.platform.cursor_icon, egui::CursorIcon::Text);
         assert_eq!(decoded.platform.commands.len(), 1);
         assert_eq!(decoded.free, frame.free);
@@ -101,14 +106,14 @@ mod tests {
         input.read_to_string(&mut remaining).unwrap();
         assert_eq!(remaining, "{\"type\":\"cancel\",\"id\":3}\n");
         // Legacy JSON texture encoding remains available to older hosts.
-        let decoded: Frame = serde_json::from_value(
-            serde_json::to_value(&Frame {
-                drawings: Vec::new(),
-                ..frame
-            })
-            .unwrap(),
-        )
+        let mut legacy = serde_json::to_value(&Frame {
+            drawings: Vec::new(),
+            ..frame
+        })
         .unwrap();
+        legacy.as_object_mut().unwrap().remove("content_bounds");
+        let decoded: Frame = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.content_bounds.is_none());
         let egui::ImageData::Color(image) = &decoded.textures[0].1[0].image;
         assert_eq!(image.pixels, pixels);
     }

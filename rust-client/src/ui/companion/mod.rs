@@ -536,6 +536,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         small,
         state.clock,
         app.background_image.texture_id(),
+        match app.navigation.page {
+            crate::ui::Page::Plugin(id) if layout.is_none() => {
+                app.plugin_host.page_content_bounds(id)
+            }
+            _ => None,
+        },
     );
     let small = dock.map_or(small, |spot| spot.radius);
     let available = !hidden
