@@ -7,6 +7,7 @@ members = [
     "plugin-src/media",
     "plugin-src/meeting",
     "plugin-src/vocabulary",
+    "plugin-src/vr-overlay",
     "plugin-src/lyrics",
     "plugin-src/bigwalk",
     "plugin-src/auto-input",

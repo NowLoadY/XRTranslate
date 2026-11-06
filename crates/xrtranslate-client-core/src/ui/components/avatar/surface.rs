@@ -4,7 +4,7 @@ use crate::ui::animation::AnimationSystem;
 use eframe::egui::{self, Id, Pos2, Rect};
 
 #[derive(Default)]
-pub(crate) struct Surface {
+pub struct Surface {
     presentation: Presentation,
     sampler: PresentationSampler,
     speech: Speech,

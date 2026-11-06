@@ -11,7 +11,7 @@ pub struct Presentation {
     pub clock: f64,
     pub visible: bool,
     #[serde(default)]
-    pub(crate) motion: Option<Motion>,
+    pub motion: Option<Motion>,
 }
 
 impl Presentation {
@@ -31,13 +31,13 @@ impl Presentation {
 /// A receiver clock, not another animator or dialogue owner. Repeated paints
 /// never restart its origin; stale packets stop extrapolating after 200 ms.
 #[derive(Default)]
-pub(crate) struct PresentationSampler {
+pub struct PresentationSampler {
     received: Option<(Presentation, Instant)>,
     clock: Option<f64>,
 }
 
 impl PresentationSampler {
-    pub(crate) fn sample(&mut self, source: &Presentation) -> Presentation {
+    pub fn sample(&mut self, source: &Presentation) -> Presentation {
         self.sample_at(source, Instant::now())
     }
 

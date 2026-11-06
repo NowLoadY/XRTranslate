@@ -156,10 +156,18 @@ impl VoiceInbox {
 #[derive(Default)]
 pub(crate) struct VoiceHost {
     controller: VoiceController,
+    actions: VecDeque<crate::voice_interaction::VoiceAction>,
     pub inbox: VoiceInbox,
     pub microphone_sync_active: Arc<AtomicBool>,
     ask: Option<(u64, ask::Reply)>,
     publication: Option<(u64, Receiver<Result<(), String>>)>,
+}
+impl VoiceHost {
+    pub fn action(&mut self, action: crate::voice_interaction::VoiceAction) {
+        if self.actions.len() < 16 {
+            self.actions.push_back(action);
+        }
+    }
 }
 impl XRTranslateApp {
     pub(crate) fn refresh_microphone_sync(&self) {
@@ -233,14 +241,27 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn poll_voice_interaction(&mut self, ctx: &egui::Context) {
-        let settings = self.vr_overlay_plugin.draft();
-        let requested = !self.first_run
-            && self.plugin_enabled(PluginId::VR_OVERLAY)
-            && settings.enabled
-            && settings.interaction_enabled;
-        let review = requested && settings.review_before_send;
-        let runtime = self.vr_overlay_plugin.manager().status();
-        let active = requested && runtime.steamvr_connected && runtime.interaction_available;
+        let mode = self
+            .plugin_host
+            .states()
+            .filter_map(|state| {
+                serde_json::from_value::<xrtranslate_client_core::companion::VoiceMode>(
+                    state["voice"].clone(),
+                )
+                .ok()
+            })
+            .fold(
+                xrtranslate_client_core::companion::VoiceMode::default(),
+                |mut all, mode| {
+                    all.requested |= mode.requested;
+                    all.active |= mode.active;
+                    all.review |= mode.review;
+                    all
+                },
+            );
+        let requested = !self.first_run && mode.requested;
+        let active = requested && mode.active;
+        let review = requested && mode.review;
         self.osc_plugin.set_microphone_review(review);
         self.voice_interaction
             .controller
@@ -250,7 +271,7 @@ impl XRTranslateApp {
             .controller
             .set_enabled(active, review);
         self.voice_effects(effects, ctx);
-        for action in self.vr_overlay_plugin.manager().take_voice_actions() {
+        for action in std::mem::take(&mut self.voice_interaction.actions) {
             if !active {
                 continue;
             }
@@ -324,9 +345,8 @@ impl XRTranslateApp {
                 snapshot.status = "Enable VRChat OSC".into();
             }
         }
-        self.vr_overlay_plugin
-            .manager()
-            .set_voice_snapshot(snapshot);
+        self.plugin_host
+            .set_context("voice.state", serde_json::json!(snapshot));
         if requested {
             ctx.request_repaint_after(Duration::from_millis(20));
         }

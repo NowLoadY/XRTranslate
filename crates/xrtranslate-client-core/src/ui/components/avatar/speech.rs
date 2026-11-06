@@ -29,7 +29,7 @@ pub struct Speech {
 
 impl Speech {
     /// Reuse dialogue timing on another surface without its desktop position.
-    pub(crate) fn on_surface(&self, previous: &Self) -> Self {
+    pub fn on_surface(&self, previous: &Self) -> Self {
         Self {
             position: previous.position,
             direction: previous.direction,
@@ -61,7 +61,7 @@ impl Speech {
     }
 
     /// Optional interaction owned by the caller; decorative speech stays passive.
-    pub(crate) fn dismiss_on_click(&mut self, ctx: &egui::Context, id: egui::Id, now: f64) {
+    pub fn dismiss_on_click(&mut self, ctx: &egui::Context, id: egui::Id, now: f64) {
         if self.finished(now) {
             return;
         }
@@ -170,7 +170,7 @@ impl Speech {
         self.paint_avoiding(painter, bounds, anchor, radius, now, dt, &[], true)
     }
 
-    pub(crate) fn paint_avoiding(
+    pub fn paint_avoiding(
         &mut self,
         painter: &Painter,
         bounds: Rect,
@@ -305,7 +305,7 @@ impl Speech {
     }
 
     /// Visible pixels, including the tail and soft shadow, for native surfaces.
-    pub(crate) fn bounds(&self) -> Option<Rect> {
+    pub fn bounds(&self) -> Option<Rect> {
         self.position
             .filter(|_| self.opacity >= 0.005)
             .map(|center| Rect::from_center_size(center, self.size).expand(17.0))
@@ -313,7 +313,7 @@ impl Speech {
 }
 
 /// Place interactive content using the same space/occlusion policy as speech.
-pub(crate) fn popup_rect(
+pub fn popup_rect(
     bounds: Rect,
     anchor: Pos2,
     radius: f32,

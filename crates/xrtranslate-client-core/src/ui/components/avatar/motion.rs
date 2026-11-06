@@ -77,7 +77,7 @@ impl Pose {
         ))
     }
 
-    pub(crate) fn idle_at(clock: f64, expression: Expression) -> Self {
+    pub fn idle_at(clock: f64, expression: Expression) -> Self {
         Self {
             blink: blink_at(clock).0,
             joy: f32::from(expression == Expression::Happy),
@@ -116,7 +116,7 @@ impl Pose {
 
 /// Owned by the companion, not by its desktop/VR renderers. Cards use the same rig.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Motion {
+pub struct Motion {
     pose: Pose,
     gaze: Gaze,
     previous_clock: Option<f64>,
@@ -128,7 +128,7 @@ pub(crate) struct Motion {
 
 impl Motion {
     /// Keep authored desktop placement out of another surface's facial motion.
-    pub(crate) fn on_surface(&self, pose: Pose) -> Self {
+    pub fn on_surface(&self, pose: Pose) -> Self {
         Self {
             pose,
             gaze: Gaze::default(),
@@ -136,12 +136,12 @@ impl Motion {
         }
     }
 
-    pub(crate) fn sample_at(&self, clock: f64, speech: f32) -> Pose {
+    pub fn sample_at(&self, clock: f64, speech: f32) -> Pose {
         self.clone()
             .advance(clock, self.expression, self.gaze, speech)
     }
 
-    pub(crate) fn interact(
+    pub fn interact(
         &mut self,
         clock: f64,
         hovered: bool,
@@ -157,7 +157,7 @@ impl Motion {
         }
     }
 
-    pub(crate) fn repaint_after(&self, clock: f64) -> Duration {
+    pub fn repaint_after(&self, clock: f64) -> Duration {
         Duration::from_secs_f64(if self.moving {
             0.016
         } else {
@@ -165,7 +165,7 @@ impl Motion {
         })
     }
 
-    pub(crate) fn advance(
+    pub fn advance(
         &mut self,
         clock: f64,
         expression: Expression,

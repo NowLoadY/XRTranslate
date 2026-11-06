@@ -72,7 +72,7 @@ impl Feedback {
                 voice_ready: app.tts_center.status.ready,
                 working,
                 started,
-                greeting: app.vr_overlay_plugin.manager().status().avatar_greeting,
+                greeting: super::surface_status(app).greeting,
                 failed: app.last_error.is_some() || app.tts_center.error.is_some(),
             },
             now,

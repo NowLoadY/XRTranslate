@@ -23,7 +23,7 @@ impl HostOutputSubscriber for OscHandle {
                 stream_id,
                 is_typing,
                 entries,
-            } => self.set_previews(stream_id, is_typing, entries),
+            } => self.set_previews(stream_id, is_typing, &entries),
             HostOutputEvent::CommittedTranslation { .. } => {}
             HostOutputEvent::StreamCancelled(stream_id) => self.cancel_stream(stream_id),
             HostOutputEvent::Caption {
@@ -40,10 +40,10 @@ impl HostOutputSubscriber for OscHandle {
                 stream_id,
                 audio_source,
                 is_typing,
-                if asr_only { "" } else { source },
-                translated,
-                additional_translations,
-                speaker,
+                if asr_only { "" } else { &source },
+                &translated,
+                &additional_translations,
+                &speaker,
                 matches!(update, CaptionUpdate::Replace),
             ),
             HostOutputEvent::StreamEnded(stream_id) => self.end_stream_for(stream_id),

@@ -11,6 +11,7 @@ plugins' private implementation. Put built plugin directories under the app's
 | `media` | Linux, Windows | Media projects, subtitle editing/optimization, dubbing and export |
 | `meeting` | Linux, Windows | Meeting records, recording navigation and transcript processing |
 | `vocabulary` | Linux, Windows | Wordbook pages and example work using the shared bookmark store |
+| `vr-overlay` | Windows (page also builds on Linux) | SteamVR subtitles, companion rendering and spatial voice controls |
 | `lyrics` | Linux, Windows | Music observation, lyric cache, title and synchronized text |
 | `bigwalk` | Linux, Windows | Translation/direct text delivery through the game bridge |
 | `auto-input` | Windows | User-enabled insertion into an already focused text field |

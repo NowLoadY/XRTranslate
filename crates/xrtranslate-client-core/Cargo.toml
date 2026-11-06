@@ -8,6 +8,8 @@ license.workspace = true
 mpv = ["dep:libmpv-sys", "dep:windows-gpu"]
 
 [dependencies]
+futures = "0.3.33"
+glam = { version = "0.33.10", default-features = false, features = ["std"] }
 cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
 dom_query = "0.28.0"

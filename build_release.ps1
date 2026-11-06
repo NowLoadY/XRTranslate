@@ -143,6 +143,7 @@ if (-not $ValidateOnly) {
         '--package', 'xrt-media',
         '--package', 'xrt-meeting',
         '--package', 'xrt-vocabulary',
+        '--package', 'xrt-vr-overlay',
         '--package', 'xrt-lyrics',
         '--package', 'xrt-bigwalk',
         '--package', 'xrt-auto-input',
@@ -336,7 +337,7 @@ $packageArguments = @(
     '--vc-runtime-dir', $VcRuntimeDirectory,
     '--output', $Output
 )
-foreach ($plugin in @('agent', 'media', 'meeting', 'vocabulary', 'lyrics', 'bigwalk', 'auto-input')) {
+foreach ($plugin in @('agent', 'media', 'meeting', 'vocabulary', 'vr-overlay', 'lyrics', 'bigwalk', 'auto-input')) {
     $directory = Join-Path $runtimeAssetCache "plugins\$plugin"
     if (-not $ValidateOnly) {
         & (Join-Path $projectRoot 'target\release\xrt-plugin.exe') stage (Join-Path $projectRoot "plugin-src\$plugin") (Join-Path $projectRoot "target\release\xrt-$plugin.exe") $directory --replace

@@ -685,29 +685,3 @@ fn spatial_preview(
         egui::Stroke::new(2.0, theme::primary()),
     );
 }
-
-pub fn render_settings_contribution(
-    settings: &mut VrOverlaySettings,
-    ui: &mut egui::Ui,
-    language: crate::i18n::UiLanguage,
-) -> bool {
-    let before = settings.clone();
-    settings.normalize();
-    ui.horizontal_wrapped(|ui| {
-        ui.label(crate::i18n::tr(language, "Max Lines:"));
-        for count in 1..=5 {
-            components::selectable_value(ui, &mut settings.max_items, count, count.to_string());
-        }
-        crate::ui::components::checkbox(
-            ui,
-            &mut settings.bilingual,
-            crate::i18n::tr(language, "Bilingual"),
-        );
-        crate::ui::components::checkbox(
-            ui,
-            &mut settings.show_speaker,
-            crate::i18n::tr(language, "Speaker numbers"),
-        );
-    });
-    *settings != before
-}

@@ -1,4 +1,4 @@
-//! Built-in SteamVR In-Game Overlay plugin for XRTranslate.
+//! SteamVR overlay runtime and page.
 //!
 //! Provides private, low-latency, HMD-locked bilingual subtitles rendered
 //! directly inside VR using the official SteamVR (OpenVR) Compositor Overlay API.
@@ -32,7 +32,7 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 stream_id,
                 is_typing,
                 entries,
-            } => self.set_previews(stream_id, is_typing, entries),
+            } => self.set_previews(stream_id, is_typing, &entries),
             HostOutputEvent::CommittedTranslation { .. } => {}
             HostOutputEvent::StreamCancelled(stream_id) => self.cancel_stream(stream_id),
             HostOutputEvent::Caption {
@@ -50,10 +50,10 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 stream_id,
                 audio_source,
                 is_typing,
-                if asr_only { "" } else { source },
-                translated,
-                additional_translations,
-                speaker,
+                if asr_only { "" } else { &source },
+                &translated,
+                &additional_translations,
+                &speaker,
             ),
             HostOutputEvent::Caption {
                 stream_id,
@@ -70,10 +70,10 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 stream_id,
                 audio_source,
                 is_typing,
-                if asr_only { "" } else { source },
-                translated,
-                additional_translations,
-                speaker,
+                if asr_only { "" } else { &source },
+                &translated,
+                &additional_translations,
+                &speaker,
                 matches!(update, CaptionUpdate::Replace),
             ),
             HostOutputEvent::StreamEnded(stream_id) => self.end_stream(stream_id),
@@ -86,22 +86,13 @@ impl HostOutputSubscriber for VrOverlayHandle {
 pub struct VrOverlayPlugin {
     manager: VrOverlayManager,
     draft: VrOverlaySettings,
-    host_enabled: bool,
 }
 
 impl VrOverlayPlugin {
-    pub fn new(mut draft: VrOverlaySettings, host_enabled: bool, input_directory: PathBuf) -> Self {
+    pub fn new(mut draft: VrOverlaySettings, input_directory: PathBuf) -> Self {
         draft.normalize();
-        let mut effective = draft.clone();
-        if !host_enabled {
-            effective.enabled = false;
-        }
-        let manager = VrOverlayManager::new(effective, input_directory);
-        Self {
-            manager,
-            draft,
-            host_enabled,
-        }
+        let manager = VrOverlayManager::new(draft.clone(), input_directory);
+        Self { manager, draft }
     }
 
     pub fn manager(&self) -> &VrOverlayManager {
@@ -120,20 +111,9 @@ impl VrOverlayPlugin {
         &mut self.draft
     }
 
-    pub fn set_host_enabled(&mut self, enabled: bool) {
-        if self.host_enabled != enabled {
-            self.host_enabled = enabled;
-            self.sync_settings();
-        }
-    }
-
     pub fn sync_settings(&mut self) {
         self.draft.normalize();
-        let mut effective = self.draft.clone();
-        if !self.host_enabled {
-            effective.enabled = false;
-        }
-        self.manager.update_settings(effective);
+        self.manager.update_settings(self.draft.clone());
     }
 
     pub fn connect(&self) {

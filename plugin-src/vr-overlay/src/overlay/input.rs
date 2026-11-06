@@ -90,19 +90,19 @@ impl Input {
         for (name, body) in [
             (
                 "actions.json",
-                include_str!("../../../resources/plugins/vr_overlay/input/actions.json"),
+                include_str!("../../assets/input/actions.json"),
             ),
             (
                 "vive.json",
-                include_str!("../../../resources/plugins/vr_overlay/input/vive.json"),
+                include_str!("../../assets/input/vive.json"),
             ),
             (
                 "touch.json",
-                include_str!("../../../resources/plugins/vr_overlay/input/touch.json"),
+                include_str!("../../assets/input/touch.json"),
             ),
             (
                 "index.json",
-                include_str!("../../../resources/plugins/vr_overlay/input/index.json"),
+                include_str!("../../assets/input/index.json"),
             ),
         ] {
             let path = directory.join(name);

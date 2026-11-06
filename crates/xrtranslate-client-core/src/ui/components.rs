@@ -1,3 +1,4 @@
+pub mod avatar;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 

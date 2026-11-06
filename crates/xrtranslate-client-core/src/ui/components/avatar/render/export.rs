@@ -5,7 +5,7 @@ use eframe::icon_data::IconDataExt;
 use glam::{Mat4, Vec3};
 use std::{error::Error, path::Path, time::Duration};
 
-pub(crate) fn render_views(directory: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub fn render_views(directory: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
     futures::executor::block_on(render(directory))
 }
 

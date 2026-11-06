@@ -496,11 +496,11 @@ mod tests {
             stream_id: stream,
             audio_source: crate::client_settings::CaptureSource::Microphone,
             is_typing: false,
-            source: "Hello",
-            translated: "Bonjour",
-            additional_translations: &[],
+            source: ("Hello").into(),
+            translated: ("Bonjour").into(),
+            additional_translations: (&[][..]).into(),
             asr_only: false,
-            speaker: "",
+            speaker: ("").into(),
             update: CaptionUpdate::Append,
         };
         output.on_host_output(caption(1));

@@ -1,7 +1,6 @@
 pub use xrtranslate_client_core::ui::components::*;
 mod account_capsule;
 pub(crate) use account_capsule::account_capsule;
-pub mod avatar;
 mod showcase;
 use eframe::egui::{self, Color32};
 pub(crate) use showcase::{ShowcaseSlide, showcase};

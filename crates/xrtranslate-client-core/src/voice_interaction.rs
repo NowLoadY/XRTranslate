@@ -3,8 +3,8 @@ mod prompt;
 
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VoiceAction {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VoiceAction {
     Send,
     Revise,
 }
@@ -39,8 +39,8 @@ mod tests {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct VoiceSnapshot {
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VoiceSnapshot {
     pub enabled: bool,
     pub review_enabled: bool,
     /// Filled by the host from actual microphone capture state.
@@ -56,7 +56,7 @@ pub(crate) struct VoiceSnapshot {
 }
 
 #[derive(Debug)]
-pub(crate) enum VoiceEffect {
+pub enum VoiceEffect {
     Ask { operation: u64, prompt: String },
     Publish { operation: u64, text: String },
 }
@@ -70,7 +70,7 @@ struct Slot {
 }
 
 #[derive(Default)]
-pub(crate) struct VoiceController {
+pub struct VoiceController {
     enabled: bool,
     review_enabled: bool,
     edit_available: bool,

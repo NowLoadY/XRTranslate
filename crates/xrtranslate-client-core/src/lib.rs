@@ -4,6 +4,7 @@ pub mod android;
 pub mod audio_playback;
 pub mod audio_processing;
 pub mod bookmarks;
+pub mod companion;
 pub mod export;
 pub mod feature_access;
 pub mod file_dialog;
@@ -17,6 +18,7 @@ pub mod session_coordinator;
 pub mod streaming;
 pub mod ui;
 pub mod usage_guidelines;
+pub mod voice_interaction;
 use i18n::UiLanguage;
 use unicode_segmentation::UnicodeSegmentation;
 pub fn language_label(ui_language: UiLanguage, code: &str) -> &'static str {

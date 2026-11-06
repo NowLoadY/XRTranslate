@@ -12,7 +12,6 @@ pub(crate) mod game_plugins;
 pub mod ocr;
 pub mod osc;
 pub(crate) mod text_output;
-pub mod vr_overlay;
 
 /// Composition only: each plugin owns its commands and UI-shared handlers.
 /// Register ToolProvider implementations here; the host and Agent need no changes.
@@ -162,18 +161,6 @@ pub struct PluginDescriptor {
 }
 
 const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
-    PluginDescriptor {
-        id: PluginId::VR_OVERLAY,
-        title_key: "SteamVR Overlay",
-        description_key: "Display private real-time bilingual subtitles in SteamVR (HMD-locked HUD).",
-        navigation_order: Some(180),
-        icon: PluginIcon {
-            uri: "bytes://plugins/vr_overlay/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/vr_overlay/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        default_enabled: !cfg!(target_os = "android"),
-    },
     PluginDescriptor {
         id: PluginId::OSC,
         title_key: "VRChat OSC",

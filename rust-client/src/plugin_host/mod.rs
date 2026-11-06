@@ -26,6 +26,10 @@ use xrtranslate_plugin::{Environment, Manifest, Message, host::Process};
 pub(crate) struct Output(Arc<Mutex<VecDeque<Message>>>);
 impl HostOutputSubscriber for Output {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
+        let output = Message::Event {
+            name: "translation.output".into(),
+            value: json!(event),
+        };
         let message = match event {
             HostOutputEvent::CommittedTranslation {
                 stream_id,
@@ -38,26 +42,28 @@ impl HostOutputSubscriber for Output {
                 is_typing,
                 additional_translations,
                 ..
-            } => Message::Event {
+            } => Some(Message::Event {
                 name: "translation.committed".into(),
                 value: json!({"stream":stream_id,"turn":turn_id,"segment":segment_index,"source":source,"translation":translated,"audio_source":audio_source,"speaker":speaker,"is_typing":is_typing,"additional":additional_translations.iter().map(|item|item.translated_text.as_str()).collect::<Vec<_>>()}),
-            },
-            HostOutputEvent::Clear => Message::Event {
+            }),
+            HostOutputEvent::Clear => Some(Message::Event {
                 name: "translation.clear".into(),
                 value: Value::Null,
-            },
-            HostOutputEvent::StreamCancelled(id) => Message::Event {
+            }),
+            HostOutputEvent::StreamCancelled(id) => Some(Message::Event {
                 name: "translation.cancelled".into(),
                 value: json!({"stream":id}),
-            },
-            _ => return,
+            }),
+            _ => None,
         };
         let mut queue = self.0.lock().unwrap();
-        if queue.len() == 64 {
-            queue.pop_front();
-            log::warn!("Plugin output queue is full; oldest event discarded");
+        for message in std::iter::once(output).chain(message) {
+            if queue.len() == 128 {
+                queue.pop_front();
+                log::warn!("Plugin output queue is full; oldest event discarded");
+            }
+            queue.push_back(message);
         }
-        queue.push_back(message);
     }
 }
 
@@ -319,6 +325,12 @@ impl Host {
         self.installed
             .get(id)
             .map_or(&Value::Null, |entry| &entry.state)
+    }
+    pub fn states(&self) -> impl Iterator<Item = &Value> {
+        self.installed
+            .values()
+            .filter(|entry| entry.process.is_some())
+            .map(|entry| &entry.state)
     }
     pub fn invoke(&mut self, call: ui_director::ToolCall) -> Result<(), String> {
         let (plugin, entry) = self

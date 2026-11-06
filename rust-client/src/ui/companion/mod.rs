@@ -408,30 +408,17 @@ pub(crate) fn process_commands(app: &mut crate::XRTranslateApp) {
 
 /// Voice and UI actions share the same application-level controls and replies.
 pub(crate) fn execute_command(app: &mut crate::XRTranslateApp, command: Command) {
-    match command {
-        Command::HideSubtitles | Command::ShowSubtitles => {
-            app.vr_overlay_plugin.draft_mut().captions_enabled = command == Command::ShowSubtitles;
-            app.vr_overlay_plugin.sync_settings();
-            app.save_settings();
-        }
-        Command::ComeHere | Command::ReturnHome => {
-            let manager = app.vr_overlay_plugin.manager();
-            if !manager.status().avatar_present {
-                return;
-            }
-            if command == Command::ComeHere {
-                manager.visit_avatar();
-            } else {
-                manager.return_avatar();
-            }
-        }
+    if matches!(command, Command::ComeHere | Command::ReturnHome) && !surface_status(app).present {
+        return;
     }
+    app.plugin_host
+        .publish("companion.command", serde_json::json!(command));
     app.companion_inbox.acknowledge(command);
 }
 
 pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout: Layout) {
-    let vr = app.vr_overlay_plugin.manager().status();
-    if desktop_active(app) || vr.avatar_present {
+    let vr = surface_status(app);
+    if desktop_active(app) || vr.present {
         tick_background(ctx, app);
         return;
     }
@@ -520,7 +507,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     if hidden {
         state.composer.close(ctx);
     }
-    let vr_active = vr.avatar_available;
+    let vr_active = vr.available;
     let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
     let paused = !interactive || pressed || state.composer.open;
     let visual_dt = (wall - state.last_wall).clamp(0.0, 0.05) as f32;
@@ -788,16 +775,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     // and authored entrance are local placement, not the spatial avatar's pose.
     pose.gaze = Gaze::default();
     pose.roll = 0.0;
-    app.vr_overlay_plugin
-        .manager()
-        .present_companion(Presentation {
+    present(
+        app,
+        Presentation {
             appearance: app.avatar_appearance.clone(),
             pose,
             speech: state.speech.clone(),
             clock: state.clock,
             visible: vr_active,
             motion: Some(state.motion.on_surface(pose)),
-        });
+        },
+    );
     if vr_active {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
@@ -808,21 +796,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
 /// Guide/mailbox alive using a monotonic clock rather than frozen egui input time.
 pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateApp) {
     let desktop = desktop_active(app);
-    let vr = app.vr_overlay_plugin.manager().status();
+    let vr = surface_status(app);
     let scene = dialogue::Context::read(app, None);
     let mut state = ctx
         .data(|data| data.get_temp::<Guide>(state_id()))
         .unwrap_or_else(|| Guide::new(0.0, app.ui_language, Pos2::ZERO, &scene, false));
-    if !desktop && !vr.avatar_available {
+    if !desktop && !vr.available {
         state.background_tick = None;
-        app.vr_overlay_plugin
-            .manager()
-            .present_companion(Presentation::default());
+        present(app, Presentation::default());
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
     }
     state.advance_background(std::time::Instant::now());
-    if vr.avatar_available {
+    if vr.available {
         // Desktop navigation and modal focus must not interrupt spatial speech.
         state.pending = None;
     } else {
@@ -841,7 +827,7 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
     state.read_mail(&mut app.companion_inbox);
     let expression = state
         .feedback
-        .update(app, state.clock, vr.avatar_attention, false)
+        .update(app, state.clock, vr.attention, false)
         .unwrap_or(Expression::Calm);
     let pose = state.pose(ctx, expression, Gaze::default());
     // Background logic skips Pose's foreground repaint request. Keep gestures,
@@ -864,7 +850,7 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
         motion: Some(state.motion.clone()),
     };
     if desktop && let Ok(mut overlay) = app.overlay_manager.lock() {
-        overlay.present_companion(if vr.avatar_present {
+        overlay.present_companion(if vr.present {
             // A constant hidden snapshot lets the existing IPC writer sleep
             // instead of waking the desktop window for every VR face update.
             Presentation::default()
@@ -872,9 +858,7 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
             presentation.clone()
         });
     }
-    app.vr_overlay_plugin
-        .manager()
-        .present_companion(presentation);
+    present(app, presentation);
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
     ctx.request_repaint_after(repaint_after);
 }
@@ -897,4 +881,28 @@ fn resting_radius(screen: Rect) -> f32 {
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+fn present(app: &crate::XRTranslateApp, presentation: Presentation) {
+    app.plugin_host
+        .publish("companion.presentation", serde_json::json!(presentation));
+}
+pub(super) fn surface_status(
+    app: &crate::XRTranslateApp,
+) -> xrtranslate_client_core::companion::SurfaceStatus {
+    app.plugin_host
+        .states()
+        .filter_map(|state| {
+            serde_json::from_value::<xrtranslate_client_core::companion::SurfaceStatus>(
+                state["companion"].clone(),
+            )
+            .ok()
+        })
+        .fold(Default::default(), |mut all, state| {
+            all.available |= state.available;
+            all.present |= state.present;
+            all.attention |= state.attention;
+            all.greeting |= state.greeting;
+            all
+        })
 }

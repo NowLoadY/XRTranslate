@@ -4,7 +4,7 @@ Optional plugins are native child processes discovered under the application’s
 `plugins/` directory. Each directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
 while running and checks only the declared minimum host version. Motion, Media,
-Meeting, Agent, Vocabulary, Lyrics, Big Walk and automatic input use this boundary.
+Meeting, Agent, Vocabulary, SteamVR, Lyrics, Big Walk and automatic input use this boundary.
 Their source is absent from the desktop client's dependency graph;
 removal stops their workers and removes their page and tools.
 
@@ -21,7 +21,7 @@ Motion source is maintained in a separate private repository in the ignored
 Other independent plugin source lives under `plugin-src/`. These plugins need the
 host; independence does not require a second application or UI implementation.
 
-OCR and avatar/OSC/VR output still have compiled host bindings. The static feature
+OCR and avatar/OSC output still have compiled host bindings. The static feature
 registry remains separate from the installed-plugin catalogue until those
 resource and connection lifecycles are migrated.
 
@@ -38,6 +38,12 @@ SQLite database, including committed WAL content. Their records then live under
 store, so words saved from translation history and the plugin have one source.
 The Agent retains its conversation while the plugin remains installed and enabled;
 configuration refreshes do not reset it.
+
+SteamVR owns its original overlay worker, settings and page. Shared companion
+geometry and animation live in the UI SDK; desktop and plugin surfaces sample
+the same presentation. Generic surface state and voice-input events replace
+direct access to the SteamVR controller. Removing the plugin clears that state
+and ends its renderer without stopping core translation.
 
 ## Ownership and dependencies
 
@@ -189,7 +195,7 @@ affecting unrelated tasks.
 | Native `plugin-src/meeting` | Meeting state, recording navigation, and persistence; consumes its normalized session results |
 | Native `plugin-src/media` | Media tasks, playback, subtitles, dubbing and export; uses shared import and translation |
 | Native `plugin-src/agent` | Persistent conversation, tool execution, context compression and progress |
-| `plugins::vr_overlay` | SteamVR presentation and runtime; consumes shared host output |
+| Native `plugin-src/vr-overlay` | SteamVR presentation and runtime; consumes shared host output |
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | Native `plugin-src/auto-input` | Automatic text output; consumes committed results through a platform input capability |
 

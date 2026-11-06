@@ -4,9 +4,9 @@ use super::{CallbackResources, CallbackTrait, Draw, Renderer, ScreenDescriptor, 
 use glam::Mat4;
 use std::time::{Duration, Instant};
 
-pub(crate) const EYE_SIZE: u32 = 512;
+pub const EYE_SIZE: u32 = 512;
 
-pub(crate) struct StereoRenderer {
+pub struct StereoRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub texture: wgpu::Texture,
@@ -92,7 +92,7 @@ impl StereoRenderer {
 
     /// Shared mesh path for small tracked props. The caller supplies all transforms
     /// in the same coordinates as the two cameras, including their physical scale.
-    pub(crate) fn render_model(
+    pub fn render_model(
         &mut self,
         model: Model,
         cameras: [Mat4; 2],

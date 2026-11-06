@@ -10609,6 +10609,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-vr-overlay"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "futures",
+ "glam 0.33.10",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ui-director",
+ "windows 0.60.0",
+ "xrtranslate-client-core",
+ "xrtranslate-plugin",
+ "xrtranslate-protocol",
+]
+
+[[package]]
 name = "xrtranslate-account-login"
 version = "0.4.0"
 dependencies = [
@@ -10678,6 +10700,8 @@ dependencies = [
  "dom_query",
  "eframe",
  "egui_extras",
+ "futures",
+ "glam 0.33.10",
  "image",
  "jni 0.21.1",
  "libloading 0.8.9",

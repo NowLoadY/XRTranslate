@@ -74,7 +74,7 @@ mod translation_service;
 mod ui;
 pub use xrtranslate_client_core::usage_guidelines;
 pub mod version;
-mod voice_interaction;
+use xrtranslate_client_core::voice_interaction;
 mod voice_interaction_host;
 mod voicemeeter;
 mod window_backdrop;
@@ -104,7 +104,6 @@ use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
 use plugins::osc::{OscGame, OscPageContext, OscPlugin, OscUiAction, transport::TransportOwner};
-use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
 pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
@@ -668,7 +667,6 @@ struct XRTranslateApp {
     osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
     text_output_plugin: plugins::text_output::TextOutputPlugin,
-    vr_overlay_plugin: VrOverlayPlugin,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
@@ -851,7 +849,7 @@ impl SharedSessionState {
 
 fn publish_host_output(subscribers: &[Box<dyn HostOutputSubscriber>], event: HostOutputEvent<'_>) {
     for subscriber in subscribers {
-        subscriber.on_host_output(event);
+        subscriber.on_host_output(event.clone());
     }
 }
 
@@ -877,14 +875,14 @@ fn publish_committed_translations(
                     subscribers,
                     HostOutputEvent::CommittedTranslation {
                         stream_id: segment.stream_id,
-                        turn_id: &segment.turn_id,
+                        turn_id: (&segment.turn_id).into(),
                         segment_index: segment.segment_index,
                         audio_source: segment.audio_source,
                         is_typing,
-                        source: &segment.source,
-                        translated,
-                        additional_translations: &segment.additional_translations,
-                        speaker: &segment.speaker_id,
+                        source: (&segment.source).into(),
+                        translated: translated.into(),
+                        additional_translations: (&segment.additional_translations[..]).into(),
+                        speaker: (&segment.speaker_id).into(),
                         asr_only: segment.asr_only,
                     },
                 );
@@ -975,11 +973,6 @@ impl Default for XRTranslateApp {
             None,
         );
         let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
-        let vr_overlay_plugin = VrOverlayPlugin::new(
-            settings.vr_overlay_settings.clone(),
-            settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
-            backend_manager.project_root().join("runtime/steamvr-input"),
-        );
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
         let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
             Ok(remote) => remote,
@@ -1067,7 +1060,6 @@ impl Default for XRTranslateApp {
             Box::new(osc_plugin.publisher()),
             Box::new(chilloutvr_osc_plugin.publisher()),
             Box::new(avatar_plugin.output.clone()),
-            Box::new(vr_overlay_plugin.handle()),
         ]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
         let output_subscribers = Arc::clone(&host_output_subscribers);
@@ -1148,7 +1140,7 @@ impl Default for XRTranslateApp {
                             HostOutputEvent::Previews {
                                 stream_id: scoped_stream,
                                 is_typing: scope.is_typing(),
-                                entries: &previews,
+                                entries: (&previews[..]).into(),
                             },
                         );
                     }
@@ -1228,11 +1220,11 @@ impl Default for XRTranslateApp {
                                         stream_id,
                                         audio_source,
                                         is_typing: false,
-                                        source: &text,
-                                        translated: "",
-                                        additional_translations: &[],
+                                        source: (&text).into(),
+                                        translated: ("").into(),
+                                        additional_translations: (&[][..]).into(),
                                         asr_only: scope.asr_only.load(Ordering::Acquire),
-                                        speaker: "",
+                                        speaker: ("").into(),
                                         update: CaptionUpdate::Replace,
                                     },
                                 );
@@ -1552,12 +1544,13 @@ impl Default for XRTranslateApp {
                                                     stream_id,
                                                     audio_source,
                                                     is_typing: scope.is_typing(),
-                                                    source: &entry.source,
-                                                    translated: &entry.translated,
-                                                    additional_translations: &entry
-                                                        .additional_translations,
+                                                    source: (&entry.source).into(),
+                                                    translated: (&entry.translated).into(),
+                                                    additional_translations: (&entry
+                                                        .additional_translations[..])
+                                                        .into(),
                                                     asr_only: entry.asr_only,
-                                                    speaker: &entry.speaker_id,
+                                                    speaker: (&entry.speaker_id).into(),
                                                     update: CaptionUpdate::RollOver,
                                                 },
                                             );
@@ -1571,12 +1564,13 @@ impl Default for XRTranslateApp {
                                                     stream_id,
                                                     audio_source,
                                                     is_typing: scope.is_typing(),
-                                                    source: &entry.source,
-                                                    translated: &entry.translated,
-                                                    additional_translations: &entry
-                                                        .additional_translations,
+                                                    source: (&entry.source).into(),
+                                                    translated: (&entry.translated).into(),
+                                                    additional_translations: (&entry
+                                                        .additional_translations[..])
+                                                        .into(),
                                                     asr_only: entry.asr_only,
-                                                    speaker: &entry.speaker_id,
+                                                    speaker: (&entry.speaker_id).into(),
                                                     update: CaptionUpdate::Replace,
                                                 },
                                             );
@@ -1601,12 +1595,13 @@ impl Default for XRTranslateApp {
                                                 stream_id,
                                                 audio_source,
                                                 is_typing: scope.is_typing(),
-                                                source: &previous.source,
-                                                translated: &previous.translated,
-                                                additional_translations: &previous
-                                                    .additional_translations,
+                                                source: (&previous.source).into(),
+                                                translated: (&previous.translated).into(),
+                                                additional_translations: (&previous
+                                                    .additional_translations[..])
+                                                    .into(),
                                                 asr_only: previous.asr_only,
-                                                speaker: &previous.speaker_id,
+                                                speaker: (&previous.speaker_id).into(),
                                                 update: CaptionUpdate::RollOver,
                                             },
                                         );
@@ -1617,13 +1612,14 @@ impl Default for XRTranslateApp {
                                             stream_id,
                                             audio_source,
                                             is_typing: scope.is_typing(),
-                                            source: &merged.entry.source,
-                                            translated: &merged.entry.translated,
-                                            additional_translations: &merged
+                                            source: (&merged.entry.source).into(),
+                                            translated: (&merged.entry.translated).into(),
+                                            additional_translations: (&merged
                                                 .entry
-                                                .additional_translations,
+                                                .additional_translations[..])
+                                                .into(),
                                             asr_only: merged.entry.asr_only,
-                                            speaker: &merged.entry.speaker_id,
+                                            speaker: (&merged.entry.speaker_id).into(),
                                             update: CaptionUpdate::Replace,
                                         },
                                     );
@@ -1634,13 +1630,14 @@ impl Default for XRTranslateApp {
                                             stream_id,
                                             audio_source,
                                             is_typing: scope.is_typing(),
-                                            source: &merged.entry.source,
-                                            translated: &merged.entry.translated,
-                                            additional_translations: &merged
+                                            source: (&merged.entry.source).into(),
+                                            translated: (&merged.entry.translated).into(),
+                                            additional_translations: (&merged
                                                 .entry
-                                                .additional_translations,
+                                                .additional_translations[..])
+                                                .into(),
                                             asr_only: merged.entry.asr_only,
-                                            speaker: &merged.entry.speaker_id,
+                                            speaker: (&merged.entry.speaker_id).into(),
                                             update: CaptionUpdate::Replace,
                                         },
                                     );
@@ -1652,11 +1649,13 @@ impl Default for XRTranslateApp {
                                         stream_id,
                                         audio_source,
                                         is_typing: scope.is_typing(),
-                                        source: &fragment.source,
-                                        translated: &fragment.translated,
-                                        additional_translations: &fragment.additional_translations,
+                                        source: (&fragment.source).into(),
+                                        translated: (&fragment.translated).into(),
+                                        additional_translations: (&fragment
+                                            .additional_translations[..])
+                                            .into(),
                                         asr_only: fragment.asr_only,
-                                        speaker: &fragment.speaker_id,
+                                        speaker: (&fragment.speaker_id).into(),
                                         update: CaptionUpdate::Append,
                                     },
                                 );
@@ -1854,7 +1853,6 @@ impl Default for XRTranslateApp {
             osc_transport,
             avatar_plugin,
             text_output_plugin,
-            vr_overlay_plugin,
             audio_studio,
             voicemeeter_remote,
             voicemeeter_route: None,
@@ -2804,11 +2802,6 @@ impl XRTranslateApp {
                     self.osc_output_mut(id).deactivate()
                 }
             }
-            PluginId::VR_OVERLAY => {
-                self.vr_overlay_plugin.set_host_enabled(enabled);
-                Ok(())
-            }
-            PluginId::MEETING => Ok(()),
             _ => Ok(()),
         };
         if let Err(error) = lifecycle {
@@ -2824,17 +2817,6 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
-        if id == PluginId::VR_OVERLAY {
-            if plugins::vr_overlay::ui::render_settings_contribution(
-                self.vr_overlay_plugin.draft_mut(),
-                ui,
-                self.ui_language,
-            ) {
-                self.vr_overlay_plugin.sync_settings();
-                self.save_settings();
-            }
-            return;
-        }
         if matches!(id, PluginId::OSC | PluginId::CHILLOUTVR_OSC) {
             let language = self.ui_language;
             let actions = self.osc_output_mut(id).render_settings(ui, language);
@@ -3302,39 +3284,8 @@ impl XRTranslateApp {
             return;
         }
         match id {
-            PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
             _ => self.navigation.open(Page::Translation),
-        }
-    }
-
-    fn render_vr_overlay_plugin_page(&mut self, ui: &mut egui::Ui) {
-        let status = self.vr_overlay_plugin.manager().status();
-        let context = VrOverlayPageContext {
-            language: self.ui_language,
-            status: &status,
-        };
-        let actions =
-            plugins::vr_overlay::ui::render(self.vr_overlay_plugin.draft_mut(), ui, context);
-        for action in actions {
-            match action {
-                VrOverlayUiAction::SettingsChanged => {
-                    self.vr_overlay_plugin.sync_settings();
-                    self.save_settings();
-                }
-                VrOverlayUiAction::ClearSubtitles => {
-                    self.vr_overlay_plugin.handle().clear();
-                }
-                VrOverlayUiAction::ConnectSteamVr => {
-                    self.vr_overlay_plugin.connect();
-                }
-                VrOverlayUiAction::VisitAvatar => {
-                    ui::companion::execute_command(self, ui::companion::Command::ComeHere)
-                }
-                VrOverlayUiAction::DisconnectSteamVr => {
-                    self.vr_overlay_plugin.disconnect();
-                }
-            }
         }
     }
 
@@ -3376,7 +3327,6 @@ impl XRTranslateApp {
             chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
             game_plugins: self.game_plugins,
             avatar_connector: self.avatar_plugin.settings.clone(),
-            vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
             active_page: self.navigation.page,
             sidebar_collapsed: self.navigation.collapsed,
@@ -6087,14 +6037,6 @@ pub fn run() -> eframe::Result<()> {
 
     #[cfg(debug_assertions)]
     {
-        let mut vr_args = std::env::args().skip_while(|arg| arg != "--vr-avatar-render");
-        if vr_args.next().is_some() {
-            let path = vr_args.next().ok_or_else(|| {
-                eframe::Error::AppCreation("--vr-avatar-render requires an output directory".into())
-            })?;
-            return plugins::vr_overlay::render_avatar_preview(std::path::Path::new(&path))
-                .map_err(eframe::Error::AppCreation);
-        }
         let mut render_args = std::env::args().skip_while(|arg| arg != "--avatar-render");
         if render_args.next().is_some() {
             let path = render_args.next().ok_or_else(|| {

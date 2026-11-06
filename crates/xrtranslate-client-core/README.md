@@ -10,6 +10,8 @@ does not depend on `rust-client` or any plugin implementation.
   language selection, import options and normalized results. The host owns device
   capture, model allocation and task scheduling.
 - `services`: the current host capability snapshot and asynchronous inference.
+- `companion` and `voice_interaction`: shared presentation commands, surface
+  status and voice-review state. Output devices keep their own rendering and input.
 - `playback` and `audio_playback`: the existing players. `playback::remote` lets a
   plugin control a host-owned video surface without transferring video pixels.
 - `bookmarks`, `recording`, `export` and `file_dialog`: shared record contracts and
@@ -27,3 +29,10 @@ Host services use the SDK's ordinary call/reply messages: `translation.start`,
 the host rejects operations on another owner's tasks and cancels owned work when
 the plugin is removed. Shared model configuration, downloads and inference remain
 in the host. Plugins do not create another model library or backend pool.
+
+Output plugins can subscribe to `translation.output` for the same normalized
+preview, caption and lifecycle events used by the host. Presentation plugins
+subscribe to `companion.presentation`, `companion.command` and `voice.state`;
+their ordinary `state` event reports `companion::SurfaceStatus` in `companion`
+and `companion::VoiceMode` in `voice`. Input gestures publish `voice.action`.
+The SteamVR plugin demonstrates these contracts without host-side SteamVR logic.

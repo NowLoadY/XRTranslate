@@ -315,6 +315,13 @@ impl crate::XRTranslateApp {
                             .error(message, value["details"].as_str().unwrap_or(""));
                     }
                 }
+                Message::Event { name, value } if name == "voice.action" => {
+                    if self.plugin_host.state(&plugin)["voice"]["active"] == true
+                        && let Ok(action) = serde_json::from_value(value)
+                    {
+                        self.voice_interaction.action(action);
+                    }
+                }
                 Message::Event { name, value } if name == "message" => {
                     if let Some(message) = value.as_str() {
                         self.companion_inbox.post_text(&plugin, message.to_owned());

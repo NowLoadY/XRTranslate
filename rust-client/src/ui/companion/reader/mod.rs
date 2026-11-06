@@ -1,7 +1,5 @@
 //! Bounded observation of normalized dialogue facts, without owning their pipelines.
-mod commands;
-
-pub(crate) use commands::Command;
+pub(crate) use xrtranslate_client_core::companion::Command;
 
 use crate::{
     CaptureSource,

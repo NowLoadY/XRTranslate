@@ -178,11 +178,11 @@ impl HostOutputSubscriber for DisplayOutput {
                     return;
                 }
                 let translated = if asr_only && translated.is_empty() {
-                    source
+                    &source
                 } else {
-                    translated
+                    &translated
                 };
-                let source = if asr_only { "" } else { source };
+                let source = if asr_only { "" } else { &source };
                 state
                     .entries
                     .retain(|entry| entry.stream != stream_id || !entry.preview);
@@ -312,17 +312,20 @@ mod tests {
         let mut settings = Settings::default();
         settings.audio_source_filter.system_audio = false;
         output.configure(&settings, true);
-        let caption = |stream, source, target, asr_only, audio_source| HostOutputEvent::Caption {
-            stream_id: stream,
-            source,
-            translated: target,
-            asr_only,
-            audio_source,
-            additional_translations: &[],
-            speaker: "",
-            is_typing: false,
-            update: CaptionUpdate::Replace,
-        };
+        let caption =
+            |stream, source: &'static str, target: &'static str, asr_only, audio_source| {
+                HostOutputEvent::Caption {
+                    stream_id: stream,
+                    source: source.into(),
+                    translated: (target).into(),
+                    asr_only,
+                    audio_source,
+                    additional_translations: (&[][..]).into(),
+                    speaker: ("").into(),
+                    is_typing: false,
+                    update: CaptionUpdate::Replace,
+                }
+            };
         output.on_host_output(caption(
             1,
             "Hello",
@@ -333,14 +336,14 @@ mod tests {
         assert!(output.0.lock().entries[0].live);
         output.on_host_output(HostOutputEvent::CommittedTranslation {
             stream_id: 1,
-            turn_id: "first",
+            turn_id: ("first").into(),
             segment_index: 1,
             audio_source: CaptureSource::Microphone,
             is_typing: false,
-            source: "Hello",
-            translated: "Bonjour",
-            additional_translations: &[],
-            speaker: "",
+            source: ("Hello").into(),
+            translated: ("Bonjour").into(),
+            additional_translations: (&[][..]).into(),
+            speaker: ("").into(),
             asr_only: false,
         });
         assert!(!output.0.lock().entries[0].live);
@@ -366,19 +369,19 @@ mod tests {
         output.on_host_output(HostOutputEvent::Previews {
             stream_id: 12,
             is_typing: false,
-            entries: &previews,
+            entries: (&previews[..]).into(),
         });
         assert_eq!(output.preview().messages.len(), 2);
         output.on_host_output(HostOutputEvent::Previews {
             stream_id: 12,
             is_typing: false,
-            entries: &[],
+            entries: (&[][..]).into(),
         });
         assert_eq!(output.preview().messages[0].text, "Bonjour");
         output.on_host_output(HostOutputEvent::Previews {
             stream_id: 12,
             is_typing: false,
-            entries: &previews,
+            entries: (&previews[..]).into(),
         });
         output.on_host_output(HostOutputEvent::StreamEnded(12));
         assert_eq!(output.preview().messages.len(), 1);

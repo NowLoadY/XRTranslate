@@ -8,7 +8,6 @@ use glam::{Mat4, Vec3};
 pub enum Socket {
     Hat,
     Scarf,
-    #[expect(dead_code, reason = "Reserved clothing socket for future accessories")]
     Tie,
 }
 

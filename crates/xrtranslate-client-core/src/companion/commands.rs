@@ -1,8 +1,8 @@
 //! Deliberate, complete voice commands; ordinary conversation remains conversation.
 use crate::i18n::UiLanguage;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Command {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Command {
     HideSubtitles,
     ShowSubtitles,
     ComeHere,
@@ -10,7 +10,7 @@ pub(crate) enum Command {
 }
 
 impl Command {
-    pub(crate) fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         let normalized = text
             .trim_end_matches(|c: char| {
                 c.is_whitespace() || matches!(c, '.' | '!' | '?' | '。' | '！' | '？' | '…')
@@ -29,7 +29,7 @@ impl Command {
         .find(|command| command.words().0.contains(&normalized.as_str()))
     }
 
-    pub(crate) fn reply(self, language: UiLanguage) -> &'static str {
+    pub fn reply(self, language: UiLanguage) -> &'static str {
         self.words().1[match language {
             UiLanguage::English => 0,
             UiLanguage::Chinese => 1,

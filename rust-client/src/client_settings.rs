@@ -1,7 +1,6 @@
 use crate::audio::InputDevice;
 use crate::i18n::UiLanguage;
 use crate::plugins::osc::{OscGame, runtime::OscSettings};
-use crate::plugins::vr_overlay::VrOverlaySettings;
 use crate::plugins::{PluginPreferences, PluginRegistry};
 use crate::ui::{Page, theme::UiTheme};
 use serde::{Deserialize, Serialize};
@@ -89,8 +88,6 @@ pub struct ClientSettings {
     pub game_plugins: crate::plugins::game_plugins::Settings,
     #[serde(default)]
     pub avatar_connector: crate::plugins::avatar::connectors::Settings,
-    #[serde(default)]
-    pub vr_overlay_settings: VrOverlaySettings,
     #[serde(default, rename = "plugins", alias = "plugin_preferences")]
     pub plugin_preferences: PluginPreferences,
     #[serde(default)]
@@ -179,7 +176,6 @@ impl Default for ClientSettings {
             chilloutvr_osc_settings: default_chilloutvr_osc_settings(),
             game_plugins: Default::default(),
             avatar_connector: Default::default(),
-            vr_overlay_settings: VrOverlaySettings::default(),
             plugin_preferences: PluginPreferences::default(),
             active_page: Page::default(),
             sidebar_collapsed: false,
@@ -363,7 +359,14 @@ impl ClientSettings {
         let registry = PluginRegistry::builtin();
         registry.initialize_preferences(&mut normalized.plugin_preferences);
         registry.normalize_active_page(&normalized.plugin_preferences, &mut normalized.active_page);
-        let contents = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
+        // Preserve settings owned by independently installed extensions.
+        let mut value: serde_json::Map<String, serde_json::Value> = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let current = serde_json::to_value(&normalized).map_err(|e| e.to_string())?;
+        value.extend(current.as_object().unwrap().clone());
+        let contents = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
         std::fs::write(&path, format!("{contents}\n")).map_err(|e| e.to_string())?;
 
         self.prompt_library.save_to_dir(&directory)?;
