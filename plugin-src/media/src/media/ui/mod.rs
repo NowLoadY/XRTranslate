@@ -1,5 +1,6 @@
 mod create;
 mod detail;
+mod export;
 mod library;
 mod subtitle_edit;
 mod subtitles;
@@ -57,11 +58,17 @@ pub(super) fn render(
         }
     }
 
-    let action = match plugin.controller.route {
-        MediaRoute::Library => library::render_library(&mut plugin.controller, language, ui),
-        MediaRoute::Create => create::render_create(&mut plugin.controller, snapshot, ui),
-        MediaRoute::Detail => detail::render_detail(&mut plugin.controller, snapshot, ui),
-    };
+    let action =
+        ui.add_enabled_ui(plugin.controller.video_export.is_none(), |ui| match plugin
+            .controller
+            .route
+        {
+            MediaRoute::Library => library::render_library(&mut plugin.controller, language, ui),
+            MediaRoute::Create => create::render_create(&mut plugin.controller, snapshot, ui),
+            MediaRoute::Detail => detail::render_detail(&mut plugin.controller, snapshot, ui),
+        })
+        .inner;
+    export::settings(&mut plugin.controller, language, ui.ctx());
     crate::ui::notifications::observe_error(
         ui.ctx(),
         egui::Id::unique("media_task_error"),
@@ -133,9 +140,6 @@ fn export_controls(
     subtitles: &super::subtitles::SubtitleTimeline,
     video_available: bool,
 ) -> bool {
-    if subtitles.count() == 0 {
-        return false;
-    }
     let stem = std::path::Path::new(title)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -144,7 +148,10 @@ fn export_controls(
         ("Export SRT", crate::export::Format::Srt),
         ("Export VTT", crate::export::Format::Vtt),
         ("Export LRC", crate::export::Format::Lrc),
-    ] {
+    ]
+    .into_iter()
+    .filter(|_| subtitles.count() > 0)
+    {
         if components::button(ui, tr(language, label)).clicked() {
             crate::ui::notifications::observe_error(
                 ui.ctx(),
@@ -168,9 +175,7 @@ fn export_controls(
             ui.close();
         }
     }
-    if video_available
-        && components::button(ui, tr(language, "Export video with subtitles")).clicked()
-    {
+    if video_available && components::button(ui, tr(language, "Export video")).clicked() {
         ui.close();
         return true;
     }

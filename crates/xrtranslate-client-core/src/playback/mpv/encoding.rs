@@ -42,15 +42,28 @@ pub fn encode_audio(
         "loadfile",
         input.to_str().ok_or("Invalid speech input path")?,
     ])?;
-    wait_for_encoding(mpv, output, None, cancelled)
+    wait_for_encoding(mpv, output, None, cancelled, None)
+}
+
+pub enum VideoAudio<'a> {
+    Original(Option<i64>),
+    Speech {
+        path: &'a Path,
+        background: Option<&'a Path>,
+    },
+}
+
+pub struct VideoEncoding<'a> {
+    pub subtitles: Option<&'a Path>,
+    pub style: &'a crate::playback::SubtitleStyle,
+    pub audio: VideoAudio<'a>,
 }
 
 /// Uses the installed playback engine's encoder and subtitle renderer.
 pub fn encode_video(
     input: &Path,
     output: &Path,
-    subtitles: &Path,
-    style: &crate::playback::SubtitleStyle,
+    options: VideoEncoding<'_>,
     progress: &AtomicU32,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
@@ -58,7 +71,7 @@ pub fn encode_video(
         return Err("The video playback runtime is required for export".into());
     }
     let mpv = MpvHandle::create()?;
-    let mut style = style.clone();
+    let mut style = options.style.clone();
     style.normalize();
     let font_size = style.size.to_string();
     let color = style.rgb();
@@ -77,7 +90,15 @@ pub fn encode_video(
         ("ao", "lavc"),
         ("hwdec", "no"),
         ("sub-auto", "no"),
-        ("sid", "auto"),
+        (
+            "sid",
+            if options.subtitles.is_some() {
+                "auto"
+            } else {
+                "no"
+            },
+        ),
+        ("audio-file-auto", "no"),
         // Plain text uses the same Unicode wrapping as the playback overlay.
         ("sub-ass-override", "strip"),
         ("sub-vsfilter-bidi-compat", "no"),
@@ -103,18 +124,60 @@ pub fn encode_video(
             return Err(format!("Video export option {name}: {result}"));
         }
     }
-    // Pass a native array so commas and Unicode in paths stay literal.
-    let subtitle_path = std::ffi::CString::new(subtitles.to_str().ok_or("Invalid subtitle path")?)
-        .map_err(|e| e.to_string())?;
-    let mut filename = libmpv_sys::mpv_node {
-        u: libmpv_sys::mpv_node__bindgen_ty_1 {
-            string: subtitle_path.as_ptr() as *mut _,
-        },
-        format: libmpv_sys::mpv_format_MPV_FORMAT_STRING,
-    };
+    if let Some(subtitles) = options.subtitles {
+        set_files(&mpv, c"sub-files", &[subtitles])?;
+    }
+    match &options.audio {
+        VideoAudio::Original(track) => {
+            if let Some(track) = track {
+                mpv.set_option_string("aid", &track.to_string())?;
+            }
+        }
+        VideoAudio::Speech { path, background } => {
+            let mut files = vec![*path];
+            files.extend(*background);
+            for file in &files {
+                if !file.is_file() {
+                    return Err(format!("Audio file is missing: {}", file.display()));
+                }
+            }
+            set_files(&mpv, c"audio-files", &files)?;
+            // Never fall back to the source voices if an external track fails.
+            mpv.set_option_string("aid", "no")?;
+        }
+    }
+    mpv.initialize()?;
+    if matches!(options.audio, VideoAudio::Speech { .. }) {
+        let error = unsafe { libmpv_sys::mpv_hook_add(mpv.handle, 0, c"on_preloaded".as_ptr(), 0) };
+        if error < 0 {
+            return Err(format!("Cannot prepare export audio: {error}"));
+        }
+    }
+    mpv.command(&["loadfile", input.to_str().ok_or("Invalid source path")?])?;
+    wait_for_encoding(mpv, output, Some(progress), cancelled, Some(&options.audio))
+}
+
+// Native arrays preserve commas, Unicode and other punctuation in file paths.
+fn set_files(mpv: &MpvHandle, name: &std::ffi::CStr, paths: &[&Path]) -> Result<(), String> {
+    let strings = paths
+        .iter()
+        .map(|path| {
+            std::ffi::CString::new(path.to_str().ok_or("Invalid media path")?)
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut filenames: Vec<_> = strings
+        .iter()
+        .map(|path| libmpv_sys::mpv_node {
+            u: libmpv_sys::mpv_node__bindgen_ty_1 {
+                string: path.as_ptr() as *mut _,
+            },
+            format: libmpv_sys::mpv_format_MPV_FORMAT_STRING,
+        })
+        .collect();
     let mut list = libmpv_sys::mpv_node_list {
-        num: 1,
-        values: &mut filename,
+        num: filenames.len() as i32,
+        values: filenames.as_mut_ptr(),
         keys: std::ptr::null_mut(),
     };
     let mut files = libmpv_sys::mpv_node {
@@ -124,17 +187,65 @@ pub fn encode_video(
     let error = unsafe {
         libmpv_sys::mpv_set_option(
             mpv.handle,
-            c"sub-files".as_ptr(),
+            name.as_ptr(),
             libmpv_sys::mpv_format_MPV_FORMAT_NODE,
             &mut files as *mut _ as *mut _,
         )
     };
     if error < 0 {
-        return Err(format!("Cannot load export subtitles: {error}"));
+        return Err(format!("Cannot load export files: {error}"));
     }
-    mpv.initialize()?;
-    mpv.command(&["loadfile", input.to_str().ok_or("Invalid source path")?])?;
-    wait_for_encoding(mpv, output, Some(progress), cancelled)
+    Ok(())
+}
+
+fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio<'_>) -> Result<(), String> {
+    let VideoAudio::Speech { path, background } = audio else {
+        return Ok(());
+    };
+    let mut node: libmpv_sys::mpv_node = unsafe { std::mem::zeroed() };
+    let error = unsafe {
+        libmpv_sys::mpv_get_property(
+            mpv.handle,
+            c"track-list".as_ptr(),
+            libmpv_sys::mpv_format_MPV_FORMAT_NODE,
+            &mut node as *mut _ as *mut _,
+        )
+    };
+    if error < 0 {
+        return Err("Cannot read export audio tracks".into());
+    }
+    let tracks = unsafe { super::tracks::read(&node) };
+    unsafe { libmpv_sys::mpv_free_node_contents(&mut node) };
+    let track_id = |path: &Path| -> Result<i64, String> {
+        let path = path.canonicalize().map_err(|e| e.to_string())?;
+        tracks
+            .iter()
+            .find(|track| {
+                track
+                    .external
+                    .as_ref()
+                    .and_then(|file| file.canonicalize().ok())
+                    .as_ref()
+                    == Some(&path)
+            })
+            .map(|track| track.id)
+            .ok_or_else(|| "Could not load the selected export audio".into())
+    };
+    let speech = track_id(path)?;
+    let graph = if let Some(background) = background {
+        let background = track_id(background)?;
+        format!(
+            "[aid{speech}]aformat=channel_layouts=stereo[voice];[aid{background}]aformat=channel_layouts=stereo[bg];[voice][bg]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:level=0:latency=1[ao]"
+        )
+    } else {
+        format!("[aid{speech}]anull[ao]")
+    };
+    mpv.command(&["set", "lavfi-complex", &graph])?;
+    // A moved speech clip must not extend the original video's duration.
+    if let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0) {
+        mpv.command(&["set", "end", &duration.to_string()])?;
+    }
+    Ok(())
 }
 
 fn wait_for_encoding(
@@ -142,12 +253,22 @@ fn wait_for_encoding(
     output: &Path,
     progress: Option<&AtomicU32>,
     cancelled: &AtomicBool,
+    audio: Option<&VideoAudio<'_>>,
 ) -> Result<(), String> {
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Media encoding cancelled".into());
         }
         let event = unsafe { &*libmpv_sys::mpv_wait_event(mpv.handle, 0.1) };
+        if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_HOOK {
+            let hook = unsafe { &*(event.data as *const libmpv_sys::mpv_event_hook) };
+            let result = audio.map_or(Ok(()), |audio| select_export_audio(&mpv, audio));
+            let error = unsafe { libmpv_sys::mpv_hook_continue(mpv.handle, hook.id) };
+            result?;
+            if error < 0 {
+                return Err("Could not start video export".into());
+            }
+        }
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE {
             let end = unsafe { &*(event.data as *const libmpv_sys::mpv_event_end_file) };
             if end.reason == libmpv_sys::mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32
@@ -206,10 +327,13 @@ mod tests {
                     "av://lavfi:color=c=black:s={width}x{height}:r=25:d=1"
                 )),
                 &output,
-                &subtitles,
-                &SubtitleStyle {
-                    size,
-                    ..Default::default()
+                VideoEncoding {
+                    subtitles: Some(&subtitles),
+                    style: &SubtitleStyle {
+                        size,
+                        ..Default::default()
+                    },
+                    audio: VideoAudio::Original(None),
                 },
                 &AtomicU32::new(0),
                 &AtomicBool::new(false),

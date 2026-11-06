@@ -5596,22 +5596,6 @@ impl eframe::App for XRTranslateApp {
 }
 
 #[cfg(windows)]
-fn configure_dll_search_paths() {
-    use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
-    use windows::core::HSTRING;
-    for bin_dir in xrtranslate_client_core::playback::runtime_bin_directories() {
-        if bin_dir.is_dir() {
-            if let Ok(abs) = bin_dir.canonicalize() {
-                let _ = unsafe { SetDllDirectoryW(&HSTRING::from(abs.as_os_str())) };
-            } else {
-                let _ = unsafe { SetDllDirectoryW(&HSTRING::from(bin_dir.as_os_str())) };
-            }
-            return;
-        }
-    }
-}
-
-#[cfg(windows)]
 fn cleanup_runtime_cache() {
     let cache_dir = std::path::Path::new("runtime/cache");
     if let Ok(entries) = std::fs::read_dir(cache_dir) {
@@ -5654,7 +5638,7 @@ pub fn run() -> eframe::Result<()> {
     }
 
     #[cfg(windows)]
-    configure_dll_search_paths();
+    xrtranslate_client_core::playback::configure_dll_search_paths();
 
     #[cfg(windows)]
     cleanup_runtime_cache();

@@ -60,9 +60,9 @@ pub(super) fn render(
                         },
                     ),
                     if playing {
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-pause.svg")
+                        xrtranslate_client_core::ui::icon!("media-pause.svg")
                     } else {
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-play.svg")
+                        xrtranslate_client_core::ui::icon!("media-play.svg")
                     },
                     false,
                     false,

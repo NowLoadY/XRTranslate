@@ -123,7 +123,7 @@ struct Arguments {
     /// Visual Studio x64 release CRT redistributable directory (required for Windows).
     #[arg(long)]
     vc_runtime_dir: Option<PathBuf>,
-    /// Native plugin directories included under plugins/ in the release.
+    /// Native plugin packages; only manifests opting into bundling are included.
     #[arg(long)]
     plugin_directory: Vec<PathBuf>,
     /// Destination release directory. It must not already exist.
@@ -285,15 +285,32 @@ impl ReleasePlan {
         require_regular_file("--seed-database", &arguments.seed_database)?;
         require_regular_file("--license", &arguments.license)?;
         let mut plugin_names = std::collections::HashSet::new();
+        let mut plugin_directories = Vec::new();
         for package in &arguments.plugin_directory {
             require_directory("--plugin-directory", package)?;
-            require_regular_file("plugin.json", &package.join("plugin.json"))?;
+            let manifest_path = package.join("plugin.json");
+            require_regular_file("plugin.json", &manifest_path)?;
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(&manifest_path).map_err(|source| {
+                    PackageError::Io {
+                        context: format!("cannot read plugin manifest {}", manifest_path.display()),
+                        source,
+                    }
+                })?)?;
+            if manifest.get("bundle_with_host") != Some(&Value::Bool(true)) {
+                println!(
+                    "Skipping separately distributed plugin: {}",
+                    package.display()
+                );
+                continue;
+            }
             ensure_directory_is_native("--plugin-directory", package)?;
             if package.file_name().is_none() || !plugin_names.insert(package.file_name()) {
                 return Err(PackageError::InvalidInput(
                     "Plugin directories need unique names".into(),
                 ));
             }
+            plugin_directories.push(package.clone());
         }
         let vc_runtime = windows_vc_runtime(
             &arguments.rust_client_bin,
@@ -350,7 +367,7 @@ impl ReleasePlan {
         );
 
         Ok(Self {
-            plugin_directories: arguments.plugin_directory,
+            plugin_directories,
             rust_client_bin: arguments.rust_client_bin,
             backend_bin: arguments.backend_bin,
             account_login_bin: arguments.account_login_bin,
@@ -805,7 +822,6 @@ fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
         "config.json",
         CORPUS_SEED_PATH,
         "resources/branding/xrtranslate-logo.png",
-        "resources/plugins/vr_overlay/input/actions.json",
         ONNX_LICENSE_RELATIVE_PATH,
         ONNX_NOTICES_RELATIVE_PATH,
     ] {

@@ -1,54 +1,35 @@
 # Media speech tracks
 
-With TTS configured, a media task with complete translated subtitles offers
-**Generate speech track**. It uses the task's target language and the voice
-selected in TTS Center. Generation has progress and cancellation; the completed
-track is selected for playback and can be exported as WAV. The host's live
-speech-playback switch does not control file generation.
+After translating the subtitles, choose **Generate speech track** in the media
+task. The speech uses the task's target language and the voice selected in
+TTS Center. You can follow its progress, cancel it, or continue unfinished work.
+The live speech-playback switch does not need to be enabled.
 
-`tts_session::speech` exposes `POST /tts/synthesize`: a `SpeechRequest` containing
-text, language and an optional voice selection returns mono PCM16 WAV. It reuses
-the backend's prepared speech resources, language checks, voice library and
-model input limits. It neither translates the text nor plays the result. The
-request does not alter the globally selected voice. This endpoint is independent
-of the media plugin. Upstream HTTP errors retain their status. Provider cooldowns
-(`Retry-After` or an API retry hint) are forwarded as a standard `Retry-After`
-header, rounded up to whole seconds.
+The generated speech follows the subtitle timeline. You can listen to it from
+the player's audio-track menu and adjust the speech clips on the timeline.
+If you change the translated text or target language, finish generating the
+updated speech before exporting a dubbed video.
 
-`media::speech` owns the cancellable file job. It snapshots the translated cues
-and voice, requests one cue at a time, resamples to 48 kHz and writes progressively
-to a temporary WAV. Each cue starts at its subtitle timestamp. Speech can use
-the following gap; if it would overlap the next cue, the existing MPV runtime
-accelerates it without changing pitch. The final cue fits within the media's
-remaining duration. No Python or separate FFmpeg executable is used. Builds
-without MPV can generate naturally fitting speech, but report when timing
-adjustment requires the playback runtime.
+## Export a dubbed video
 
-On HTTP 429, the job keeps the temporary WAV and completed cue progress, waits
-for the provider's cooldown, then retries the current cue. Without a cooldown it
-backs off from one minute to five minutes. Waiting has no fixed attempt limit;
-it remains cancellable and the UI shows only **Waiting for service**. No completed
-cue is requested again. Other errors still stop the job with their cause.
+Open **Export → Export video**, then select **Speech track**:
 
-Missing translations, mismatched target languages and invalid timing fail before
-inference. A failed or cancelled job removes its temporary output. Changed
-subtitle input is detected before publishing. Only a completed track replaces
-the saved track; saving failure preserves the previous one. Errors include the
-cue number and time interval in client logs, while backend logs retain synthesis
-failures. Audio content and credentials are not logged by the file job.
+- **Keep background audio** combines the speech with the separated background.
+  Enable vocal separation when recognizing the media to prepare this background
+  track. If it is unavailable, the export settings tell you how to prepare it;
+  you can also export speech alone.
+- **Burn subtitles into video** is optional. It uses the subtitle content, font,
+  size and color configured in the player.
 
-`MediaTask::source_audio` remains the recognition input. `playback_audio` may
-instead select the generated track; this avoids feeding synthesized translation
-back into recognition or changing the source channel settings. Completed files
-belong to `runtime/media-speech`, with references stored in the existing media
-task document. Regeneration and task deletion clean up owned files.
+Dubbed exports replace the original audio with the selected speech and optional
+background. They do not mix the original audio back in. The quality of background
+separation determines whether faint traces of the original voice remain.
+Choose **Original audio** instead if you want a subtitled video with its original
+sound.
 
-The UI uses existing shared buttons and menus, so CLI discovery and operation
-need no additional action protocol. The existing task query includes the saved
-speech track and playback selection.
+The task remembers the export choices. Video export shows progress and supports
+cancellation. The original video is preserved. Local video export requires video
+playback support; install it from the media page if it is not available yet.
 
-The ignored integration check `translated_speech_is_aligned_without_changing_recognition_input`
-uses a local HTTP fixture and the installed MPV runtime. It verifies translated
-request text, voice selection, cue timing, silence, pitch preservation and
-recognition-source isolation, as well as consecutive rate limits, recovery and
-cancelling a long cooldown, without loading AI models.
+To save speech without a video, choose **Export speech track** for a WAV file.
+Subtitles can still be exported separately as SRT, VTT or LRC.

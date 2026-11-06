@@ -1,4 +1,4 @@
-# Native plugin SDK
+# Plugin SDK
 
 A plugin is a directory under the application's `plugins/` folder:
 
@@ -33,11 +33,18 @@ on Windows. Settings has a **Plugin folder** button and enable switches.
 }
 ```
 
-Only `min_host_version` determines host-version compatibility. New optional
-fields may be added without a second compatibility scheme. Require a newer host
+The SDK and application have independent versions. Existing plugin executables
+continue working after compatible application upgrades without being rebuilt;
+their Rust compiler and dependencies do not need to match the host's.
+`min_host_version` determines the minimum host version. New optional fields and
+capabilities preserve existing behavior. Require a newer host
 only when using a capability introduced there. Build one directory per target
 OS/architecture. Optional `requires` lists capability names; missing cooperation
 is reported locally, without installing dependencies or involving other plugins.
+
+Application releases include a plugin only when its manifest explicitly sets
+`"bundle_with_host": true`. The default is separate distribution. This setting
+does not affect installing or running a plugin in development or in a release.
 
 ## Implementation
 
@@ -111,12 +118,23 @@ the process boundary. `icon` and `navigation_order` control page navigation. Opt
 plugin names.
 
 Only one frame is in flight per visible page; queued input is retained. Hidden
-pages receive `ui.visibility=false` and keep their background work. Native GPU
-resources use named paint callbacks or host-owned textures, not copied video
-frames. Texture deltas use losslessly compressed RGBA instead of pixel-by-pixel
-JSON, preserving their colors, resolution and partial updates. Messages are
-bounded at 32 MiB and decoded textures at 128 MiB per frame. Plugin code must
-use the shared renderers for native GPU resources.
+pages receive `ui.visibility=false` and keep their background work. The client
+core's embedded adapter renders directly on the plugin's GPU on Windows. The
+host composites shared surfaces without receiving UI vertices or texture pixels.
+Custom WGPU callbacks run in the plugin renderer. Video continues to use the host
+playback service and appears underneath the page's subtitles and controls.
+
+The optional `d3d12_v1` frame contract is offered before the first draw. Older
+plugins ignore it and retain the drawing adapter; newer plugins use that adapter
+with older hosts or unsupported platforms. No Rust objects or compiler ABI cross
+the process boundary. The drawing adapter retains binary frames, unchanged-frame
+reuse and compressed texture deltas. Messages are bounded at 32 MiB and decoded
+textures at 128 MiB per frame.
+
+For a game or another intensive custom renderer, a plugin may own its window and
+GPU instead. The [window example](../../examples/plugin-window) reuses SDK controls
+while drawing directly with its own shader. Only actions and state use the host
+connection. A plugin does not have to send its window's frames to the host.
 
 XRTranslate's [client core](../xrtranslate-client-core/README.md) contains its
 existing UI components, language and session types, playback and file helpers.
@@ -135,13 +153,26 @@ for records and resolve bundled assets relative to the plugin executable.
 
 ## Build helper
 
-Manual copying is sufficient. This optional native helper copies only the
+The [standalone SDK bundle](SDK.md) builds plugins without the host checkout or
+host build. Export it once, then use it from an independent plugin project:
+
+```sh
+cargo build --release --locked -p xrtranslate-plugin --features host
+target/release/xrt-plugin sdk . /opt/xrtranslate-sdk
+/opt/xrtranslate-sdk/xrt-plugin build /projects/my-plugin --sdk /opt/xrtranslate-sdk --output /packages/my-plugin
+```
+
+On Windows, use `xrt-plugin.exe` and Windows paths. See the
+[public plugins workspace](../../plugin-src/README.md) for building the supplied
+plugins independently. Host release scripts accept finished plugin directories;
+they never compile plugin sources.
+
+Manual copying is also sufficient. The `stage` command copies only the
 manifest, executable, LICENSE, NOTICE, `licenses/` and `assets/`, then publishes
 the complete directory. It adjusts the executable filename for the platform.
 
 ```sh
-cargo build --release -p xrt-lyrics -p xrtranslate-plugin --features xrtranslate-plugin/host
-target/release/xrt-plugin stage plugin-src/lyrics target/release/xrt-lyrics plugins/lyrics
+xrt-plugin stage /projects/my-plugin /build/xrt-example /packages/my-plugin
 ```
 
 The destination must not exist. `plugins.list` reports the scanned directory and

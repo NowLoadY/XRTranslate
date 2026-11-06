@@ -415,6 +415,13 @@ impl crate::XRTranslateApp {
                         self.companion_inbox.post_text(&plugin, message.to_owned());
                     }
                 }
+                Message::Event { name, value } if name == "ui.repaint" => {
+                    if let Some(entry) = self.plugin_host.installed.get_mut(&plugin)
+                        && let Ok(delay) = serde_json::from_value(value)
+                    {
+                        entry.page.surface.repaint_after(ctx, delay);
+                    }
+                }
                 Message::Event { name, value } if name == "ui.frame" => {
                     if let Some(entry) = self.plugin_host.installed.get_mut(&plugin) {
                         match serde_json::from_value(value) {

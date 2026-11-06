@@ -176,7 +176,7 @@ impl Page {
                             "Generate another example"
                         },
                     ),
-                    egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/example.svg"),
+                    xrtranslate_client_core::ui::icon!("example.svg"),
                 )
                 .clicked()
                 {
@@ -188,7 +188,7 @@ impl Page {
                     && components::icon_button(
                         ui,
                         tr(language, "View example translation"),
-                        egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/translation.svg"),
+                        xrtranslate_client_core::ui::icon!("translation.svg"),
                     )
                     .clicked()
                 {

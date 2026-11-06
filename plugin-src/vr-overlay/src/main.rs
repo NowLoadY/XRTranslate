@@ -181,7 +181,7 @@ fn main() {
         }
         return;
     }
-    if let Err(error) = surface::serve(App::default()) {
+    if let Err(error) = xrtranslate_client_core::ui::surface::serve(App::default()) {
         eprintln!("{error}");
         std::process::exit(1);
     }

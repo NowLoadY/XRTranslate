@@ -28,7 +28,7 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
             playback_button(
                 ui,
                 tr(language, "Audio track"),
-                egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-audio-tracks.svg"),
+                xrtranslate_client_core::ui::icon!("media-audio-tracks.svg"),
                 overlay,
                 false,
             )

@@ -287,7 +287,7 @@ pub fn segmented_audio_meter(
     let id = ui.make_persistent_id(("audio_waveform_meter", id_source));
     let now = ui.ctx().input(|i| i.time);
 
-    let raw_level = if updating {
+    let raw_level = if updating && raw_fraction.is_finite() {
         raw_fraction.clamp(0.0, 1.0)
     } else {
         0.0
@@ -387,7 +387,8 @@ pub fn segmented_audio_meter(
             let env = history[idx0] + (history[idx1] - history[idx0]) * smooth_frac;
 
             // Smooth Hann-like window taper at endpoints so wave gracefully terminates at baseline
-            let window = (t * std::f32::consts::PI).sin().powf(0.75);
+            // sin(PI) can round slightly below zero; fractional powers must stay nonnegative.
+            let window = (t * std::f32::consts::PI).sin().max(0.0).powf(0.75);
 
             // Wide, elegant fluid studio voice wave (2.4 cycles across full width instead of dense ripples)
             let tau = std::f32::consts::TAU;
@@ -3390,3 +3391,33 @@ pub fn format_timestamp(ms: i64) -> String {
 
 mod showcase;
 pub use showcase::{ShowcaseSlide, showcase};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_meter_tessellates_finite_geometry_including_silent_endpoints() {
+        for (level, updating) in [(0.0, false), (0.0, true), (1.0, true), (f32::NAN, true)] {
+            let ctx = egui::Context::default();
+            for time in [0.0, 0.1] {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        segmented_audio_meter(ui, "meter", level, true, updating);
+                    },
+                );
+                let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+                output.textures_delta.clear();
+                for primitive in primitives {
+                    if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                        assert!(mesh.vertices.iter().all(|v| v.pos.is_finite()));
+                    }
+                }
+            }
+        }
+    }
+}

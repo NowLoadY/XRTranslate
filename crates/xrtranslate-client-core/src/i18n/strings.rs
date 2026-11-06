@@ -5418,6 +5418,13 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("(empty)", "（空）", "（空）", "(비어 있음)", "(пусто)"),
     ("Settings", "设置", "設定", "설정", "Настройки"),
     (
+        "More settings",
+        "更多设置",
+        "その他の設定",
+        "추가 설정",
+        "Дополнительные настройки",
+    ),
+    (
         "VRChat OSC",
         "VRChat OSC",
         "VRChat OSC",

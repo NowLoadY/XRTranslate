@@ -209,9 +209,7 @@ pub(super) fn render_task_control_card(
                 components::icon_menu(
                     ui,
                     tr(language, "Task actions"),
-                    egui::include_image!(
-                        "../../../../../../crates/xrtranslate-client-core/resources/icons/more.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("more.svg"),
                     |ui| {
                         if components::secondary_button_enabled(
                             ui,

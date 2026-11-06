@@ -3,18 +3,6 @@ resolver = "3"
 members = [
     "rust-client",
     "crates/xrtranslate-client-core",
-    "plugin-src/agent",
-    "plugin-src/media",
-    "plugin-src/meeting",
-    "plugin-src/vocabulary",
-    "plugin-src/vr-overlay",
-    "plugin-src/osc",
-    "plugin-src/avatar",
-    "plugin-src/ocr",
-    "plugin-src/chilloutvr-osc",
-    "plugin-src/lyrics",
-    "plugin-src/bigwalk",
-    "plugin-src/auto-input",
     "crates/ui-director",
     "crates/xrtranslate-plugin",
     "crates/xrtranslate-prompt",
@@ -36,7 +24,7 @@ members = [
     "apps/xrtranslate-packager",
     "apps/xrtranslate-updater",
 ]
-exclude = ["private-plugins/*"]
+exclude = ["plugin-src", "private-plugins/*", "examples/plugin-window"]
 
 [workspace.package]
 version = "0.4.0"

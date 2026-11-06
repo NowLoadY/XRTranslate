@@ -160,39 +160,26 @@ impl BackendState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        Json, Router,
-        extract::{ConnectInfo, State},
-        response::IntoResponse,
-        routing::post,
-    };
+    use axum::{Json, Router, extract::State, response::IntoResponse, routing::post};
     use serde_json::{Value, json};
     use xrtranslate_protocol::{AskRequest, AskTarget};
 
     #[tokio::test]
     async fn text_roles_route_independently_and_do_not_accumulate_history() {
-        let (sender, mut received) =
-            tokio::sync::mpsc::unbounded_channel::<(std::net::SocketAddr, Value)>();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!(
             "http://{}/v1/chat/completions",
             listener.local_addr().unwrap()
         );
-        let mock = Router::new().route("/v1/chat/completions", post(move |ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, Json(body): Json<Value>| {
+        let mock = Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
             let sender = sender.clone();
             async move {
-                sender.send((peer, body)).unwrap();
+                sender.send(body).unwrap();
                 Json(json!({"choices":[{"message":{"role":"assistant","content":"Reviewed"},"finish_reason":"stop"}]}))
             }
         }));
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                mock.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .await
-            .unwrap()
-        });
+        let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
         let temp = tempfile::tempdir().unwrap();
         let config = crate::AppConfig::from_value(json!({
             "asr":{"provider":"qwen","providers":{"qwen":{"api_key":"test-only"}}},
@@ -224,7 +211,7 @@ mod tests {
             {"role":"user","content":"Tool feedback: valid"}
         ]))
         .unwrap();
-        let mut agent_peer = None;
+        let mut agent_inference = None;
         for (target, model) in [
             (AskTarget::Translation, "translation-fixture"),
             (AskTarget::Agent, "agent-fixture"),
@@ -239,12 +226,14 @@ mod tests {
                 .await
                 .into_response();
             assert_eq!(response.status(), axum::http::StatusCode::OK);
-            let (peer, payload) = received.try_recv().unwrap();
+            let payload = received.try_recv().unwrap();
             if target == AskTarget::Agent {
-                assert_eq!(
-                    *agent_peer.get_or_insert(peer),
-                    peer,
-                    "reuse the TCP connection across Agent rounds"
+                let inference = state.prepare_text(target).await.unwrap();
+                // Cache ownership is deterministic; a pooled connection may be
+                // replaced by the HTTP transport or a system proxy.
+                assert!(
+                    std::ptr::eq(*agent_inference.get_or_insert(inference), inference),
+                    "reuse the inference adapter across Agent rounds"
                 );
             }
             assert_eq!(payload["model"], model);

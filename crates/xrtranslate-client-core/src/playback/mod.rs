@@ -143,6 +143,19 @@ pub trait MediaBackend: Send {
 }
 
 pub mod installer;
+#[cfg(windows)]
+pub fn configure_dll_search_paths() {
+    use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
+    use windows::core::HSTRING;
+    for directory in runtime_bin_directories() {
+        if directory.is_dir() {
+            let directory = directory.canonicalize().unwrap_or(directory);
+            let _ = unsafe { SetDllDirectoryW(&HSTRING::from(directory.as_os_str())) };
+            return;
+        }
+    }
+}
+
 pub fn runtime_bin_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {

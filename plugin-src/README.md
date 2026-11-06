@@ -1,9 +1,38 @@
-# Native plugin source
+# XRTranslate plugins
 
-These independent executables use the [public SDK](../crates/xrtranslate-plugin).
-They depend on the running host's UI/translation services, not its source or other
-plugins' private implementation. Put built plugin directories under the app's
-`plugins/` folder; removing them uninstalls them, including during a running session.
+This is an independent Cargo workspace. It can be kept in its own repository or
+copied outside the XRTranslate checkout without changing its source paths. The
+host's workspace and build scripts do not compile these packages.
+
+Download an XRTranslate SDK bundle, or export one from a host source checkout:
+
+```powershell
+cargo build --release --locked -p xrtranslate-plugin --features host
+./target/release/xrt-plugin.exe sdk . C:/SDK/XRTranslate
+```
+
+Build the plugin packages from this directory:
+
+```powershell
+./build.ps1 -Sdk C:/SDK/XRTranslate -Output C:/Packages/XRTranslate-plugins
+```
+
+Use `-Plugin media,meeting` to build selected plugins. `-TargetDirectory` selects
+an optional build cache. On Linux, use `bash build.sh /opt/xrtranslate-sdk
+~/packages/xrtranslate-plugins` instead. The build tool in the SDK also supports
+building a single plugin directory directly.
+
+Copy completed plugin directories into the application's `plugins/` folder.
+For a distributable application package, pass their parent directory to
+`build_release.ps1 -PluginsDirectory`, or set `XRTRANSLATE_PLUGINS_DIR` when
+running `scripts/build-linux-release.sh`. These inputs are ready-to-use plugin
+packages, not plugin source directories. Omitting them builds the host alone.
+
+Updating the host does not rebuild plugins. Rebuild a plugin when changing that
+plugin, or when deliberately adopting an incompatible SDK interface. New optional
+host features do not require existing plugins to adopt them.
+
+## Included plugins
 
 | Source | Platforms | Responsibility |
 |---|---|---|
@@ -19,27 +48,7 @@ plugins' private implementation. Put built plugin directories under the app's
 | `bigwalk` | Linux, Windows | Translation/direct text delivery through the game bridge |
 | `auto-input` | Windows | User-enabled insertion into an already focused text field |
 
-Release scripts stage these native directories and the release packager copies
-them under `plugins/`. Private plugins are not included. Third parties use exactly
-the same layout; a Steam DLC depot can deliver that directory without a second
-plugin loader. Store ownership checks, if needed, belong to the store integration.
 
-`scripts/run-linux.sh` also builds and updates the public development plugins.
-For an individual plugin, use
-`xrt-plugin stage <source> <binary> <destination> --replace`;
-its persistent data stays in the runtime directory.
-
-Lyrics observes output requests in `plugin.state` and publishes `lyrics.text`.
-Consumers own that connection; the loader has no lyrics-specific code. Big Walk and
-automatic input consume committed, clear and cancellation translation events,
-retaining their bounded queues and result identities. Installing automatic input
-does not start typing; its input switch must be enabled explicitly.
-
-Motion source is in an independent private Git repository under the ignored
-`private-plugins/` directory. The public build does not depend on it. Built plugin
-directories in `/plugins/` are also ignored; they are not source repositories.
-
-The existing egui pages use `xrtranslate-client-core` and the SDK's optional UI
-surface. Their buttons and fields keep their original handlers; UI Director
-exposes those same controls to the CLI. Inference, capture, shared model settings
-and downloads remain host services. A plugin is not a second standalone app.
+Translation, capture, models and downloads remain host services. Each plugin owns
+its own records and context policy. Private plugins are not included in public
+packages. A plugin can use a host panel or its own window, depending on its needs.

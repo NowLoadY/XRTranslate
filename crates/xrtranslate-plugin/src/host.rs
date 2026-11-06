@@ -2,7 +2,7 @@ use crate::{Environment, Manifest, Message, Result, Widget};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
@@ -16,6 +16,8 @@ struct State {
     replies: BTreeMap<u64, (Instant, Option<Result>)>,
     events: VecDeque<Message>,
     error: Option<String>,
+    #[cfg(feature = "egui")]
+    frames: VecDeque<crate::surface::Frame>,
 }
 
 pub struct Process {
@@ -33,6 +35,14 @@ impl Process {
         wake: impl Fn() + Send + 'static,
     ) -> std::result::Result<Self, String> {
         manifest.validate()?;
+        #[cfg(feature = "egui")]
+        let environment = {
+            let mut environment = environment;
+            environment
+                .capabilities
+                .push(crate::surface::wire::CAPABILITY.into());
+            environment
+        };
         let mut command = Command::new(directory.join(&manifest.executable));
         command
             .stdin(Stdio::piped())
@@ -44,7 +54,7 @@ impl Process {
             command.creation_flags(0x08000000);
         }
         let mut child = command.spawn().map_err(|e| e.to_string())?;
-        let mut input = child.stdin.take().unwrap();
+        let mut input = BufWriter::new(child.stdin.take().unwrap());
         let output = child.stdout.take().unwrap();
         let errors = child.stderr.take().unwrap();
         let state = Arc::new(Mutex::new(State::default()));
@@ -66,6 +76,29 @@ impl Process {
         let reader = std::thread::spawn(move || {
             let mut output = BufReader::new(output);
             loop {
+                #[cfg(feature = "egui")]
+                if output
+                    .fill_buf()
+                    .is_ok_and(|bytes| bytes.first() == Some(&0))
+                {
+                    output.consume(1);
+                    let frame = crate::surface::wire::read(&mut output);
+                    let mut state = read_state.lock().unwrap();
+                    match frame {
+                        Ok(frame) if state.frames.len() < 8 => state.frames.push_back(frame),
+                        Ok(_) => {
+                            state.error = Some("Too many pending plugin frames".into());
+                            break;
+                        }
+                        Err(error) => {
+                            state.error = Some(format!("Plugin frame: {error}"));
+                            break;
+                        }
+                    }
+                    drop(state);
+                    wake();
+                    continue;
+                }
                 let mut bytes = Vec::new();
                 use std::io::Read;
                 let read = output
@@ -193,6 +226,10 @@ impl Process {
     }
     pub fn events(&mut self) -> Vec<Message> {
         self.state.lock().unwrap().events.drain(..).collect()
+    }
+    #[cfg(feature = "egui")]
+    pub fn frames(&mut self) -> Vec<crate::surface::Frame> {
+        self.state.lock().unwrap().frames.drain(..).collect()
     }
     pub fn view(&self) -> Vec<Widget> {
         self.state.lock().unwrap().view.clone()

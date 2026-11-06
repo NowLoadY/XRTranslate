@@ -67,7 +67,7 @@ pub(super) fn render_detail(
                                 "Mark latest highlight"
                             },
                         ),
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/star.svg"),
+                        xrtranslate_client_core::ui::icon!("star.svg"),
                     )
                 })
                 .inner
@@ -90,7 +90,7 @@ pub(super) fn render_detail(
                                 "Finish recording"
                             },
                         ),
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/stop.svg"),
+                        xrtranslate_client_core::ui::icon!("stop.svg"),
                         36.0,
                     )
                 })
@@ -104,7 +104,7 @@ pub(super) fn render_detail(
             if components::icon_button(
                 ui,
                 tr(language, "Pause"),
-                egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/pause.svg"),
+                xrtranslate_client_core::ui::icon!("pause.svg"),
             )
             .clicked()
             {
@@ -117,7 +117,7 @@ pub(super) fn render_detail(
                     components::round_icon_button(
                         ui,
                         tr(language, "Continue recording"),
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/record.svg"),
+                        xrtranslate_client_core::ui::icon!("record.svg"),
                         36.0,
                     )
                 })
@@ -167,9 +167,7 @@ pub(super) fn render_detail(
         components::icon_menu(
             ui,
             tr(language, "More"),
-            egui::include_image!(
-                "../../../../../../crates/xrtranslate-client-core/resources/icons/more.svg"
-            ),
+            xrtranslate_client_core::ui::icon!("more.svg"),
             |ui| {
                 if components::button(ui, tr(language, "Export Markdown")).clicked() {
                     action = UiAction::Export;

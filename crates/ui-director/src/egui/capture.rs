@@ -1,8 +1,13 @@
 //! Capture the app's rendered viewport, without recording the user's desktop or audio.
-use std::{io::Write, net::TcpStream, sync::Arc, time::Duration};
+use std::{
+    io::Write,
+    net::TcpStream,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ::egui;
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 
 #[derive(Clone)]
 struct TimedFrame {
@@ -12,6 +17,23 @@ struct TimedFrame {
 
 fn clock_id() -> egui::Id {
     egui::Id::unique("director_capture_clock")
+}
+
+fn wait_image(
+    ctx: &egui::Context,
+    receiver: Receiver<Arc<egui::ColorImage>>,
+) -> std::io::Result<Arc<egui::ColorImage>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        // GPU readback completes after rendering. Idle/hidden windows still need
+        // follow-up frames to deliver it; stop requesting frames as soon as ready.
+        super::request_frame(ctx);
+        match receiver.recv_timeout(Duration::from_millis(16)) {
+            Ok(image) => return Ok(image),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+            Err(error) => return Err(std::io::Error::other(error)),
+        }
+    }
 }
 
 pub(super) fn receive(ctx: &egui::Context, input: &mut egui::RawInput) {
@@ -73,10 +95,7 @@ pub(super) fn timed_frame(
     }
     let (sender, receiver) = bounded(1);
     ctx.data_mut(|data| data.insert_temp(clock_id().with("request"), TimedFrame { time, sender }));
-    ctx.request_repaint();
-    let image = receiver
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(std::io::Error::other)?;
+    let image = wait_image(ctx, receiver)?;
     writeln!(
         stream,
         "{{\"width\":{},\"height\":{}}}",
@@ -95,7 +114,7 @@ pub(super) fn resume_clock(ctx: &egui::Context) {
         data.remove::<(f64, f64, f64)>(clock_id());
         data.remove::<TimedFrame>(clock_id().with("request"));
     });
-    ctx.request_repaint();
+    super::request_frame(ctx);
 }
 
 pub(super) fn respond(stream: &mut TcpStream, ctx: &egui::Context) {
@@ -103,8 +122,7 @@ pub(super) fn respond(stream: &mut TcpStream, ctx: &egui::Context) {
     ctx.request_screenshot(move |image| {
         let _ = sender.try_send(image);
     });
-    ctx.request_repaint();
-    match receiver.recv_timeout(Duration::from_secs(5)) {
+    match wait_image(ctx, receiver) {
         Ok(image) => {
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Width: {}\r\nX-Height: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

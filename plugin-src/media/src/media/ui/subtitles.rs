@@ -255,7 +255,7 @@ pub(super) fn render_subtitles_card(
                                 tr(language, "Play from here"),
                                 super::format_cue_time(cue.start_ms)
                             ),
-                            egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/play.svg"),
+                            xrtranslate_client_core::ui::icon!("play.svg"),
                         )
                         .clicked()
                     {

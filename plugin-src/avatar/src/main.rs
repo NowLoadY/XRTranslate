@@ -242,7 +242,7 @@ impl surface::UiPlugin for App {
 }
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    if let Err(error) = surface::serve(App::default()) {
+    if let Err(error) = xrtranslate_client_core::ui::surface::serve(App::default()) {
         eprintln!("{error}");
         std::process::exit(1);
     }

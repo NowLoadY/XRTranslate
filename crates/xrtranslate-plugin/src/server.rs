@@ -24,6 +24,8 @@ pub trait Plugin {
 pub struct Context {
     output: Arc<Mutex<io::BufWriter<io::Stdout>>>,
     client: crate::Client,
+    #[cfg(feature = "egui")]
+    pub(crate) binary_surfaces: bool,
 }
 impl Drop for Context {
     fn drop(&mut self) {
@@ -32,6 +34,11 @@ impl Drop for Context {
     }
 }
 impl Context {
+    #[cfg(feature = "egui")]
+    pub(crate) fn surface(&self, frame: &crate::surface::Frame) -> std::result::Result<(), String> {
+        crate::surface::wire::write(&mut *self.output.lock().unwrap(), frame)
+            .map_err(|error| error.to_string())
+    }
     pub fn client(&self) -> crate::Client {
         self.client.clone()
     }
@@ -120,12 +127,24 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
             }
         }
     });
-    let mut context = Context { output, client };
+    let mut context = Context {
+        output,
+        client,
+        #[cfg(feature = "egui")]
+        binary_surfaces: false,
+    };
     let mut clock = Instant::now();
     let mut initialized = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(16)) {
             Ok(Message::Initialize { environment }) => {
+                #[cfg(feature = "egui")]
+                {
+                    context.binary_surfaces = environment
+                        .capabilities
+                        .iter()
+                        .any(|name| name == crate::surface::wire::CAPABILITY);
+                }
                 plugin.initialize(environment, &mut context)?;
                 initialized = true;
             }

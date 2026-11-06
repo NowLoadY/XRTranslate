@@ -526,6 +526,6 @@ fn more_button(ui: &mut egui::Ui, language: UiLanguage) -> egui::Response {
     components::icon_button(
         ui,
         tr(language, "More actions"),
-        egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/more.svg"),
+        xrtranslate_client_core::ui::icon!("more.svg"),
     )
 }

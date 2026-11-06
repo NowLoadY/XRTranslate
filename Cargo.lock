@@ -6806,6 +6806,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
+
+[[package]]
 name = "rosc"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6898,7 +6917,6 @@ dependencies = [
  "eframe",
  "egui_extras",
  "env_logger",
- "find-msvc-tools",
  "flate2",
  "futures",
  "glam 0.33.10",
@@ -7254,6 +7272,16 @@ checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -8184,7 +8212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -8843,15 +8871,6 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
-
-[[package]]
-name = "unicode-normalization"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
-dependencies = [
- "tinyvec",
-]
 
 [[package]]
 name = "unicode-normalization-alignments"
@@ -10471,221 +10490,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xrt-agent"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "env_logger",
- "log",
- "serde",
- "serde_json",
- "tempfile",
- "ui-director",
- "xrtranslate-plugin",
- "xrtranslate-prompt",
- "xrtranslate-protocol",
-]
-
-[[package]]
-name = "xrt-auto-input"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "serde_json",
- "windows 0.60.0",
- "windows-sys 0.61.2",
- "xrtranslate-plugin",
-]
-
-[[package]]
-name = "xrt-avatar"
-version = "0.4.0"
-dependencies = [
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "log",
- "parking_lot",
- "serde",
- "serde_json",
- "tungstenite 0.30.0",
- "ui-director",
- "uuid",
- "xrt-connector-core",
- "xrtranslate-client-core",
- "xrtranslate-plugin",
- "xrtranslate-prompt",
-]
-
-[[package]]
-name = "xrt-bigwalk"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "log",
- "parking_lot",
- "serde",
- "serde_json",
- "unicode-segmentation",
- "uuid",
- "xrtranslate-plugin",
-]
-
-[[package]]
-name = "xrt-chilloutvr-osc"
-version = "0.4.0"
-dependencies = [
- "xrt-osc",
-]
-
-[[package]]
-name = "xrt-connector-core"
-version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=a01af88f7d37263e50b2daa67ca742e353601a80#a01af88f7d37263e50b2daa67ca742e353601a80"
-dependencies = [
- "serde",
- "unicode-normalization",
-]
-
-[[package]]
-name = "xrt-lyrics"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "log",
- "parking_lot",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "unicode-segmentation",
- "windows 0.60.0",
- "windows-future 0.1.1",
- "xrtranslate-plugin",
- "zbus",
-]
-
-[[package]]
-name = "xrt-media"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "hound",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "ui-director",
- "unicode-segmentation",
- "uuid",
- "xrtranslate-client-core",
- "xrtranslate-config",
- "xrtranslate-download",
- "xrtranslate-engine",
- "xrtranslate-plugin",
- "xrtranslate-prompt",
- "xrtranslate-protocol",
- "zip",
-]
-
-[[package]]
-name = "xrt-meeting"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "log",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "ui-director",
- "uuid",
- "xrtranslate-client-core",
- "xrtranslate-engine",
- "xrtranslate-plugin",
- "xrtranslate-prompt",
- "xrtranslate-protocol",
-]
-
-[[package]]
-name = "xrt-ocr"
-version = "0.4.0"
-dependencies = [
- "serde_json",
- "uuid",
- "xrtranslate-client-core",
- "xrtranslate-plugin",
-]
-
-[[package]]
-name = "xrt-osc"
-version = "0.4.0"
-dependencies = [
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "log",
- "parking_lot",
- "rosc",
- "serde",
- "serde_json",
- "ui-director",
- "unicode-segmentation",
- "xrtranslate-client-core",
- "xrtranslate-engine",
- "xrtranslate-plugin",
- "xrtranslate-protocol",
-]
-
-[[package]]
-name = "xrt-vocabulary"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "log",
- "serde",
- "serde_json",
- "ui-director",
- "uuid",
- "xrtranslate-client-core",
- "xrtranslate-engine",
- "xrtranslate-plugin",
- "xrtranslate-prompt",
- "xrtranslate-protocol",
-]
-
-[[package]]
-name = "xrt-vr-overlay"
-version = "0.1.0"
-dependencies = [
- "ash",
- "crossbeam-channel",
- "eframe",
- "env_logger",
- "futures",
- "glam 0.33.10",
- "log",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "ui-director",
- "windows 0.60.0",
- "xrtranslate-client-core",
- "xrtranslate-plugin",
- "xrtranslate-protocol",
-]
-
-[[package]]
 name = "xrtranslate-account-login"
 version = "0.4.0"
 dependencies = [
@@ -10755,6 +10559,7 @@ dependencies = [
  "dom_query",
  "eframe",
  "egui_extras",
+ "find-msvc-tools",
  "futures",
  "glam 0.33.10",
  "image",
@@ -10773,6 +10578,7 @@ dependencies = [
  "tokio",
  "ui-director",
  "unicode-segmentation",
+ "uuid",
  "windows 0.60.0",
  "windows 0.62.2",
  "xrtranslate-connections",
@@ -10909,10 +10715,13 @@ dependencies = [
  "egui",
  "flate2",
  "log",
+ "rmp-serde",
  "semver",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tempfile",
+ "toml 1.1.6+spec-1.1.0",
  "ui-director",
 ]
 

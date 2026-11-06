@@ -16,9 +16,7 @@ pub(super) fn render_library(
         ui,
         &[
             components::LibraryHint {
-                icon: egui::include_image!(
-                    "../../../../../crates/xrtranslate-client-core/resources/icons/file-audio.svg"
-                ),
+                icon: xrtranslate_client_core::ui::icon!("file-audio.svg"),
                 caption: "MP3 · WAV · FLAC",
                 tooltip: &format!(
                     "{} · {}",
@@ -27,9 +25,7 @@ pub(super) fn render_library(
                 ),
             },
             components::LibraryHint {
-                icon: egui::include_image!(
-                    "../../../../../crates/xrtranslate-client-core/resources/icons/file-video.svg"
-                ),
+                icon: xrtranslate_client_core::ui::icon!("file-video.svg"),
                 caption: "MP4 · MKV · WEBM",
                 tooltip: &format!(
                     "{} · MP4 · MKV · WEBM · AVI · MOV · FLV · TS · M4V · MPEG · MPG · WMV",
@@ -37,16 +33,12 @@ pub(super) fn render_library(
                 ),
             },
             components::LibraryHint {
-                icon: egui::include_image!(
-                    "../../../../../crates/xrtranslate-client-core/resources/icons/file-subtitles.svg"
-                ),
+                icon: xrtranslate_client_core::ui::icon!("file-subtitles.svg"),
                 caption: "SRT · VTT",
                 tooltip: tr(language, "Subtitles"),
             },
             components::LibraryHint {
-                icon: egui::include_image!(
-                    "../../../../../crates/xrtranslate-client-core/resources/icons/stream.svg"
-                ),
+                icon: xrtranslate_client_core::ui::icon!("stream.svg"),
                 caption: "URL",
                 tooltip: tr(language, "File path or stream URL"),
             },
@@ -60,18 +52,14 @@ pub(super) fn render_library(
                 let import = components::round_icon_button(
                     ui,
                     tr(language, "Import media"),
-                    egui::include_image!(
-                        "../../../../../crates/xrtranslate-client-core/resources/icons/import.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("import.svg"),
                     40.0,
                 );
                 choose_file = import.clicked();
                 if components::round_icon_button(
                     ui,
                     tr(language, "Open link"),
-                    egui::include_image!(
-                        "../../../../../crates/xrtranslate-client-core/resources/icons/stream.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("stream.svg"),
                     40.0,
                 )
                 .clicked()
@@ -141,9 +129,7 @@ pub(super) fn render_library(
                                     components::icon_menu(
                                         ui,
                                         tr(language, "Task actions"),
-                                        egui::include_image!(
-                                            "../../../../../crates/xrtranslate-client-core/resources/icons/more.svg"
-                                        ),
+                                        xrtranslate_client_core::ui::icon!("more.svg"),
                                         |ui| {
                                             if super::export_controls(
                                                 ui,
@@ -213,7 +199,7 @@ pub(super) fn render_library(
         controller.delete_task(&id);
     }
     if let Some(id) = export_video {
-        controller.start_video_export(&id, ui.ctx());
+        controller.pending_video_export = Some(id);
     }
     action
 }

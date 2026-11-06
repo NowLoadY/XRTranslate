@@ -62,15 +62,20 @@ fn render_page(
         .id_salt("osc_page_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(
-                    context.language,
-                    plugin.game().studio_title(),
-                ))
-                .size(22.0)
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-            );
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(
+                        context.language,
+                        plugin.game().studio_title(),
+                    ))
+                    .size(22.0)
+                    .color(crate::ui::theme::text_strong())
+                    .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    actions.extend(settings::render_button(plugin, ui, context.language));
+                });
+            });
             ui.label(crate::i18n::tr(
                 context.language,
                 match plugin.game() {
@@ -126,18 +131,7 @@ fn render_page(
 
                 canvas::render_canvas(plugin, ui, context.language);
             }
-            ui.add_space(8.0);
-            actions.extend(render_settings(plugin, ui, context.language));
         });
 
     actions
-}
-
-pub fn render_settings(
-    plugin: &mut super::OscPlugin,
-    ui: &mut egui::Ui,
-    language: crate::i18n::UiLanguage,
-) -> Vec<OscUiAction> {
-    ui.push_id(plugin.game(), |ui| settings::render(plugin, ui, language))
-        .inner
 }

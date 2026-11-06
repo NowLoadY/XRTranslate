@@ -174,7 +174,7 @@ mod tests {
     fn request_accepts_one_context_source_and_no_remote_session() {
         let legacy: AskRequest = serde_json::from_value(json!({"prompt":"hello"})).unwrap();
         assert_eq!(legacy.into_messages()[0].content, "hello");
-        let wire = json!({"messages":[
+        let wire = json!({"target":"translation","messages":[
             {"role":"system","content":"rules"},
             {"role":"user","content":"question"},
             {"role":"assistant","content":"answer"},

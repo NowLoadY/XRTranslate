@@ -1,7 +1,29 @@
 use crate::ui::components;
 use eframe::egui;
 
-pub fn render(
+pub fn render_button(
+    plugin: &mut super::super::OscPlugin,
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+) -> Vec<super::OscUiAction> {
+    let response = components::round_icon_button(
+        ui,
+        crate::i18n::tr(language, "More settings"),
+        xrtranslate_client_core::ui::icon!("settings.svg"),
+        32.0,
+    );
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .layout(egui::Layout::top_down(egui::Align::Min))
+        .width(320.0)
+        .show(|ui| {
+            ui.set_width(320.0);
+            render(plugin, ui, language)
+        })
+        .map_or_else(Vec::new, |response| response.inner)
+}
+
+fn render(
     plugin: &mut super::super::OscPlugin,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
@@ -16,124 +38,119 @@ pub fn render(
                 .map(|receiver| receiver.listener.clone())
         })
         .flatten();
-    components::action_card(ui, |ui| {
-        components::feature_ui(
-            ui,
-            crate::feature_access::Feature::OscChatbox,
-            language,
-            |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(language, "OSC Network Settings"))
-                                .size(14.0)
-                                .color(crate::ui::theme::text_strong())
-                                .strong(),
+    components::feature_ui(
+        ui,
+        crate::feature_access::Feature::OscChatbox,
+        language,
+        |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(language, "OSC Network Settings"))
+                            .size(14.0)
+                            .color(crate::ui::theme::text_strong())
+                            .strong(),
+                    );
+                    if let Some(status) = &receiver_status {
+                        let normalized = status.to_ascii_lowercase();
+                        let icon = if normalized.contains("error") || normalized.contains("failed")
+                        {
+                            components::StatusIcon::Warning
+                        } else if normalized.contains("listening")
+                            || normalized.starts_with("active")
+                        {
+                            components::StatusIcon::Connected
+                        } else {
+                            components::StatusIcon::Disconnected
+                        };
+                        components::status_icon(
+                            ui,
+                            icon,
+                            &crate::i18n::tr_dynamic(language, status),
                         );
-                        if let Some(status) = &receiver_status {
-                            let normalized = status.to_ascii_lowercase();
-                            let icon =
-                                if normalized.contains("error") || normalized.contains("failed") {
-                                    components::StatusIcon::Warning
-                                } else if normalized.contains("listening")
-                                    || normalized.starts_with("active")
-                                {
-                                    components::StatusIcon::Connected
-                                } else {
-                                    components::StatusIcon::Disconnected
-                                };
-                            components::status_icon(
-                                ui,
-                                icon,
-                                &crate::i18n::tr_dynamic(language, status),
-                            );
-                        }
-                    });
+                    }
+                });
 
-                    ui.add_space(10.0);
+                ui.add_space(10.0);
 
-                    egui::Grid::new("osc_settings_grid")
-                        .num_columns(2)
-                        .spacing([24.0, 10.0])
-                        .show(ui, |ui| {
+                egui::Grid::new("osc_settings_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "Target IP:"))
+                                .color(crate::ui::theme::text_strong())
+                                .size(12.5),
+                        );
+                        let response = crate::ui::components::text_edit_ui(
+                            ui,
+                            "osc_target_ip",
+                            egui::TextEdit::singleline(&mut plugin.draft_mut().ip)
+                                .desired_width(140.0),
+                        );
+                        ui_director::egui::text_response(
+                            ui,
+                            crate::i18n::tr(language, "Target IP:"),
+                            &mut plugin.draft_mut().ip,
+                            response,
+                        );
+                        ui.end_row();
+
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "Send Port:"))
+                                .color(crate::ui::theme::text_strong())
+                                .size(12.5),
+                        );
+                        components::number_input(
+                            ui,
+                            &mut plugin.draft_mut().send_port,
+                            crate::i18n::tr(language, "Send Port:"),
+                            1..=u16::MAX,
+                        );
+                        ui.end_row();
+
+                        if game == super::super::OscGame::VRChat {
                             ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "Target IP:"))
-                                    .color(crate::ui::theme::text_strong())
-                                    .size(12.5),
-                            );
-                            let response = crate::ui::components::text_edit_ui(
-                                ui,
-                                "osc_target_ip",
-                                egui::TextEdit::singleline(&mut plugin.draft_mut().ip)
-                                    .desired_width(140.0),
-                            );
-                            ui_director::egui::text_response(
-                                ui,
-                                crate::i18n::tr(language, "Target IP:"),
-                                &mut plugin.draft_mut().ip,
-                                response,
-                            );
-                            ui.end_row();
-
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "Send Port:"))
+                                egui::RichText::new(crate::i18n::tr(language, "Listen Port:"))
                                     .color(crate::ui::theme::text_strong())
                                     .size(12.5),
                             );
                             components::number_input(
                                 ui,
-                                &mut plugin.draft_mut().send_port,
-                                crate::i18n::tr(language, "Send Port:"),
+                                &mut plugin.draft_mut().listen_port,
+                                crate::i18n::tr(language, "Listen Port:"),
                                 1..=u16::MAX,
                             );
                             ui.end_row();
+                        }
 
-                            if game == super::super::OscGame::VRChat {
-                                ui.label(
-                                    egui::RichText::new(crate::i18n::tr(language, "Listen Port:"))
-                                        .color(crate::ui::theme::text_strong())
-                                        .size(12.5),
-                                );
-                                components::number_input(
-                                    ui,
-                                    &mut plugin.draft_mut().listen_port,
-                                    crate::i18n::tr(language, "Listen Port:"),
-                                    1..=u16::MAX,
-                                );
-                                ui.end_row();
-                            }
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "Max Text Length:"))
+                                .color(crate::ui::theme::text_strong())
+                                .size(12.5),
+                        );
+                        components::number_input(
+                            ui,
+                            &mut plugin.draft_mut().max_text_length,
+                            crate::i18n::tr(language, "Max Text Length:"),
+                            1..=game.max_text_length(),
+                        );
+                        ui.end_row();
+                    });
 
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "Max Text Length:"))
-                                    .color(crate::ui::theme::text_strong())
-                                    .size(12.5),
-                            );
-                            components::number_input(
-                                ui,
-                                &mut plugin.draft_mut().max_text_length,
-                                crate::i18n::tr(language, "Max Text Length:"),
-                                1..=game.max_text_length(),
-                            );
-                            ui.end_row();
-                        });
+                ui.add_space(12.0);
 
-                    ui.add_space(12.0);
-
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if components::primary_button(
-                                ui,
-                                crate::i18n::tr(language, "Apply & Save"),
-                            )
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if components::primary_button(ui, crate::i18n::tr(language, "Apply & Save"))
                             .clicked()
-                            {
-                                actions.push(super::OscUiAction::ApplySettings);
-                            }
-                        });
+                        {
+                            actions.push(super::OscUiAction::ApplySettings);
+                        }
                     });
                 });
-            },
-        );
-    });
+            });
+        },
+    );
     actions
 }

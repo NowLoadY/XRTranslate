@@ -114,6 +114,8 @@ pub struct MediaTask {
     pub speech_track: Option<SpeechTrack>,
     #[serde(default)]
     pub play_speech_track: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_export_settings: Option<super::video_export::ExportSettings>,
     #[serde(default)]
     pub is_task_running: bool,
     pub created_at_sec: u64,
@@ -248,6 +250,7 @@ impl MediaTask {
             separated_audio: None,
             speech_track: None,
             play_speech_track: false,
+            video_export_settings: None,
             is_task_running: false,
             created_at_sec: now,
             last_played_sec: now,

@@ -114,7 +114,7 @@ pub(super) fn render(
                     components::icon_button(
                         ui,
                         tr(language, "Save"),
-                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/check.svg"),
+                        xrtranslate_client_core::ui::icon!("check.svg"),
                     )
                 },
             )
@@ -123,7 +123,7 @@ pub(super) fn render(
         let cancel = components::icon_button(
             ui,
             tr(language, "Cancel"),
-            egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/x.svg"),
+            xrtranslate_client_core::ui::icon!("x.svg"),
         )
         .clicked();
         let retranslate = ui
@@ -133,7 +133,7 @@ pub(super) fn render(
                     components::icon_button(
                         ui,
                         tr(language, "Retranslate original"),
-                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/translation.svg"),
+                        xrtranslate_client_core::ui::icon!("translation.svg"),
                     )
                 },
             )

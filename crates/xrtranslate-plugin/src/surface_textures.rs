@@ -15,7 +15,8 @@ type Encoded = Vec<(TextureId, Vec<Delta>)>;
 struct Delta {
     size: [usize; 2],
     source_size: Vec2,
-    pixels: String,
+    #[serde(with = "pixels")]
+    pixels: Vec<u8>,
     options: TextureOptions,
     pos: Option<[usize; 2]>,
 }
@@ -38,7 +39,7 @@ pub fn serialize<S: Serializer>(textures: &Textures, serializer: S) -> Result<S:
                     Ok(Delta {
                         size: image.size,
                         source_size: image.source_size,
-                        pixels: STANDARD.encode(encoder.finish()?),
+                        pixels: encoder.finish()?,
                         options: delta.options,
                         pos: delta.pos,
                     })
@@ -70,11 +71,8 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Texture
                     if total > 128 * 1024 * 1024 {
                         return Err(serde::de::Error::custom("Texture updates are too large"));
                     }
-                    let compressed = STANDARD
-                        .decode(delta.pixels)
-                        .map_err(serde::de::Error::custom)?;
                     let mut pixels = Vec::new();
-                    ZlibDecoder::new(compressed.as_slice())
+                    ZlibDecoder::new(delta.pixels.as_slice())
                         .take(length as u64 + 1)
                         .read_to_end(&mut pixels)
                         .map_err(serde::de::Error::custom)?;
@@ -93,4 +91,26 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Texture
             Ok((id, deltas))
         })
         .collect()
+}
+
+mod pixels {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            STANDARD.encode(bytes).serialize(serializer)
+        } else {
+            serializer.serialize_bytes(bytes)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        if deserializer.is_human_readable() {
+            STANDARD
+                .decode(String::deserialize(deserializer)?)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_bytes::ByteBuf::deserialize(deserializer).map(serde_bytes::ByteBuf::into_vec)
+        }
+    }
 }

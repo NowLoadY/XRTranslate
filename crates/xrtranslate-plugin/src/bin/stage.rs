@@ -1,5 +1,7 @@
 //! Optional build helper. Manual copies use exactly the same directory layout.
 use std::{fs, io, path::Path};
+#[path = "sdk.rs"]
+mod sdk;
 
 fn copy(source: &Path, destination: &Path) -> io::Result<()> {
     let kind = fs::symlink_metadata(source)?.file_type();
@@ -77,6 +79,12 @@ fn stage(
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "sdk" || arg == "build")
+    {
+        return sdk::run(&args);
+    }
     let replace = args.len() == 5 && args[4] == "--replace";
     if !(args.len() == 4 || replace) || args[0] != "stage" {
         return Err(

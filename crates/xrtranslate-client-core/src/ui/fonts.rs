@@ -176,18 +176,25 @@ fn system_fonts(bold: bool) -> Vec<(&'static str, PathBuf, u32, &'static str)> {
     WINDOWS_FONTS
         .iter()
         .map(|font| {
-            let file = if bold {
+            let (file, index) = if bold {
                 match font.file_name {
-                    "msyh.ttc" => "msyhbd.ttc",
-                    "malgun.ttf" => "malgunbd.ttf",
-                    "segoeui.ttf" => "segoeuib.ttf",
-                    "Nirmala.ttc" => "NirmalaB.ttc",
-                    file => file,
+                    "msyh.ttc" => ("msyhbd.ttc", 0),
+                    "malgun.ttf" => ("malgunbd.ttf", 0),
+                    "segoeui.ttf" => ("segoeuib.ttf", 0),
+                    // Nirmala UI Regular and Bold are faces in the same collection.
+                    "Nirmala.ttc" => ("Nirmala.ttc", 1),
+                    file => (file, 0),
                 }
             } else {
-                font.file_name
+                (font.file_name, 0)
             };
-            (font.name, directory.join(file), 0, font.purpose)
+            let path = directory.join(file);
+            let (path, index) = if bold && !path.is_file() {
+                (directory.join(font.file_name), 0)
+            } else {
+                (path, index)
+            };
+            (font.name, path, index, font.purpose)
         })
         .collect()
 }

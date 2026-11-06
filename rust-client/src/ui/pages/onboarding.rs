@@ -74,6 +74,9 @@ pub fn render_onboarding_fullscreen(
         .fade_in(false)
         .show(ui.ctx(), |ui| {
             if welcome {
+                // The anchored area can remember a narrower size from another
+                // language. Let this single-line action measure its own width.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let next = components::primary_button_enabled(
                     ui,
                     i18n::tr(app.ui_language, "Continue"),
@@ -87,11 +90,7 @@ pub fn render_onboarding_fullscreen(
             }
             ui.set_width((page_rect.width() - 2.0 * margin as f32).min(720.0));
             Frame::new()
-                .fill(if custom_background {
-                    theme::surface_panel()
-                } else {
-                    theme::sidebar(viewport_focused)
-                })
+                .fill(Color32::from_white_alpha(96))
                 .stroke(Stroke::new(1.0, theme::border()))
                 .corner_radius(theme::container_radius(18))
                 .shadow(egui::Shadow {
@@ -213,7 +212,15 @@ pub fn render_onboarding_fullscreen(
                     egui::pos2(ui.max_rect().right(), ui.cursor().top() - 4.0),
                 );
 
+                let scroll_height = if welcome {
+                    (footer.response.rect.top() - footer_gap - ui.cursor().top()).max(0.0)
+                } else {
+                    ui.available_height()
+                };
+                // Keep content visible behind the floating navigation without an opaque edge fade.
+                ui.spacing_mut().scroll.fade.strength = 0.0;
                 egui::ScrollArea::vertical()
+                    .max_height(scroll_height)
                     .auto_shrink([false, false])
                     .id_salt(("onboarding_content_scroll", app.onboarding_page))
                     .show(ui, |ui| {
@@ -233,7 +240,10 @@ pub fn render_onboarding_fullscreen(
                                 _ => render_onboarding_download(app, ui),
                             },
                         );
-                        ui.add_space(footer.response.rect.height() + footer_gap);
+                        if !welcome {
+                            // Let the last item scroll completely above the floating navigation.
+                            ui.add_space(footer.response.rect.height() + footer_gap);
+                        }
                     });
             });
         });

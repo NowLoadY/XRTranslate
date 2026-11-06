@@ -45,6 +45,19 @@ impl Host {
                 .iter()
                 .any(|widget| matches!(widget, Widget::Surface))
         {
+            #[cfg(windows)]
+            if !entry.page.surface.gpu_unavailable
+                && entry.page.surface.compositor.is_none()
+                && let Some((state, _, _)) = &self.playback.graphics
+            {
+                match xrtranslate_client_core::ui::surface::Host::new(state) {
+                    Ok(gpu) => entry.page.surface.compositor = Some(Box::new(gpu)),
+                    Err(error) => {
+                        log::warn!("Plugin {id} GPU composition unavailable: {error}");
+                        entry.page.surface.gpu_unavailable = true;
+                    }
+                }
+            }
             if let Err(error) = entry.page.surface.show(
                 ui,
                 id.as_str(),

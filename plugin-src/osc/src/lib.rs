@@ -318,7 +318,7 @@ pub fn run(game: OscGame) {
         state: Value::Null,
         lyrics_available: false,
     };
-    if let Err(error) = surface::serve(app) {
+    if let Err(error) = xrtranslate_client_core::ui::surface::serve(app) {
         eprintln!("{error}");
         std::process::exit(1);
     }

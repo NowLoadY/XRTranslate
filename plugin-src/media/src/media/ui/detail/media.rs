@@ -203,9 +203,9 @@ fn playback_controls(
             ui,
             tr(language, if playing { "Pause" } else { "Play" }),
             if playing {
-                egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-pause.svg")
+                xrtranslate_client_core::ui::icon!("media-pause.svg")
             } else {
-                egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-play.svg")
+                xrtranslate_client_core::ui::icon!("media-play.svg")
             },
             overlay,
             false,
@@ -246,9 +246,9 @@ fn playback_controls(
                         },
                     ),
                     if overlay {
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-collapse.svg")
+                        xrtranslate_client_core::ui::icon!("media-collapse.svg")
                     } else {
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-expand.svg")
+                        xrtranslate_client_core::ui::icon!("media-expand.svg")
                     },
                     overlay,
                     false,
@@ -261,7 +261,7 @@ fn playback_controls(
                 let response = playback_button(
                     ui,
                     tr(language, "Subtitles"),
-                    egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/media-subtitles.svg"),
+                    xrtranslate_client_core::ui::icon!("media-subtitles.svg"),
                     overlay,
                     controller.show_subtitles,
                 );

@@ -102,9 +102,6 @@ x11rb = { version = "0.13.2", features = ["shape", "randr"] }
 [build-dependencies]
 winres = "0.1.12"
 
-[target.'cfg(windows)'.build-dependencies]
-find-msvc-tools = "0.1.15"
-
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = "0.37.0"
 

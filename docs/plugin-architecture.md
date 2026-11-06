@@ -19,8 +19,11 @@ optional consumers report unavailability when used.
 
 Motion source is maintained in a separate private repository in the ignored
 `private-plugins/` directory. Public releases do not compile or package it.
-Other independent plugin source lives under `plugin-src/`. These plugins need the
-host; independence does not require a second application or UI implementation.
+Other plugin source lives in the independent workspace under `plugin-src/`.
+It can move to a separate repository unchanged. The exported SDK supplies its
+dependencies and build tool; the host build accepts finished plugin packages.
+Plugins keep working across compatible host upgrades without being rebuilt.
+They use host services without depending on the host's Rust compiler or UI build.
 
 Installed manifests are the sole plugin page catalogue; no compiled plugin
 controllers or static navigation registry remain. The host retains shared screen
@@ -28,10 +31,17 @@ capture/OCR, OSC transport and task services.
 
 `crates/xrtranslate-client-core` holds the existing UI components and neutral
 session/playback/file contracts once. The native Media, Meeting and Vocabulary
-pages reuse them through the SDK's egui surface: input enters the plugin; drawing
-and the Director registry return to the host. UI and CLI invoke the same handlers.
+pages reuse them through the SDK's embedded adapter. On Windows, plugins render
+their own UI and the host composites shared GPU surfaces. Older plugins and other
+platforms retain the compatible drawing adapter. UI and CLI invoke the same handlers.
 Video textures remain host-owned; video pixels do not travel through JSON. The
 host cancels a removed plugin's tasks and releases its playback resources.
+
+Embedded pages are one presentation option. Small panels can use host controls;
+games and intensive custom canvases can own a window and render directly with
+their own engine. The host exchanges tasks and state with such a plugin, not
+window frames. The SDK's window example demonstrates this option without adding
+game rendering responsibilities to the host.
 
 Media adopts the old `video_tasks.json` on first use; Meeting copies its old
 SQLite database, including committed WAL content. Their records then live under

@@ -32,7 +32,13 @@ if ([string]::IsNullOrWhiteSpace($env:RUST_LOG)) {
 }
 $env:XRTRANSLATE_BACKEND_CONSOLE_LOG = '1'
 
-$buildArguments = @('build', '--manifest-path', $workspaceManifestPath, '--package', 'xrtranslate-backend')
+$buildArguments = @(
+    'build', '--locked', '--manifest-path', $workspaceManifestPath,
+    '--target-dir', (Join-Path $projectRoot 'target'),
+    '--package', 'rust-client', '--package', 'xrtranslate-backend',
+    '--package', 'xrtranslate-account-login', '--package', 'xrtranslate-plugin',
+    '--features', 'rust-client/mpv,xrtranslate-plugin/host'
+)
 $runtimeMarker = Join-Path $projectRoot 'runtime\native-runtime.json'
 if (Test-Path -LiteralPath $runtimeMarker -PathType Leaf) {
     try {
@@ -43,7 +49,7 @@ if (Test-Path -LiteralPath $runtimeMarker -PathType Leaf) {
                 $managedCore = Join-Path $projectRoot $managedCore
             }
             if (Test-Path -LiteralPath $managedCore -PathType Leaf) {
-                $buildArguments += @('--features', 'managed-ort')
+                $buildArguments += @('--features', 'xrtranslate-backend/managed-ort')
                 Write-Host "Using managed ONNX Runtime core: $managedCore"
             }
         }
@@ -55,14 +61,14 @@ if ($Release) {
     $buildArguments += '--release'
 }
 
-Write-Host 'Preparing the local translation service...'
+Write-Host 'Preparing the application...'
 & $cargo @buildArguments
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
 $corpusBuildArguments = @(
-    'build', '--manifest-path', $corpusManifestPath,
+    'build', '--locked', '--manifest-path', $corpusManifestPath,
     '--target-dir', (Join-Path $projectRoot 'target'),
     '--package', 'xr-corpus-server'
 )
@@ -90,12 +96,13 @@ if (Test-Path -LiteralPath $resourceBinDir) {
     }
 }
 
-$runArguments = @('run', '--manifest-path', $manifestPath, '--features', 'mpv')
-if ($Release) {
-    $runArguments += '--release'
-}
-
 Write-Host 'Starting XRTranslate...'
 Write-Host "Logging enabled (RUST_LOG=$env:RUST_LOG). Press Ctrl+C to stop."
-& $cargo @runArguments
-exit $LASTEXITCODE
+Push-Location -LiteralPath $projectRoot
+try {
+    & (Join-Path $targetBinDir 'rust-client.exe')
+    $clientExitCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+exit $clientExitCode

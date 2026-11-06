@@ -28,7 +28,7 @@ pub(in crate::media::ui) fn subtitle_header(
                 import = components::round_icon_button(
                     ui,
                     tr(language, "Import subtitles"),
-                    egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/import.svg"),
+                    xrtranslate_client_core::ui::icon!("import.svg"),
                     28.0,
                 )
                 .clicked();
@@ -36,7 +36,7 @@ pub(in crate::media::ui) fn subtitle_header(
                     attach = components::round_icon_button(
                         ui,
                         tr(language, "Attach media"),
-                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/file-video.svg"),
+                        xrtranslate_client_core::ui::icon!("file-video.svg"),
                         28.0,
                     )
                     .clicked();

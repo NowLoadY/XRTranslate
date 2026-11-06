@@ -25,16 +25,12 @@ pub(super) fn render_library(
             for (label, icon, next_action) in [
                 (
                     "New meeting",
-                    egui::include_image!(
-                        "../../../../../crates/xrtranslate-client-core/resources/icons/record.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("record.svg"),
                     UiAction::NewLive,
                 ),
                 (
                     "Import audio",
-                    egui::include_image!(
-                        "../../../../../crates/xrtranslate-client-core/resources/icons/import.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("import.svg"),
                     UiAction::NewImport,
                 ),
             ] {
@@ -142,7 +138,7 @@ pub(super) fn render_library(
                             components::icon_menu(
                                 ui,
                                 tr(language, "More"),
-                                egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/more.svg"),
+                                xrtranslate_client_core::ui::icon!("more.svg"),
                                 |ui| {
                                     if can_continue(meeting)
                                         && components::button(

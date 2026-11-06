@@ -73,9 +73,7 @@ fn render_header(
             } else {
                 "Connect SteamVR"
             }),
-            egui::include_image!(
-                "../../../../crates/xrtranslate-client-core/resources/icons/power.svg"
-            ),
+            xrtranslate_client_core::ui::icon!("power.svg"),
             36.0,
         )
         .clicked()

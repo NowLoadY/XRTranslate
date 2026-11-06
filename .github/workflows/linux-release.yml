@@ -130,10 +130,18 @@ jobs:
             target/release-resources/linux-x86_64/onnxruntime-linux-x64-*.tgz
           key: resources-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-${{ hashFiles('config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**', 'scripts/build-linux-release.sh') }}
 
+      - name: Export the SDK and build plugin packages independently
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p xrtranslate-plugin --features host
+          target/release/xrt-plugin sdk . "$RUNNER_TEMP/xrtranslate-sdk"
+          bash plugin-src/build.sh "$RUNNER_TEMP/xrtranslate-sdk" "$RUNNER_TEMP/xrtranslate-plugins" --target-dir "$GITHUB_WORKSPACE/target" --locked
+
       - name: Build the standard Linux release
         run: |
           set -euo pipefail
           export XRTRANSLATE_RELEASE_DIR="$GITHUB_WORKSPACE/dist/$PACKAGE_NAME"
+          export XRTRANSLATE_PLUGINS_DIR="$RUNNER_TEMP/xrtranslate-plugins"
           ./scripts/build-linux-release.sh
           git diff --exit-code
           git -C XR-Corpus diff --exit-code

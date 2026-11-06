@@ -5,12 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-xrtranslate-client-core = { path = "../../crates/xrtranslate-client-core" }
-xrtranslate-plugin = { path = "../../crates/xrtranslate-plugin", features = ["egui"] }
-xrtranslate-engine = { path = "../../crates/xrtranslate-engine" }
-xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
-xrtranslate-prompt = { path = "../../crates/xrtranslate-prompt" }
-ui-director = { path = "../../crates/ui-director", features = ["egui"] }
+xrtranslate-client-core = { version = "0.4.0" }
+xrtranslate-plugin = { version = "0.1.0", features = ["egui"] }
+xrtranslate-engine = { version = "0.4.0" }
+xrtranslate-protocol = { version = "0.4.0" }
+xrtranslate-prompt = { version = "0.4.0" }
+ui-director = { version = "0.0.1", features = ["egui"] }
 eframe = "0.37"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

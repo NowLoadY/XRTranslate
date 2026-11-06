@@ -34,6 +34,9 @@ pub struct Manifest {
     #[serde(default)]
     pub description: Text,
     pub executable: String,
+    /// Opt in to application release bundles; independent installation is unaffected.
+    #[serde(default)]
+    pub bundle_with_host: bool,
     #[serde(default)]
     pub page: bool,
     #[serde(default)]

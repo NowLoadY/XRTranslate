@@ -5,7 +5,7 @@ edition.workspace = true
 license = "AGPL-3.0-only"
 
 [dependencies]
-xrtranslate-plugin = {path="../../crates/xrtranslate-plugin"}
-xrtranslate-client-core = {path="../../crates/xrtranslate-client-core"}
+xrtranslate-plugin = { version = "0.1.0" }
+xrtranslate-client-core = { version = "0.4.0" }
 serde_json = "1"
 uuid = {version="1",features=["v4"]}

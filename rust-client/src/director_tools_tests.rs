@@ -21,6 +21,15 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
     let mut note = String::new();
     let mut number = 1u16;
     let mut detail_seen = false;
+    let plugin_pages = crate::plugins::PluginPages {
+        installed_pages: vec![crate::plugins::PluginPage {
+            id: crate::plugins::PluginId::MEDIA,
+            title: "Media".into(),
+            order: 150,
+            group: String::new(),
+            icon: None,
+        }],
+    };
     let mut frame = |checked: &mut bool,
                      text: &mut String,
                      selection: &mut usize,
@@ -41,7 +50,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
                     &ctx,
                     "Fixture",
                     crate::ui::navigation_pages(
-                        &Default::default(),
+                        &plugin_pages,
                         true,
                         crate::i18n::UiLanguage::English,
                     ),
@@ -246,7 +255,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|page| page["route"] == "plugin:video_player")
+            .any(|page| page["route"] == "plugin:media")
     );
     for (target, value) in [
         ("Details", json!(true)),

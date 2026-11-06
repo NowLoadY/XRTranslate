@@ -134,7 +134,7 @@ impl MpvInstaller {
 
 /// A source checkout carries the runtime ZIP; refresh extracted DLLs before loading MPV.
 #[cfg(all(windows, feature = "mpv"))]
-pub(crate) fn prepare_bundled_runtime() -> Result<(), String> {
+pub fn prepare_bundled_runtime() -> Result<(), String> {
     let directories = super::runtime_bin_directories();
     let Some(archive) = directories
         .iter()
@@ -207,16 +207,7 @@ async fn download_and_install_mpv(
 
     // Configure DLL search path on Windows
     #[cfg(windows)]
-    {
-        use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
-        use windows::core::HSTRING;
-        for bin_dir in super::runtime_bin_directories() {
-            if bin_dir.is_dir() {
-                let _ = unsafe { SetDllDirectoryW(&HSTRING::from(bin_dir.as_os_str())) };
-                break;
-            }
-        }
-    }
+    super::configure_dll_search_paths();
 
     Ok(())
 }

@@ -102,23 +102,19 @@ fn render_detail_contents(
                 controller.open_library();
                 action = MediaAction::StopTranslation;
             }
-            if controller.subtitles.count() > 0 || speech.is_some() {
+            if controller.subtitles.count() > 0 || speech.is_some() || video_available {
                 components::icon_menu(
                     ui,
                     tr(language, "Export"),
-                    egui::include_image!(
-                        "../../../../../../crates/xrtranslate-client-core/resources/icons/export.svg"
-                    ),
+                    xrtranslate_client_core::ui::icon!("export.svg"),
                     |ui| {
-                        if controller.subtitles.count() > 0 {
-                            export_video = super::super::export_controls(
-                                ui,
-                                language,
-                                &title,
-                                &controller.subtitles,
-                                video_available,
-                            );
-                        }
+                        export_video = super::super::export_controls(
+                            ui,
+                            language,
+                            &title,
+                            &controller.subtitles,
+                            video_available,
+                        );
                         if let Some((path, _, ready)) = &speech {
                             export_speech = components::secondary_button_enabled(
                                 ui,
@@ -152,7 +148,8 @@ fn render_detail_contents(
             }
         }
         if export_video && let Some(id) = controller.active_task_id.clone() {
-            controller.start_video_export(&id, ui.ctx());
+            controller.save_active();
+            controller.pending_video_export = Some(id);
         }
     }
     if action == MediaAction::StopTranslation {

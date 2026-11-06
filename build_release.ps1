@@ -8,6 +8,8 @@ param(
     [string]$OnnxRuntimeCpu,
     # Visual Studio VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
     [string]$VcRuntimeDirectory,
+    # Optional prebuilt plugin packages; their sources are built independently.
+    [string]$PluginsDirectory,
     # Validate existing release inputs without building, downloading, or staging.
     [switch]$ValidateOnly
 )
@@ -139,19 +141,7 @@ if (-not $ValidateOnly) {
         '--package', 'xrtranslate-account-login',
         '--package', 'xrtranslate-packager',
         '--package', 'xrtranslate-plugin',
-        '--package', 'xrt-agent',
-        '--package', 'xrt-media',
-        '--package', 'xrt-meeting',
-        '--package', 'xrt-vocabulary',
-        '--package', 'xrt-vr-overlay',
-        '--package', 'xrt-avatar',
-        '--package', 'xrt-ocr',
-        '--package', 'xrt-osc',
-        '--package', 'xrt-chilloutvr-osc',
-        '--package', 'xrt-lyrics',
-        '--package', 'xrt-bigwalk',
-        '--package', 'xrt-auto-input',
-        '--features', 'rust-client/mpv,xrt-media/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
+        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
     )
 
     Write-Host 'Building native release binaries...'
@@ -341,13 +331,12 @@ $packageArguments = @(
     '--vc-runtime-dir', $VcRuntimeDirectory,
     '--output', $Output
 )
-foreach ($plugin in @('agent', 'media', 'meeting', 'vocabulary', 'vr-overlay', 'avatar', 'ocr', 'osc', 'chilloutvr-osc', 'lyrics', 'bigwalk', 'auto-input')) {
-    $directory = Join-Path $runtimeAssetCache "plugins\$plugin"
-    if (-not $ValidateOnly) {
-        & (Join-Path $projectRoot 'target\release\xrt-plugin.exe') stage (Join-Path $projectRoot "plugin-src\$plugin") (Join-Path $projectRoot "target\release\xrt-$plugin.exe") $directory --replace
-        if ($LASTEXITCODE -ne 0) { throw "Could not stage plugin: $plugin" }
+if ($PluginsDirectory) {
+    foreach ($directory in Get-ChildItem -LiteralPath $PluginsDirectory -Directory) {
+        if (Test-Path -LiteralPath (Join-Path $directory.FullName 'plugin.json')) {
+            $packageArguments += @('--plugin-directory', $directory.FullName)
+        }
     }
-    $packageArguments += @('--plugin-directory', $directory)
 }
 if ($IncludeModels) {
     $packageArguments += '--include-models'

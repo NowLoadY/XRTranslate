@@ -60,3 +60,21 @@ pub fn require_host(manifest: &Manifest, version: &str) -> Result<(), String> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_plugins_remain_compatible_with_host_updates() {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id":"example", "version":"0.1.0", "min_host_version":"0.4.0",
+            "title":{"en":"Example"}, "executable":"example.exe"
+        }))
+        .unwrap();
+        for host in ["0.4.0", "0.4.1", "0.5.0"] {
+            assert!(require_host(&manifest, host).is_ok());
+        }
+        assert!(require_host(&manifest, "0.3.9").is_err());
+    }
+}
