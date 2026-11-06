@@ -1,0 +1,29 @@
+{
+  "id": "chilloutvr_osc",
+  "version": "0.1.0",
+  "min_host_version": "0.4.0",
+  "title": {
+    "en": "ChilloutVR OSC",
+    "zh": "ChilloutVR OSC"
+  },
+  "executable": "xrt-chilloutvr-osc",
+  "page": true,
+  "icon": "assets/icon.svg",
+  "navigation_order": 205,
+  "requires": [
+    "udp.configure",
+    "udp.send",
+    "text.action"
+  ],
+  "subscriptions": [
+    "translation.output",
+    "host.services",
+    "system.metrics",
+    "osc.receiver",
+    "plugin.state",
+    "lyrics.text",
+    "voice.review",
+    "udp.revoked"
+  ],
+  "tools": []
+}

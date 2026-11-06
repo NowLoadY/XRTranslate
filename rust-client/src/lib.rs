@@ -103,14 +103,17 @@ use history::{
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
-use plugins::osc::{OscGame, OscPageContext, OscPlugin, OscUiAction, transport::TransportOwner};
-use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
+mod osc_transport;
+mod system_metrics;
+use osc_transport::TransportOwner;
+use plugins::{PluginId, PluginPages};
 pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
     CaptionUpdate, HostOutputEvent, HostOutputSubscriber, PluginSessionBinding,
     SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSessionOwner,
 };
 use ui::{NavigationState, Page};
+use xrtranslate_client_core::text_output;
 use xrtranslate_prompt::{PromptTemplateLibrary, TaskContext};
 use xrtranslate_protocol::PromptGraphSet;
 
@@ -661,12 +664,10 @@ struct XRTranslateApp {
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
-    osc_plugin: OscPlugin,
-    chilloutvr_osc_plugin: OscPlugin,
     game_plugins: plugins::game_plugins::Settings,
     osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
-    text_output_plugin: plugins::text_output::TextOutputPlugin,
+    system_metrics: system_metrics::SystemMonitor,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
@@ -676,7 +677,7 @@ struct XRTranslateApp {
     ocr: ocr_host::OcrHost,
     pending_translations: Vec<TranslationTask>,
     active_languages: Option<LanguageSelection>,
-    plugin_preferences: PluginPreferences,
+    plugin_pages: PluginPages,
     service_config: service_config::ServiceConfigEditor,
     account_connections: account_connections::AccountConnections,
     pub preferred_gpu: Option<String>,
@@ -908,25 +909,6 @@ fn initialize_live_audio<Host, Dependencies>(
     Ok(dependencies)
 }
 
-fn same_osc_endpoint(
-    a: &plugins::osc::runtime::OscSettings,
-    b: &plugins::osc::runtime::OscSettings,
-) -> bool {
-    fn address(value: &str) -> Option<std::net::IpAddr> {
-        let value = value.trim();
-        if value.eq_ignore_ascii_case("localhost") {
-            Some(std::net::Ipv4Addr::LOCALHOST.into())
-        } else {
-            value.trim_matches(['[', ']']).parse().ok()
-        }
-    }
-    a.send_port == b.send_port
-        && match (address(&a.ip), address(&b.ip)) {
-            (Some(a), Some(b)) => a == b,
-            _ => a.ip.trim().eq_ignore_ascii_case(b.ip.trim()),
-        }
-}
-
 impl Default for XRTranslateApp {
     fn default() -> Self {
         let audio_system = AudioSystem::new();
@@ -939,39 +921,11 @@ impl Default for XRTranslateApp {
         let service_config = service_config::ServiceConfigEditor::load();
         let mut settings = ClientSettings::load(&backend_manager.project_root());
         settings.sanitize_devices(&devices, &loopback_devices);
-        if settings.plugin_preferences.is_enabled(PluginId::OSC)
-            && settings
-                .plugin_preferences
-                .is_enabled(PluginId::CHILLOUTVR_OSC)
-            && settings.osc_settings.enabled
-            && settings.chilloutvr_osc_settings.enabled
-            && same_osc_endpoint(&settings.osc_settings, &settings.chilloutvr_osc_settings)
-        {
-            settings.chilloutvr_osc_settings.enabled = false;
-        }
         let initial_system_audio_input = SystemAudioInputSelection::Endpoint {
             device_id: settings.selected_loopback_device_id.clone(),
         };
-        let text_output_plugin = plugins::text_output::TextOutputPlugin::new();
-        let mut receive_settings = settings.osc_settings.clone();
-        receive_settings.enabled &= settings.plugin_preferences.is_enabled(PluginId::OSC);
-        let osc_transport = TransportOwner::new(&receive_settings);
-        let osc_plugin = OscPlugin::new(
-            OscGame::VRChat,
-            settings.osc_settings.clone(),
-            settings.plugin_preferences.is_enabled(PluginId::OSC),
-            text_output_plugin.handle(),
-            Some(osc_transport.handle()),
-        );
-        let chilloutvr_osc_plugin = OscPlugin::new(
-            OscGame::ChilloutVR,
-            settings.chilloutvr_osc_settings.clone(),
-            settings
-                .plugin_preferences
-                .is_enabled(PluginId::CHILLOUTVR_OSC),
-            text_output_plugin.handle(),
-            None,
-        );
+        let system_metrics = system_metrics::SystemMonitor::new();
+        let osc_transport = TransportOwner::new(&Default::default());
         let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
         let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
@@ -981,8 +935,7 @@ impl Default for XRTranslateApp {
                 None
             }
         };
-        let mut plugin_host = plugin_host::Host::load(backend_manager.project_root());
-        plugins::osc::integrations::connect(&mut plugin_host, &osc_plugin, &chilloutvr_osc_plugin);
+        let plugin_host = plugin_host::Host::load(backend_manager.project_root());
         const HISTORY_PRODUCERS: &[&str] = &[
             PluginId::OCR.as_str(),
             PluginId::MEDIA.as_str(),
@@ -1057,8 +1010,6 @@ impl Default for XRTranslateApp {
         ]);
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
             Box::new(plugin_host.output.clone()),
-            Box::new(osc_plugin.publisher()),
-            Box::new(chilloutvr_osc_plugin.publisher()),
             Box::new(avatar_plugin.output.clone()),
         ]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
@@ -1847,12 +1798,10 @@ impl Default for XRTranslateApp {
             loopback_clone_state: settings.loopback_clone_state,
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
-            osc_plugin,
-            chilloutvr_osc_plugin,
             game_plugins: settings.game_plugins,
             osc_transport,
             avatar_plugin,
-            text_output_plugin,
+            system_metrics,
             audio_studio,
             voicemeeter_remote,
             voicemeeter_route: None,
@@ -1862,7 +1811,7 @@ impl Default for XRTranslateApp {
             ocr,
             pending_translations: Vec::new(),
             active_languages: None,
-            plugin_preferences: settings.plugin_preferences,
+            plugin_pages: PluginPages::default(),
             preferred_gpu: settings
                 .preferred_gpu
                 .clone()
@@ -2023,9 +1972,7 @@ impl XRTranslateApp {
             return self.plugin_host.enabled(id);
         }
         // Embedded OCR is configured with its model, without a second switch.
-        self.plugin_available(id)
-            && (id == PluginId::OCR
-                || PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id))
+        self.plugin_available(id) && (id == PluginId::OCR || self.plugin_host.enabled(id))
     }
 
     /// Selects the first plugin currently requesting the exclusive translation
@@ -2770,210 +2717,6 @@ impl XRTranslateApp {
         }
     }
 
-    pub(crate) fn plugin_disable_block_reason(&self, id: PluginId) -> Option<String> {
-        match id {
-            _ => None,
-        }
-    }
-
-    pub(crate) fn set_plugin_enabled(&mut self, id: PluginId, enabled: bool) {
-        if self.plugin_host.contains(id) {
-            if let Err(error) = self.plugin_host.set_enabled(id.as_str(), enabled) {
-                self.notify_error("Could not change plugin state.", error);
-            }
-            return;
-        }
-        if self.plugin_enabled(id) == enabled {
-            return;
-        }
-        if !enabled && let Some(reason) = self.plugin_disable_block_reason(id) {
-            self.notify_error("Stop active tasks before disabling this plugin.", reason);
-            return;
-        }
-
-        let lifecycle = match id {
-            PluginId::OSC | PluginId::CHILLOUTVR_OSC => {
-                if enabled {
-                    self.osc_output_mut(id).draft().validate().and_then(|()| {
-                        self.reconcile_osc_endpoint(id)?;
-                        self.osc_output_mut(id).activate()
-                    })
-                } else {
-                    self.osc_output_mut(id).deactivate()
-                }
-            }
-            _ => Ok(()),
-        };
-        if let Err(error) = lifecycle {
-            self.notify_error("Could not apply plugin settings.", error);
-            return;
-        }
-
-        let registry = PluginRegistry::builtin();
-        registry.set_enabled(&mut self.plugin_preferences, id, enabled);
-        self.sync_lyrics();
-        registry.normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
-        self.save_settings();
-    }
-
-    pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
-        if matches!(id, PluginId::OSC | PluginId::CHILLOUTVR_OSC) {
-            let language = self.ui_language;
-            let actions = self.osc_output_mut(id).render_settings(ui, language);
-            self.apply_osc_actions(id, actions);
-        }
-    }
-
-    fn osc_output_mut(&mut self, id: PluginId) -> &mut OscPlugin {
-        match id {
-            PluginId::OSC => &mut self.osc_plugin,
-            PluginId::CHILLOUTVR_OSC => &mut self.chilloutvr_osc_plugin,
-            _ => unreachable!("not an OSC output"),
-        }
-    }
-
-    /// A shared endpoint has one publisher; switching games preserves both layouts.
-    fn reconcile_osc_endpoint(&mut self, id: PluginId) -> Result<(), String> {
-        let (active, other, other_id) = match id {
-            PluginId::OSC => (
-                &self.osc_plugin,
-                &mut self.chilloutvr_osc_plugin,
-                PluginId::CHILLOUTVR_OSC,
-            ),
-            PluginId::CHILLOUTVR_OSC => (
-                &self.chilloutvr_osc_plugin,
-                &mut self.osc_plugin,
-                PluginId::OSC,
-            ),
-            _ => return Ok(()),
-        };
-        let settings = active.draft();
-        if settings.enabled
-            && self.plugin_preferences.is_enabled(other_id)
-            && other.applied().enabled
-            && same_osc_endpoint(settings, other.applied())
-        {
-            other.relinquish_endpoint()?;
-        }
-        Ok(())
-    }
-
-    fn apply_osc_settings(&mut self, id: PluginId) -> Result<(), String> {
-        self.osc_output_mut(id).draft().validate()?;
-        if self.plugin_enabled(id) {
-            self.reconcile_osc_endpoint(id)?;
-        }
-        self.osc_output_mut(id).apply_draft()?;
-        self.last_error = None;
-        self.sync_lyrics();
-        self.save_settings();
-        Ok(())
-    }
-
-    fn apply_osc_actions(&mut self, id: PluginId, actions: Vec<OscUiAction>) {
-        for action in actions {
-            match action {
-                OscUiAction::ClearHostHistory => self.clear_history(),
-                OscUiAction::SetMicrophoneSyncEnabled(enabled) => {
-                    self.set_microphone_sync_enabled(enabled)
-                }
-                OscUiAction::SetSpeakerNumberVisible(enabled) => {
-                    self.set_osc_speaker_number_visible(id, enabled)
-                }
-                OscUiAction::ApplySettings => {
-                    if let Err(error) = self.apply_osc_settings(id) {
-                        self.notify_error("Could not apply OSC settings.", error);
-                    }
-                }
-                OscUiAction::SetOutputEnabled(enabled) => {
-                    let result = if enabled {
-                        self.osc_output_mut(id).draft_mut().enabled = true;
-                        self.apply_osc_settings(id)
-                    } else {
-                        self.osc_output_mut(id).disable_output().map(|()| {
-                            self.sync_lyrics();
-                            self.save_settings();
-                        })
-                    };
-                    if let Err(error) = result {
-                        let plugin = self.osc_output_mut(id);
-                        plugin.draft_mut().enabled = plugin.applied().enabled;
-                        self.notify_error("Could not apply OSC settings.", error);
-                    }
-                }
-                OscUiAction::SetLanguageRoute {
-                    source_lang,
-                    target_lang,
-                    asr_only,
-                } => {
-                    if self
-                        .select_language_options(
-                            &source_lang,
-                            &target_lang,
-                            self.additional_target_lang.clone().as_deref(),
-                            asr_only,
-                        )
-                        .is_none()
-                    {
-                        return;
-                    }
-                    self.source_lang = source_lang;
-                    self.target_lang = target_lang;
-                    self.asr_only = asr_only;
-                    self.apply_language_route();
-                }
-                OscUiAction::TranslateInput { text } => {
-                    if self.submit_text_translation(&text, None, None, None) {
-                        self.osc_output_mut(id).draft_input_mut().clear();
-                    }
-                }
-                OscUiAction::DirectInput(text) => {
-                    if self.plugin_enabled(id) {
-                        let plugin = self.osc_output_mut(id);
-                        if plugin.applied().enabled {
-                            plugin.send_manual_message(&text);
-                            plugin.draft_input_mut().clear();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn sync_lyrics(&mut self) {
-        plugins::osc::integrations::sync(
-            &mut self.plugin_host,
-            &self.plugin_preferences,
-            &self.osc_plugin,
-            &self.chilloutvr_osc_plugin,
-        );
-    }
-
-    fn render_osc_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
-        let languages = self.language_capabilities();
-        let lyrics_available = self.plugin_host.available("lyrics");
-        let plugin = match id {
-            PluginId::OSC => &mut self.osc_plugin,
-            PluginId::CHILLOUTVR_OSC => &mut self.chilloutvr_osc_plugin,
-            _ => return,
-        };
-        let actions = plugin.render_page(
-            ui,
-            OscPageContext {
-                language: self.ui_language,
-                preparing_text: self.text_translation.preparing_host(),
-                microphone_sync_enabled: self.microphone_sync_enabled,
-                lyrics_available,
-                languages,
-                source_lang: &self.source_lang,
-                target_lang: &self.target_lang,
-                asr_only: self.asr_only,
-                additional_target_lang: self.additional_target_lang.as_deref(),
-            },
-        );
-        self.apply_osc_actions(id, actions);
-    }
-
     fn sync_game_plugins(&mut self) {
         self.poll_avatar(None);
     }
@@ -3006,7 +2749,6 @@ impl XRTranslateApp {
                 });
                 if changed {
                     self.sync_game_plugins();
-                    self.sync_lyrics();
                     self.save_settings();
                 }
                 ui.add_space(16.0);
@@ -3016,7 +2758,6 @@ impl XRTranslateApp {
                     self.game_plugins.enabled,
                 ) {
                     self.poll_avatar(None);
-                    self.sync_lyrics();
                     self.save_settings();
                 }
                 ui.add_space(16.0);
@@ -3283,10 +3024,7 @@ impl XRTranslateApp {
             self.render_installed_page(ui, id);
             return;
         }
-        match id {
-            PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
-            _ => self.navigation.open(Page::Translation),
-        }
+        self.navigation.open(Page::Translation);
     }
 
     pub fn save_settings(&self) {
@@ -3323,11 +3061,8 @@ impl XRTranslateApp {
             server_url: self.server_url.clone(),
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
-            osc_settings: self.osc_plugin.draft().clone(),
-            chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
             game_plugins: self.game_plugins,
             avatar_connector: self.avatar_plugin.settings.clone(),
-            plugin_preferences: self.plugin_preferences.clone(),
             active_page: self.navigation.page,
             sidebar_collapsed: self.navigation.collapsed,
             usage_guidelines_accepted: self.usage_guidelines_accepted,
@@ -4865,16 +4600,6 @@ impl XRTranslateApp {
         self.microphone_clone_state.as_ref()
     }
 
-    /// Controls only whether OSC presentation includes the infrastructure-provided ID.
-    fn set_osc_speaker_number_visible(&mut self, id: PluginId, enabled: bool) {
-        let enabled = enabled
-            && crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
-        self.osc_output_mut(id).draft_mut().show_speaker_number = enabled;
-        if let Err(error) = self.apply_osc_settings(id) {
-            self.notify_error("Could not apply OSC settings.", error);
-        }
-    }
-
     fn set_microphone_sync_enabled(&mut self, enabled: bool) {
         let enabled = enabled
             && crate::feature_access::is_available(crate::feature_access::Feature::MuteSync);
@@ -4971,8 +4696,6 @@ impl XRTranslateApp {
             state.pending_recognition_windows.clear();
             state.companion_reader.clear_history();
         }
-        self.osc_plugin.clear_chatbox();
-        self.chilloutvr_osc_plugin.clear_chatbox();
         self.plugin_host
             .publish("translation.clear", serde_json::Value::Null);
     }
@@ -5125,14 +4848,7 @@ impl XRTranslateApp {
     }
 
     fn poll_session_events(&mut self) {
-        for error in [
-            self.osc_plugin.manager().take_error(),
-            self.chilloutvr_osc_plugin.manager().take_error(),
-            self.osc_transport.take_error(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for error in [self.osc_transport.take_error()].into_iter().flatten() {
             self.last_error = Some(error);
         }
 
@@ -5399,7 +5115,7 @@ impl XRTranslateApp {
 impl Drop for XRTranslateApp {
     fn drop(&mut self) {
         self.shutdown_avatar();
-        self.text_output_plugin.shutdown();
+        self.system_metrics.shutdown();
         self.stop();
         if let Some(route) = self.voicemeeter_route.take() {
             let _ = route.clear();
@@ -5467,7 +5183,6 @@ impl eframe::App for XRTranslateApp {
         // Task progress belongs to logic: occluded/minimized windows may receive
         // logic-only passes while their viewport still reports visible=true.
         self.poll_installed_plugins(ctx);
-        self.sync_lyrics();
         self.poll_audio_import();
         if !self.first_run {
             self.poll_backend_startup(Some(ctx.clone()));
@@ -5533,7 +5248,7 @@ impl eframe::App for XRTranslateApp {
             ui.ctx(),
             &page_name,
             ui::navigation_pages(
-                &self.plugin_preferences,
+                &self.plugin_pages,
                 self.service_config.tts_is_configured(),
                 self.ui_language,
             ),
@@ -5551,8 +5266,6 @@ impl eframe::App for XRTranslateApp {
                 self.first_run = false;
             }
         }
-        PluginRegistry::builtin()
-            .normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
         if let Page::Plugin(id) = self.navigation.page
             && !self.plugin_enabled(id)
         {
@@ -5740,7 +5453,7 @@ impl eframe::App for XRTranslateApp {
                         ui::render_top_navigation(
                             ui,
                             &mut self.navigation,
-                            &self.plugin_preferences,
+                            &self.plugin_pages,
                             self.service_config.tts_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
@@ -5769,7 +5482,7 @@ impl eframe::App for XRTranslateApp {
                         ui::render_sidebar(
                             ui,
                             &mut self.navigation,
-                            &self.plugin_preferences,
+                            &self.plugin_pages,
                             self.service_config.tts_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
@@ -5846,20 +5559,7 @@ impl eframe::App for XRTranslateApp {
                     );
                     return;
                 }
-                let plugin_owned_scroll = match self.navigation.page {
-                    Page::Plugin(id) => {
-                        PluginRegistry::builtin()
-                            .descriptor(id)
-                            .is_some_and(|descriptor| {
-                                descriptor.scroll_policy == PluginScrollPolicy::Plugin
-                            })
-                    }
-                    _ => false,
-                };
-                if plugin_owned_scroll {
-                    let Page::Plugin(id) = self.navigation.page else {
-                        unreachable!();
-                    };
+                if let Page::Plugin(id) = self.navigation.page {
                     ui::animation::AnimationSystem::render_animated_page(
                         ui,
                         Page::Plugin(id),

@@ -4,9 +4,9 @@ use super::{
 };
 use crate::{
     client_settings::CaptureSource,
-    plugins::osc::transport::OscTransportHandle,
-    plugins::text_output::format_message,
+    osc_transport::OscTransportHandle,
     session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
+    text_output::format_message,
 };
 use parking_lot::Mutex;
 use std::{

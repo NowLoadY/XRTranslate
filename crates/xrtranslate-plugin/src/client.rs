@@ -106,6 +106,9 @@ impl Client {
             let _ = reply.send(Err("Host disconnected".into()));
         }
     }
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
 }
 impl Request {
     pub fn poll(&self) -> Option<Result> {

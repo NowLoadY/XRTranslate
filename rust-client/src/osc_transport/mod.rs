@@ -3,11 +3,9 @@
 //! OSCQuery discovery and all socket I/O live on this owner's worker. Consumers
 //! provide paths, inspect typed snapshots and carry epochs through their writes;
 //! this module has no knowledge of a particular Avatar feature's parameters.
-use super::{
-    microphone::{Edge, MicrophoneSync},
-    runtime::{OscSettings, parse_mute_value},
-};
+mod microphone;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use microphone::{Edge, MicrophoneSync};
 use parking_lot::Mutex;
 use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
 use serde_json::{Value, json};
@@ -22,6 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 pub use xrt_connector_core::osc::Peer as OscPeerProfile;
+use xrtranslate_client_core::osc::ReceiveOptions;
 
 const QUERY_SERVICE: &str = "_oscjson._tcp.local.";
 const OSC_SERVICE: &str = "_osc._udp.local.";
@@ -112,7 +111,7 @@ struct Config {
 }
 
 impl Config {
-    fn new(settings: &OscSettings) -> Self {
+    fn new(settings: &ReceiveOptions) -> Self {
         Self {
             manual_enabled: settings.enabled,
             manual_ip: settings.ip.clone(),
@@ -207,7 +206,7 @@ pub struct OscTransportHandle {
 }
 
 impl OscTransportHandle {
-    pub(crate) fn update_settings(&self, settings: &OscSettings) {
+    pub(crate) fn update_settings(&self, settings: &ReceiveOptions) {
         let mut config = self.config.lock();
         config.manual_enabled = settings.enabled;
         config.manual_ip.clone_from(&settings.ip);
@@ -353,7 +352,7 @@ pub(crate) struct TransportOwner {
 }
 
 impl TransportOwner {
-    pub(crate) fn new(settings: &OscSettings) -> Self {
+    pub(crate) fn new(settings: &ReceiveOptions) -> Self {
         let config = Arc::new(Mutex::new(Config::new(settings)));
         let shared = Arc::new(Mutex::new(Shared::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -1436,7 +1435,7 @@ mod tests {
 
     fn worker(http_port: u16, osc_port: u16) -> Worker {
         let (tx, _) = mpsc::channel(64);
-        let mut config = Config::new(&OscSettings::default());
+        let mut config = Config::new(&ReceiveOptions::default());
         config.control_paths = Some([CONTROL.to_owned()].into_iter().collect());
         let handle = OscTransportHandle {
             muted: Arc::new(AtomicBool::new(false)),
@@ -1556,7 +1555,8 @@ mod tests {
         // Cover a peer closing before HOST_INFO and between HOST_INFO and the tree.
         for serve_host_info in [false, true] {
             let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .await.unwrap();
+                .await
+                .unwrap();
             let port = listener.local_addr().unwrap().port();
             let server = tokio::spawn(async move {
                 if serve_host_info {
@@ -1568,7 +1568,9 @@ mod tests {
                 }
                 drop(listener);
             });
-            if !serve_host_info { server.await.unwrap(); }
+            if !serve_host_info {
+                server.await.unwrap();
+            }
             let mut worker = worker(port, 9000);
             worker.query(None).await;
             assert!(worker.handle.shared.lock().last_error.is_none());
@@ -1576,11 +1578,19 @@ mod tests {
             assert!(worker.handle.events().is_empty());
             // Losing the modal must not weaken the stale-binding deadline.
             worker.last_query_success = Some(Instant::now() - HEALTH_TIMEOUT);
-            worker.command(Command::Write { epoch: 7, path: CONTROL.into(),
-                value: OscValue::Bool(true), query_id: None }).await;
+            worker
+                .command(Command::Write {
+                    epoch: 7,
+                    path: CONTROL.into(),
+                    value: OscValue::Bool(true),
+                    query_id: None,
+                })
+                .await;
             assert!(worker.endpoint.is_none());
-            assert!(matches!(worker.handle.events().as_slice(),
-                [TransportEvent::Invalidated { .. }]));
+            assert!(matches!(
+                worker.handle.events().as_slice(),
+                [TransportEvent::Invalidated { .. }]
+            ));
         }
     }
 
@@ -1764,5 +1774,21 @@ mod tests {
         assert!(bounded_packet(&message, 0, &mut 0));
         assert!(!bounded_packet(&message, 9, &mut 0));
         assert!(!bounded_packet(b"#bundle\0", 0, &mut 0));
+    }
+}
+
+pub(super) fn parse_mute_value(value: &OscType) -> Option<bool> {
+    match value {
+        OscType::Bool(value) => Some(*value),
+        OscType::Int(value) => Some(*value != 0),
+        OscType::Long(value) => Some(*value != 0),
+        OscType::Float(value) => Some(*value != 0.0),
+        OscType::Double(value) => Some(*value != 0.0),
+        OscType::String(value) => match value.trim().to_lowercase().as_str() {
+            "true" | "1" | "on" | "yes" | "mute" | "muted" => Some(true),
+            "false" | "0" | "off" | "no" | "unmute" | "unmuted" => Some(false),
+            _ => None,
+        },
+        _ => None,
     }
 }

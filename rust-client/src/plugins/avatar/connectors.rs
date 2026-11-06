@@ -1,7 +1,7 @@
 //! Persisted display preferences; wire contracts are owned by the companion SDK.
 use crate::{
-    plugins::text_output::{BannerConfig, BannerContentType, MessageFormat},
     session_coordinator::AudioSourceFilter,
+    text_output::{BannerConfig, BannerContentType, MessageFormat},
 };
 use serde::{Deserialize, Serialize};
 pub use xrt_connector_core::{Connector, osc::Contract as OscContract};

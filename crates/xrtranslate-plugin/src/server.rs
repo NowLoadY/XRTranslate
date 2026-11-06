@@ -2,7 +2,7 @@ use crate::{Environment, Message, Result, Widget};
 use serde_json::Value;
 use std::{
     io::{self, BufRead, Write},
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
@@ -22,7 +22,7 @@ pub trait Plugin {
 }
 
 pub struct Context {
-    output: io::BufWriter<io::Stdout>,
+    output: Arc<Mutex<io::BufWriter<io::Stdout>>>,
     client: crate::Client,
 }
 impl Drop for Context {
@@ -57,18 +57,24 @@ impl Context {
         self.send(&Message::Cancel { id });
     }
     fn send(&mut self, message: &Message) {
-        // A closed host pipe ends the plugin; stdout is reserved for the protocol.
-        if serde_json::to_writer(&mut self.output, message).is_err()
-            || self.output.write_all(b"\n").is_err()
-            || self.output.flush().is_err()
-        {
-            std::process::exit(0);
-        }
+        send(&self.output, message);
+    }
+}
+fn send(output: &Mutex<io::BufWriter<io::Stdout>>, message: &Message) {
+    let mut output = output.lock().unwrap();
+    // A closed host pipe ends the plugin; stdout is reserved for the protocol.
+    if serde_json::to_writer(&mut *output, message).is_err()
+        || output.write_all(b"\n").is_err()
+        || output.flush().is_err()
+    {
+        std::process::exit(0);
     }
 }
 
 pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(64);
+    let (client, outbox) = crate::Client::channel();
+    let replies = client.clone();
     std::thread::spawn(move || {
         use std::io::Read;
         let mut input = io::stdin().lock();
@@ -85,16 +91,33 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
             let Ok(message) = serde_json::from_slice::<Message>(&bytes) else {
                 break;
             };
-            if tx.send(message).is_err() {
+            // Worker replies must progress even while UI code acquires a worker's lock.
+            if let Message::Reply { id, result } = &message
+                && replies.deliver(*id, result.clone())
+            {
+                continue;
+            }
+            if tx.try_send(message).is_err() {
+                eprintln!("Plugin input queue unavailable");
                 break;
             }
         }
+        replies.disconnect();
     });
-    let (client, outbox) = crate::Client::channel();
-    let mut context = Context {
-        output: io::BufWriter::new(io::stdout()),
-        client,
-    };
+    let output = Arc::new(Mutex::new(io::BufWriter::new(io::stdout())));
+    let writer = output.clone();
+    let requests = client.clone();
+    std::thread::spawn(move || {
+        while !requests.is_closed() {
+            if let Ok(message) = outbox.recv_timeout(Duration::from_millis(16)) {
+                send(&writer, &message);
+            }
+            for id in requests.cancelled() {
+                send(&writer, &Message::Cancel { id });
+            }
+        }
+    });
+    let mut context = Context { output, client };
     let mut clock = Instant::now();
     let mut initialized = false;
     loop {
@@ -115,20 +138,12 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
                 plugin.event(&name, value, &mut context)
             }
             Ok(Message::Reply { id, result }) if initialized => {
-                if !context.client.deliver(id, result.clone()) {
-                    plugin.reply(id, result, &mut context)
-                }
+                plugin.reply(id, result, &mut context)
             }
             Ok(Message::Cancel { id }) if initialized => plugin.cancel(id, &mut context),
             Ok(_) => return Err("Unexpected host message".into()),
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        for message in outbox.try_iter() {
-            context.send(&message);
-        }
-        for id in context.client.cancelled() {
-            context.send(&Message::Cancel { id });
         }
         let now = Instant::now();
         let elapsed = now.duration_since(clock).min(Duration::from_millis(100));

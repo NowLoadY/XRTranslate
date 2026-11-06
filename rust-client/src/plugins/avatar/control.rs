@@ -3,7 +3,7 @@ use super::{
     output::DisplayOutput,
     websocket,
 };
-use crate::plugins::osc::transport::{
+use crate::osc_transport::{
     AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent,
 };
 use std::time::Duration;
@@ -371,7 +371,7 @@ fn enabled_value(snapshot: &AvatarSnapshot, contract: &OscContract) -> Result<bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::osc::transport::OscQueryNode;
+    use crate::osc_transport::OscQueryNode;
     use std::{collections::BTreeMap, time::Instant};
     use xrt_connector_core::Status;
 

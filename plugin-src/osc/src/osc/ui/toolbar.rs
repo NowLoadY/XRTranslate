@@ -2,7 +2,7 @@ use super::super::runtime::{
     BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
     default_lyric_offset_seconds,
 };
-use crate::plugins::text_output::render_banner_selector;
+use crate::text_output::render_banner_selector;
 use crate::ui::{
     components::{self, card},
     layout,
@@ -74,7 +74,7 @@ pub fn render_toolbar(
                     settings.show_body_unindented(ui, |ui| {
                         ui.add_space(8.0);
                         if plugin.game() == super::super::OscGame::VRChat {
-                            if let Some(receiver) = plugin.receiver() {
+                            if let Some(receiver) = plugin.receiver.as_ref() {
                                 let mut microphone_sync_enabled = microphone_sync_enabled;
                                 if components::feature_checkbox(
                                     ui,
@@ -90,8 +90,8 @@ pub fn render_toolbar(
                                 }
                                 if microphone_sync_enabled {
                                     ui.small(crate::i18n::tr(language, "Enable Toggle Voice in VRChat."));
-                                    if let Some(status) = receiver.microphone_sync_status() {
-                                        ui.small(crate::i18n::tr(language, status));
+                                    if let Some(status) = receiver.microphone.as_deref() {
+                                        ui.small(crate::i18n::tr_dynamic(language, status));
                                     }
                                 }
                                 ui.add_space(8.0);

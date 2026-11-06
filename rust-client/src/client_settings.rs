@@ -1,7 +1,5 @@
 use crate::audio::InputDevice;
 use crate::i18n::UiLanguage;
-use crate::plugins::osc::{OscGame, runtime::OscSettings};
-use crate::plugins::{PluginPreferences, PluginRegistry};
 use crate::ui::{Page, theme::UiTheme};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -80,16 +78,10 @@ pub struct ClientSettings {
     pub download_proxy_url: String,
     #[serde(default)]
     pub update_channel: UpdateChannel,
-    #[serde(default = "OscSettings::from_project_config")]
-    pub osc_settings: OscSettings,
-    #[serde(default = "default_chilloutvr_osc_settings")]
-    pub chilloutvr_osc_settings: OscSettings,
     #[serde(default)]
     pub game_plugins: crate::plugins::game_plugins::Settings,
     #[serde(default)]
     pub avatar_connector: crate::plugins::avatar::connectors::Settings,
-    #[serde(default, rename = "plugins", alias = "plugin_preferences")]
-    pub plugin_preferences: PluginPreferences,
     #[serde(default)]
     pub active_page: Page,
     #[serde(default)]
@@ -106,10 +98,6 @@ pub struct ClientSettings {
     pub preferred_gpu: Option<String>,
     #[serde(skip)]
     pub prompt_library: PromptTemplateLibrary,
-}
-
-fn default_chilloutvr_osc_settings() -> OscSettings {
-    OscSettings::for_game(OscGame::ChilloutVR)
 }
 
 fn default_source_lang() -> String {
@@ -172,11 +160,8 @@ impl Default for ClientSettings {
             server_url: default_server_url(),
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,
-            osc_settings: OscSettings::from_project_config(),
-            chilloutvr_osc_settings: default_chilloutvr_osc_settings(),
             game_plugins: Default::default(),
             avatar_connector: Default::default(),
-            plugin_preferences: PluginPreferences::default(),
             active_page: Page::default(),
             sidebar_collapsed: false,
             usage_guidelines_accepted: false,
@@ -202,9 +187,6 @@ impl ClientSettings {
         // Keep lifecycle state authoritative across development and packaged launches.
         settings.apply_app_state(project_root);
         settings.normalize_feature_dependencies();
-        let registry = PluginRegistry::builtin();
-        registry.initialize_preferences(&mut settings.plugin_preferences);
-        registry.normalize_active_page(&settings.plugin_preferences, &mut settings.active_page);
         settings
     }
 
@@ -272,23 +254,6 @@ impl ClientSettings {
             crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback);
         self.floating_subtitles_enabled &=
             crate::feature_access::is_available(crate::feature_access::Feature::FloatingSubtitles);
-        for settings in [&mut self.osc_settings, &mut self.chilloutvr_osc_settings] {
-            settings.enabled &=
-                crate::feature_access::is_available(crate::feature_access::Feature::OscChatbox);
-            settings.show_speaker_number &=
-                crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
-        }
-        // Replace the old emoji defaults that render as tofu on systems without
-        // an emoji-capable egui font, while preserving user-customized prefixes.
-        for (prefix, legacy, replacement) in [
-            (&mut self.osc_settings.microphone_prefix, "🎙️ ", "MIC "),
-            (&mut self.osc_settings.system_audio_prefix, "🔊 ", "SYS "),
-            (&mut self.osc_settings.typing_prefix, "⌨️ ", "TXT "),
-        ] {
-            if prefix == legacy {
-                *prefix = replacement.into();
-            }
-        }
         self.microphone_sync_enabled &=
             crate::feature_access::is_available(crate::feature_access::Feature::MuteSync);
     }
@@ -298,9 +263,6 @@ impl ClientSettings {
         available_mics: &[InputDevice],
         available_loopbacks: &[InputDevice],
     ) {
-        for settings in [&mut self.osc_settings, &mut self.chilloutvr_osc_settings] {
-            settings.history_ttl_seconds = settings.history_ttl_seconds.clamp(10.0, 20.0);
-        }
         self.floating_subtitles_max_count = self.floating_subtitles_max_count.clamp(1, 10);
         self.floating_subtitles_font_size = self.floating_subtitles_font_size.clamp(10.0, 24.0);
 
@@ -355,10 +317,7 @@ impl ClientSettings {
         let directory = project_root.join("runtime");
         let _ = std::fs::create_dir_all(&directory);
         let path = directory.join("rust-client-settings.json");
-        let mut normalized = self.clone();
-        let registry = PluginRegistry::builtin();
-        registry.initialize_preferences(&mut normalized.plugin_preferences);
-        registry.normalize_active_page(&normalized.plugin_preferences, &mut normalized.active_page);
+        let normalized = self;
         // Preserve settings owned by independently installed extensions.
         let mut value: serde_json::Map<String, serde_json::Value> = std::fs::read(&path)
             .ok()

@@ -1,17 +1,8 @@
-//! Built-in plugin identities, page catalogue and enablement preferences.
-//!
-//! Plugins are linked into the client and identified through stable IDs.
-//! Plugins with standalone pages contribute navigation and settings here;
-//! embedded inputs follow their shared capability's configuration. The catalogue removes
-//! repeated navigation/settings metadata; statically typed runtime composition
-//! remains explicit in the host adapter.
-
+//! Stable plugin identities and navigation data. Installed manifests own their catalogue.
 pub(crate) mod avatar;
 pub(crate) mod game_plugins;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
-pub mod osc;
-pub(crate) mod text_output;
 
 /// Composition only: each plugin owns its commands and UI-shared handlers.
 /// Register ToolProvider implementations here; the host and Agent need no changes.
@@ -28,7 +19,7 @@ pub(crate) fn tool_providers(
 }
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::{collections::BTreeMap, fmt};
+use std::fmt;
 
 /// Stable identifier used by settings, routes and host/plugin messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,162 +114,7 @@ impl<'de> Deserialize<'de> for PluginId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PluginScrollPolicy {
-    /// The application shell provides the page's vertical scroll area.
-    #[allow(dead_code)]
-    Host,
-    /// The plugin manages its own nested or virtualized scroll regions.
-    Plugin,
-}
-
-#[derive(Clone, Copy)]
-pub struct PluginIcon {
-    pub uri: &'static str,
-    pub bytes: &'static [u8],
-}
-
-impl PluginIcon {
-    pub fn image_source(self) -> eframe::egui::ImageSource<'static> {
-        eframe::egui::ImageSource::Bytes {
-            uri: self.uri.into(),
-            bytes: self.bytes.into(),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct PluginDescriptor {
-    pub id: PluginId,
-    /// i18n dictionary key, not persisted identity.
-    pub title_key: &'static str,
-    pub description_key: &'static str,
-    /// None for embedded plugins without a standalone page.
-    pub navigation_order: Option<u16>,
-    pub icon: PluginIcon,
-    pub scroll_policy: PluginScrollPolicy,
-    pub default_enabled: bool,
-}
-
-const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
-    PluginDescriptor {
-        id: PluginId::OSC,
-        title_key: "VRChat OSC",
-        description_key: "Send translation captions to VRChat and follow avatar mute state.",
-        navigation_order: Some(200),
-        icon: PluginIcon {
-            uri: "bytes://plugins/osc/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        default_enabled: !cfg!(target_os = "android"),
-    },
-    PluginDescriptor {
-        id: PluginId::CHILLOUTVR_OSC,
-        title_key: "ChilloutVR OSC",
-        description_key: "Send translation captions to ChilloutVR chat bubbles.",
-        navigation_order: Some(205),
-        icon: PluginIcon {
-            uri: "bytes://plugins/osc/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        default_enabled: false,
-    },
-];
-
-/// Catalogue for built-in plugins compiled into this build.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PluginRegistry;
-
-impl PluginRegistry {
-    pub const fn builtin() -> Self {
-        Self
-    }
-
-    pub const fn descriptors(self) -> &'static [PluginDescriptor] {
-        &PLUGIN_DESCRIPTORS
-    }
-
-    pub fn descriptor(self, id: PluginId) -> Option<&'static PluginDescriptor> {
-        self.descriptors()
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-    }
-
-    pub fn is_enabled(self, preferences: &PluginPreferences, id: PluginId) -> bool {
-        preferences.is_enabled(id)
-    }
-
-    pub fn set_enabled(self, preferences: &mut PluginPreferences, id: PluginId, enabled: bool) {
-        preferences.set_enabled(id, enabled);
-    }
-
-    pub fn initialize_preferences(self, preferences: &mut PluginPreferences) {
-        for descriptor in self.descriptors() {
-            preferences
-                .enabled
-                .entry(descriptor.id.as_str().to_owned())
-                .or_insert(descriptor.default_enabled);
-        }
-    }
-
-    /// Routes for disabled or unavailable plugins always return to the core
-    /// translation page. This is called after settings migration and toggles.
-    pub fn normalize_active_page(
-        self,
-        preferences: &PluginPreferences,
-        page: &mut crate::ui::Page,
-    ) {
-        if let crate::ui::Page::Plugin(id) = *page
-            && !preferences
-                .installed_pages
-                .iter()
-                .any(|(installed, ..)| *installed == id)
-            && (self
-                .descriptor(id)
-                .is_none_or(|descriptor| descriptor.navigation_order.is_none())
-                || !preferences.is_enabled(id))
-        {
-            *page = crate::ui::Page::Translation;
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PluginPreferences {
-    /// String keys deliberately preserve settings for plugins unavailable in a
-    /// particular build instead of discarding their preference.
-    #[serde(default)]
-    enabled: BTreeMap<String, bool>,
-    #[serde(skip)]
+#[derive(Default)]
+pub struct PluginPages {
     pub(crate) installed_pages: Vec<(PluginId, String, i32, Option<(String, Vec<u8>)>)>,
-}
-
-impl Default for PluginPreferences {
-    fn default() -> Self {
-        let mut preferences = Self {
-            enabled: BTreeMap::new(),
-            installed_pages: Vec::new(),
-        };
-        PluginRegistry::builtin().initialize_preferences(&mut preferences);
-        preferences
-    }
-}
-
-impl PluginPreferences {
-    pub fn is_enabled(&self, id: PluginId) -> bool {
-        if !id.is_supported() {
-            return false;
-        }
-        self.enabled.get(id.as_str()).copied().unwrap_or_else(|| {
-            PluginRegistry::builtin()
-                .descriptor(id)
-                .is_some_and(|descriptor| descriptor.default_enabled)
-        })
-    }
-
-    pub fn set_enabled(&mut self, id: PluginId, enabled: bool) {
-        self.enabled.insert(id.as_str().to_owned(), enabled);
-    }
 }

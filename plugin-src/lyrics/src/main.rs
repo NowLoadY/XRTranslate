@@ -15,12 +15,13 @@ struct Lyrics {
     engine: Option<lyrics::LyricsPlugin>,
     output: Option<mpsc::Receiver<(String, LyricsText)>>,
     view: Vec<Widget>,
+    requests: std::collections::BTreeMap<String, serde_json::Value>,
 }
 impl Plugin for Lyrics {
     fn initialize(
         &mut self,
         environment: Environment,
-        _: &mut Context,
+        context: &mut Context,
     ) -> std::result::Result<(), String> {
         let (tx, rx) = mpsc::channel();
         self.engine = Some(lyrics::LyricsPlugin::new(
@@ -30,6 +31,7 @@ impl Plugin for Lyrics {
             },
         ));
         self.output = Some(rx);
+        context.event("state", json!({"available":true}));
         Ok(())
     }
     fn call(&mut self, name: &str, _: Value, _: &mut Context) -> Result {
@@ -43,10 +45,21 @@ impl Plugin for Lyrics {
     fn event(&mut self, name: &str, value: Value, _: &mut Context) {
         let engine = self.engine.as_mut().unwrap();
         match name {
-            "outputs.lyrics" => match serde_json::from_value(value) {
-                Ok(requests) => engine.configure(requests),
-                Err(error) => log::warn!("Invalid output request: {error}"),
-            },
+            "plugin.state" => {
+                if let Some(plugin) = value["plugin"].as_str() {
+                    if value["state"]["lyrics"].is_object() {
+                        self.requests
+                            .insert(plugin.into(), value["state"]["lyrics"].clone());
+                    } else {
+                        self.requests.remove(plugin);
+                    }
+                    if let Ok(requests) =
+                        serde_json::from_value(json!(self.requests.values().collect::<Vec<_>>()))
+                    {
+                        engine.configure(requests);
+                    }
+                }
+            }
             "ui" if value["id"] == "clear_cache" => engine.clear_cache(),
             _ => {}
         }

@@ -54,7 +54,8 @@ newline-delimited JSON over persistent stdin/stdout pipes. No Python is required
 
 `Context::client()` supplies a cloneable asynchronous client for UI and workers.
 Poll requests on the event thread; `wait()` is for workers only. Dropping an
-unfinished request cancels it. An implementation using `Context::call` receives
+unfinished request cancels it. Worker requests and replies progress independently
+of the UI event loop. An implementation using `Context::call` receives
 results in `reply` and handles cancellation in `cancel`.
 
 Messages are ordinary JSON objects with a `type` field:
@@ -87,6 +88,12 @@ resolves asynchronous Director receipts and forwards the eventual result; caller
 do not run a second polling loop. The shared
 `translation` module defines completed results, provenance and text formatting.
 Named events connect cooperating plugins; consumers own those contracts.
+The host supplies `text.action` for core text/language controls, `system.metrics`
+for cached presentation data and `udp.configure`/`udp.send` for an exclusive
+datagram destination per plugin. Configure with a numeric `address` and optional
+`close_packets`; send with the returned `id` and `packets`. Transferring a destination
+revokes old sends; removal sends its final cleanup packets. The core does not
+interpret packet contents.
 A `config` event replaces the plugin's saved configuration.
 `state` publishes a transient snapshot to subscribers of `plugin.state`; stopping
 the plugin clears it. `message` sends plain speech to the companion's inbox, and

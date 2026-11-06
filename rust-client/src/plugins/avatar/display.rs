@@ -3,7 +3,7 @@ use super::{
     osc_caption::{Board, Layout},
     websocket::SenderHandle,
 };
-use crate::plugins::osc::transport::OscTransportHandle;
+use crate::osc_transport::OscTransportHandle;
 use serde_json::json;
 use xrt_connector_core::DisplaySnapshot;
 

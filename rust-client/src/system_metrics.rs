@@ -1,40 +1,24 @@
 //! One system sampler with an explicit owner and read-only output handles.
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-#[derive(Clone, Debug, Default)]
-pub struct SystemMetrics {
-    pub time_str: String,
-    pub cpu_name: String,
-    pub cpu_usage: u32,
-    pub gpu_name: String,
-    pub gpu_usage: u32,
-}
+use xrtranslate_client_core::text_output::{SystemMetrics, TextOutputHandle};
 
-/// Cloning a handle never starts a sampler. A default handle is empty.
-#[derive(Clone, Default)]
-pub struct TextOutputHandle(Arc<parking_lot::Mutex<SystemMetrics>>);
-
-impl TextOutputHandle {
-    pub fn snapshot(&self) -> SystemMetrics {
-        self.0.lock().clone()
-    }
-}
-
-pub(super) struct SystemMonitor {
+pub(crate) struct SystemMonitor {
     handle: TextOutputHandle,
     stop: mpsc::Sender<()>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl SystemMonitor {
-    pub(super) fn new() -> Self {
-        let handle = TextOutputHandle(Arc::new(parking_lot::Mutex::new(SystemMetrics {
+    pub(crate) fn new() -> Self {
+        let handle = TextOutputHandle::default();
+        handle.update(SystemMetrics {
             time_str: get_formatted_time(),
             ..SystemMetrics::default()
-        })));
-        let metrics = handle.0.clone();
+        });
+        let metrics = handle.clone();
         let (stop, stopped) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("text-output-metrics".into())
@@ -48,7 +32,7 @@ impl SystemMonitor {
                     let cpu_usage = cpu_sampler.sample();
                     let gpu_usage = gpu_sampler.as_mut().and_then(GpuUsageSampler::sample);
                     {
-                        let mut value = metrics.lock();
+                        let mut value = metrics.snapshot();
                         value.time_str = now_str;
                         value.cpu_name.clone_from(&cpu_name);
                         value.gpu_name.clone_from(&gpu_name);
@@ -58,6 +42,7 @@ impl SystemMonitor {
                         if let Some(usage) = gpu_usage {
                             value.gpu_usage = usage;
                         }
+                        metrics.update(value);
                     }
                     if stopped.recv_timeout(Duration::from_secs(1))
                         != Err(mpsc::RecvTimeoutError::Timeout)
@@ -75,11 +60,11 @@ impl SystemMonitor {
         }
     }
 
-    pub(super) fn handle(&self) -> TextOutputHandle {
+    pub(crate) fn handle(&self) -> TextOutputHandle {
         self.handle.clone()
     }
 
-    pub(super) fn shutdown(&mut self) {
+    pub(crate) fn shutdown(&mut self) {
         if let Some(worker) = self.worker.take() {
             let _ = self.stop.send(());
             let _ = worker.join();

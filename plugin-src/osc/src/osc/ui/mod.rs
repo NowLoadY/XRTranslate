@@ -74,12 +74,8 @@ fn render_page(
             ui.label(crate::i18n::tr(
                 context.language,
                 match plugin.game() {
-                    super::OscGame::VRChat => {
-                        "In VRChat's Action Menu, turn on OSC → Enabled."
-                    }
-                    super::OscGame::ChilloutVR => {
-                        "Enable OSC in Settings → Implementation → OSC."
-                    }
+                    super::OscGame::VRChat => "In VRChat's Action Menu, turn on OSC → Enabled.",
+                    super::OscGame::ChilloutVR => "Enable OSC in Settings → Implementation → OSC.",
                 },
             ));
 
@@ -131,6 +127,7 @@ fn render_page(
                 canvas::render_canvas(plugin, ui, context.language);
             }
             ui.add_space(8.0);
+            actions.extend(render_settings(plugin, ui, context.language));
         });
 
     actions

@@ -12,6 +12,7 @@ plugins' private implementation. Put built plugin directories under the app's
 | `meeting` | Linux, Windows | Meeting records, recording navigation and transcript processing |
 | `vocabulary` | Linux, Windows | Wordbook pages and example work using the shared bookmark store |
 | `vr-overlay` | Windows (page also builds on Linux) | SteamVR subtitles, companion rendering and spatial voice controls |
+| `osc` / `chilloutvr-osc` | Linux, Windows | Independent game outputs using one shared chatbox implementation |
 | `lyrics` | Linux, Windows | Music observation, lyric cache, title and synchronized text |
 | `bigwalk` | Linux, Windows | Translation/direct text delivery through the game bridge |
 | `auto-input` | Windows | User-enabled insertion into an already focused text field |
@@ -26,8 +27,8 @@ For an individual plugin, use
 `xrt-plugin stage <source> <binary> <destination> --replace`;
 its persistent data stays in the runtime directory.
 
-Lyrics receives `outputs.lyrics` and publishes `lyrics.text`. OSC's integration
-owns that connection; the loader has no lyrics-specific code. Big Walk and
+Lyrics observes output requests in `plugin.state` and publishes `lyrics.text`.
+Consumers own that connection; the loader has no lyrics-specific code. Big Walk and
 automatic input consume committed, clear and cancellation translation events,
 retaining their bounded queues and result identities. Installing automatic input
 does not start typing; its input switch must be enabled explicitly.

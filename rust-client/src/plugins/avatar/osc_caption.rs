@@ -1,5 +1,5 @@
 //! Send plugin-encoded caption frames through the existing OSC transport owner.
-use crate::plugins::osc::transport::{AvatarSnapshot, OscTransportHandle, OscValue, WriteLease};
+use crate::osc_transport::{AvatarSnapshot, OscTransportHandle, OscValue, WriteLease};
 use std::time::{Duration, Instant};
 pub(super) use xrt_connector_core::osc::CaptionLayout as Layout;
 use xrt_connector_core::{

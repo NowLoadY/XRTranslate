@@ -10514,6 +10514,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-chilloutvr-osc"
+version = "0.4.0"
+dependencies = [
+ "xrt-osc",
+]
+
+[[package]]
 name = "xrt-connector-core"
 version = "0.1.0-dev.1"
 source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=a01af88f7d37263e50b2daa67ca742e353601a80#a01af88f7d37263e50b2daa67ca742e353601a80"
@@ -10586,6 +10593,26 @@ dependencies = [
  "xrtranslate-engine",
  "xrtranslate-plugin",
  "xrtranslate-prompt",
+ "xrtranslate-protocol",
+]
+
+[[package]]
+name = "xrt-osc"
+version = "0.4.0"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "log",
+ "parking_lot",
+ "rosc",
+ "serde",
+ "serde_json",
+ "ui-director",
+ "unicode-segmentation",
+ "xrtranslate-client-core",
+ "xrtranslate-engine",
+ "xrtranslate-plugin",
  "xrtranslate-protocol",
 ]
 

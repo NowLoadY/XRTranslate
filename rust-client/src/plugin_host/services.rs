@@ -183,6 +183,9 @@ impl crate::XRTranslateApp {
             names.extend(
                 [
                     "bookmarks.query",
+                    "text.action",
+                    "udp.configure",
+                    "udp.send",
                     "audio.capture",
                     "text.compose",
                     "ui",
@@ -209,13 +212,70 @@ impl crate::XRTranslateApp {
         };
         let calls = self.plugin_host.poll(
             ctx,
-            &mut self.plugin_preferences,
+            &mut self.plugin_pages,
             self.ui_language,
             runtimes,
             capabilities,
         );
         for (plugin, message) in calls {
             match message {
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
+                } if name == "udp.configure" => {
+                    let configured = serde_json::from_value(
+                        arguments
+                            .get("close_packets")
+                            .cloned()
+                            .unwrap_or_else(|| json!([])),
+                    )
+                    .map_err(|e| e.to_string())
+                    .and_then(|packets| {
+                        self.plugin_host.datagrams.configure(
+                            &plugin,
+                            arguments["address"].as_str(),
+                            packets,
+                        )
+                    });
+                    match configured {
+                        Ok((value, revoked)) => {
+                            if let Some(owner) = revoked {
+                                self.plugin_host
+                                    .send_event(&owner, "udp.revoked", Value::Null);
+                            }
+                            self.plugin_host.reply(&plugin, id, Ok(value));
+                        }
+                        Err(error) => self.plugin_host.reply(&plugin, id, Err(error)),
+                    }
+                }
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
+                } if name == "udp.send" => {
+                    let result = (|| {
+                        let generation = arguments["id"]
+                            .as_u64()
+                            .ok_or("Missing datagram destination")?;
+                        let packets = serde_json::from_value(arguments["packets"].clone())
+                            .map_err(|e| e.to_string())?;
+                        self.plugin_host
+                            .datagrams
+                            .send(&plugin, generation, packets)
+                    })();
+                    self.plugin_host.reply(&plugin, id, result);
+                }
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
+                } if name == "text.action" => {
+                    let result = serde_json::from_value(arguments)
+                        .map_err(|e| e.to_string())
+                        .and_then(|action| self.plugin_text_action(action));
+                    self.plugin_host.reply(&plugin, id, result);
+                }
                 Message::Call {
                     id,
                     name,
@@ -412,7 +472,28 @@ impl crate::XRTranslateApp {
             "bookmarks.revision",
             json!(self.history_archive.vocabulary_revision()),
         );
+        self.plugin_host.set_context(
+            "system.metrics",
+            json!(self.system_metrics.handle().snapshot()),
+        );
+        self.plugin_host.set_context(
+            "osc.receiver",
+            json!(xrtranslate_client_core::osc::ReceiverStatus {
+                listener: self.osc_transport.handle().state().listener,
+                microphone: self
+                    .osc_transport
+                    .handle()
+                    .microphone_sync_status()
+                    .map(str::to_owned),
+            }),
+        );
         let services = xrtranslate_client_core::services::Capabilities {
+            text: xrtranslate_client_core::services::TextState {
+                preparing: self.text_translation.preparing_host(),
+                asr_only: self.asr_only,
+                additional_target: self.additional_target_lang.clone(),
+                microphone_sync: self.microphone_sync_enabled,
+            },
             source_language: self.source_lang.clone(),
             target_language: self.target_lang.clone(),
             capture: self.capture_source,
@@ -566,5 +647,42 @@ impl crate::XRTranslateApp {
         self.audio_tasks.insert(index, task);
         self.release_unused_inputs();
         result
+    }
+}
+
+impl crate::XRTranslateApp {
+    fn plugin_text_action(
+        &mut self,
+        action: xrtranslate_client_core::services::TextAction,
+    ) -> xrtranslate_plugin::Result {
+        use xrtranslate_client_core::services::TextAction;
+        match action {
+            TextAction::Clear => self.clear_history(),
+            TextAction::Submit { text } => {
+                if !self.submit_text_translation(&text, None, None, None) {
+                    return Err("Text translation is unavailable".into());
+                }
+            }
+            TextAction::Language {
+                source,
+                target,
+                asr_only,
+            } => {
+                self.select_language_options(
+                    &source,
+                    &target,
+                    self.additional_target_lang.clone().as_deref(),
+                    asr_only,
+                )
+                .ok_or("Language route is unavailable")?;
+                self.source_lang = source;
+                self.target_lang = target;
+                self.asr_only = asr_only;
+                self.apply_language_route();
+            }
+            TextAction::MicrophoneSync { enabled } => self.set_microphone_sync_enabled(enabled),
+        }
+        self.refresh_plugin_context();
+        Ok(Value::Null)
     }
 }

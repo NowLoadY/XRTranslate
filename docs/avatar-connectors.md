@@ -64,7 +64,7 @@ Native text accepts previews; buffered OSC displays use completed messages.
 Queue time reduces remaining lifetime, and a new snapshot replaces obsolete
 work. Header/footer updates do not restart the board.
 
-Shared formatting and system sampling belong to `TextOutputPlugin`. Lyrics
+Shared formatting belongs to the UI SDK; the host samples system metrics once. Lyrics
 uses one host worker, requested by OSC chatbox outputs. Existing
 `vrc_avatar` preferences remain an alias of `avatar`.
 

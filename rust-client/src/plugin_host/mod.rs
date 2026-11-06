@@ -1,12 +1,14 @@
 //! Installed plugins contribute views and operations; this adapter supplies host services.
+mod datagram;
 mod models;
 mod operations;
+pub(crate) use operations::Call;
 mod playback;
 mod services;
 mod ui;
 use crate::{
     i18n::UiLanguage,
-    plugins::{PluginId, PluginPreferences},
+    plugins::{PluginId, PluginPages},
     session_coordinator::{HostOutputEvent, HostOutputSubscriber},
 };
 use eframe::egui;
@@ -101,6 +103,7 @@ struct Inference {
     cancel: Arc<AtomicBool>,
 }
 pub(crate) struct Host {
+    datagrams: datagram::Outputs,
     bookmarks: Vec<(String, u64, xrtranslate_client_core::bookmarks::Reply)>,
     stopped: Vec<String>,
     visible: Option<String>,
@@ -114,7 +117,6 @@ pub(crate) struct Host {
     resources: Option<(String, BTreeMap<String, PathBuf>)>,
     capabilities: Vec<String>,
     context: BTreeMap<String, Value>,
-    listeners: BTreeMap<String, Vec<Box<dyn Fn(&Value)>>>,
     installed: BTreeMap<String, Installed>,
     pub output: Output,
     inference: Vec<Inference>,
@@ -156,6 +158,7 @@ impl Host {
                 .unwrap_or(Path::new("models")),
         );
         let mut host = Self {
+            datagrams: Default::default(),
             bookmarks: Vec::new(),
             stopped: Vec::new(),
             visible: None,
@@ -169,7 +172,6 @@ impl Host {
             resources: None,
             capabilities: Vec::new(),
             context: BTreeMap::new(),
-            listeners: BTreeMap::new(),
             installed: BTreeMap::new(),
             output: Output::default(),
             inference: Vec::new(),
@@ -255,18 +257,29 @@ impl Host {
         manifest: Manifest,
         modified: Option<std::time::SystemTime>,
     ) -> Result<(), String> {
-        let id = PluginId::parse(&manifest.id).ok_or("Invalid plugin ID")?;
-        if crate::plugins::PluginRegistry::builtin()
-            .descriptor(id)
-            .is_some()
-            || self.installed.contains_key(&manifest.id)
-        {
+        PluginId::parse(&manifest.id).ok_or("Invalid plugin ID")?;
+        if self.installed.contains_key(&manifest.id) {
             return Err(format!("Plugin ID already registered: {}", manifest.id));
         }
         let settings = std::fs::read(self.data(&manifest.id).join("settings.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                let enabled = std::fs::read(
+                    self.root
+                        .parent()
+                        .unwrap()
+                        .join("rust-client-settings.json"),
+                )
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| value["plugins"]["enabled"][&manifest.id].as_bool())
+                .unwrap_or(true);
+                Settings {
+                    enabled,
+                    ..Default::default()
+                }
+            });
         self.installed.insert(
             manifest.id.clone(),
             Installed {
@@ -375,6 +388,7 @@ impl Host {
         self.save(id)
     }
     fn stop(&mut self, id: &str) {
+        self.datagrams.remove(id);
         self.bookmarks.retain(|(plugin, _, _)| plugin != id);
         self.playback.remove(id);
         self.stopped.push(id.to_owned());
@@ -390,7 +404,7 @@ impl Host {
     pub fn poll(
         &mut self,
         ctx: &egui::Context,
-        preferences: &mut PluginPreferences,
+        preferences: &mut PluginPages,
         language: UiLanguage,
         runtimes: BTreeMap<String, PathBuf>,
         capabilities: Option<Vec<String>>,
@@ -623,18 +637,7 @@ impl Host {
             }
         }
     }
-    pub fn subscribe(&mut self, topic: &str, listener: impl Fn(&Value) + 'static) {
-        self.listeners
-            .entry(topic.into())
-            .or_default()
-            .push(Box::new(listener));
-    }
     pub fn publish(&self, name: &str, value: Value) {
-        if let Some(listeners) = self.listeners.get(name) {
-            for listener in listeners {
-                listener(&value);
-            }
-        }
         for entry in self.installed.values() {
             if entry
                 .manifest

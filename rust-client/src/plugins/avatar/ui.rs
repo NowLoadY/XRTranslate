@@ -1,7 +1,7 @@
 use super::AvatarPlugin;
 use crate::{
     i18n::{UiLanguage, tr},
-    plugins::text_output::MessageFormat,
+    text_output::MessageFormat,
     ui::{components, theme},
 };
 use eframe::egui;

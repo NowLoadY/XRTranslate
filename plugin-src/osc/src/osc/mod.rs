@@ -1,13 +1,10 @@
 mod chatbox;
 mod game;
-pub(crate) mod integrations;
 pub use game::OscGame;
-mod microphone;
 pub mod runtime;
-pub mod transport;
 pub mod ui;
 
-use crate::plugins::text_output::TextOutputHandle;
+use crate::text_output::TextOutputHandle;
 use eframe::egui;
 
 use runtime::{OscHandle, OscManager, OscSettings};
@@ -59,29 +56,27 @@ pub struct OscPlugin {
     draft: OscSettings,
     applied: OscSettings,
     composer: TextComposer,
-    host_enabled: bool,
-    receiver: Option<transport::OscTransportHandle>,
+    pub receiver: Option<xrtranslate_client_core::osc::ReceiverStatus>,
 }
 
 impl OscPlugin {
     pub fn new(
         game: OscGame,
         mut draft: OscSettings,
-        host_enabled: bool,
         text_output: TextOutputHandle,
-        receiver: Option<transport::OscTransportHandle>,
+        client: xrtranslate_plugin::Client,
     ) -> Self {
         draft.game = game;
         draft.max_text_length = draft.text_limit().max(1);
-        let applied = effective_settings(&draft, host_enabled);
-        let manager = OscManager::new(applied.clone(), text_output);
+        let mut applied = draft.clone();
+        applied.enabled = false;
+        let manager = OscManager::new(applied.clone(), text_output, client);
         Self {
             manager,
             draft,
             applied,
             composer: TextComposer::default(),
-            host_enabled,
-            receiver,
+            receiver: (game == OscGame::VRChat).then(Default::default),
         }
     }
 
@@ -89,17 +84,8 @@ impl OscPlugin {
         self.draft.game
     }
 
-    pub fn receiver(&self) -> Option<&transport::OscTransportHandle> {
-        self.receiver.as_ref()
-    }
-
     pub fn applied(&self) -> &OscSettings {
         &self.applied
-    }
-
-    pub fn relinquish_endpoint(&mut self) -> Result<(), String> {
-        self.manager.relinquish_endpoint();
-        self.disable_output()
     }
 
     pub fn disable_output(&mut self) -> Result<(), String> {
@@ -139,7 +125,7 @@ impl OscPlugin {
     /// Produces the exact voice body shown before an explicit publication.
     /// Decorations and automatic captions never consume this body's budget.
     pub(crate) fn prepare_voice_text(&self, text: &str) -> Result<String, String> {
-        effective_settings(&self.draft, self.host_enabled).prepare_voice_text(text)
+        self.applied.prepare_voice_text(text)
     }
 
     pub(crate) fn publish_voice(&self, operation: u64, text: &str) -> runtime::VoicePublishReply {
@@ -147,30 +133,13 @@ impl OscPlugin {
     }
 
     pub fn apply_draft(&mut self) -> Result<(), String> {
-        let settings = effective_settings(&self.draft, self.host_enabled);
+        let settings = self.draft.clone();
         self.apply_settings(settings)
     }
 
     fn apply_settings(&mut self, settings: OscSettings) -> Result<(), String> {
         self.manager.update_settings(settings.clone())?;
-        if let Some(receiver) = &self.receiver {
-            receiver.update_settings(&settings);
-        }
         self.applied = settings;
-        Ok(())
-    }
-
-    pub fn activate(&mut self) -> Result<(), String> {
-        self.apply_settings(effective_settings(&self.draft, true))?;
-        self.host_enabled = true;
-        Ok(())
-    }
-
-    pub fn deactivate(&mut self) -> Result<(), String> {
-        let mut settings = self.applied.clone();
-        settings.enabled = false;
-        self.apply_settings(settings)?;
-        self.host_enabled = false;
         Ok(())
     }
 
@@ -189,18 +158,4 @@ impl OscPlugin {
     ) -> Vec<OscUiAction> {
         ui::render(self, ui, context)
     }
-
-    pub fn render_settings(
-        &mut self,
-        ui: &mut egui::Ui,
-        language: crate::i18n::UiLanguage,
-    ) -> Vec<OscUiAction> {
-        ui::render_settings(self, ui, language)
-    }
-}
-
-fn effective_settings(draft: &OscSettings, host_enabled: bool) -> OscSettings {
-    let mut settings = draft.clone();
-    settings.enabled &= host_enabled;
-    settings
 }

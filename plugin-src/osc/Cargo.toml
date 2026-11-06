@@ -1,0 +1,21 @@
+[package]
+name = "xrt-osc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+xrtranslate-client-core = { path = "../../crates/xrtranslate-client-core" }
+xrtranslate-plugin = { path = "../../crates/xrtranslate-plugin", features = ["egui"] }
+xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
+xrtranslate-engine = { path = "../../crates/xrtranslate-engine" }
+ui-director = { path = "../../crates/ui-director", features = ["egui"] }
+eframe = "0.37.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+rosc = "0.11.4"
+crossbeam-channel = "0.5.16"
+unicode-segmentation = "1.13"

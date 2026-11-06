@@ -123,7 +123,7 @@ impl NavigationState {
 pub fn render_sidebar(
     ui: &mut egui::Ui,
     navigation: &mut NavigationState,
-    plugin_preferences: &crate::plugins::PluginPreferences,
+    plugin_pages: &crate::plugins::PluginPages,
     tts_configured: bool,
     modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
@@ -210,7 +210,7 @@ pub fn render_sidebar(
                 use crate::plugins::PluginId;
 
                 let mut in_game_group = false;
-                for entry in navigation_entries(plugin_preferences, tts_configured) {
+                for entry in navigation_entries(plugin_pages, tts_configured) {
                     let is_game_plugin = matches!(
                         entry.page,
                         Page::GamePlugins
@@ -607,7 +607,7 @@ impl NavigationEntry {
 
 /// The CLI uses the same routes and availability as the sidebar.
 pub(crate) fn navigation_pages(
-    plugins: &crate::plugins::PluginPreferences,
+    plugins: &crate::plugins::PluginPages,
     tts_configured: bool,
     language: crate::i18n::UiLanguage,
 ) -> Vec<ui_director::egui::registry::Page> {
@@ -641,7 +641,7 @@ pub(crate) fn navigation_pages(
 }
 
 fn navigation_entries(
-    plugins: &crate::plugins::PluginPreferences,
+    plugins: &crate::plugins::PluginPages,
     tts_configured: bool,
 ) -> Vec<NavigationEntry> {
     use egui::include_image;
@@ -652,24 +652,9 @@ fn navigation_entries(
             "../../../crates/xrtranslate-client-core/resources/icons/translation.svg"
         ),
     }];
-    let mut contributed = crate::plugins::PluginRegistry::builtin()
-        .descriptors()
-        .iter()
-        .filter(|entry| entry.navigation_order.is_some() && plugins.is_enabled(entry.id))
-        .map(|entry| {
-            (
-                i32::from(entry.navigation_order.unwrap()),
-                NavigationEntry {
-                    page: Page::Plugin(entry.id),
-                    title: entry.title_key.into(),
-                    icon: entry.icon.image_source(),
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    contributed.extend(plugins.installed_pages.iter().map(|(id,title,order,icon)|(*order,NavigationEntry{
+    let mut contributed = plugins.installed_pages.iter().map(|(id,title,order,icon)|(*order,NavigationEntry{
         page:Page::Plugin(*id),title:title.clone().into(),icon:icon.as_ref().map_or_else(||include_image!("../../../crates/xrtranslate-client-core/resources/icons/settings.svg"),|(uri,bytes)|egui::ImageSource::Bytes{uri:uri.clone().into(),bytes:bytes.clone().into()}),
-    })));
+    })).collect::<Vec<_>>();
     contributed.sort_by_key(|(order, _)| *order);
     entries.extend(contributed.into_iter().map(|(_, entry)| entry));
     if crate::plugins::PluginId::AVATAR.is_supported() {
@@ -722,7 +707,7 @@ fn navigation_entries(
 pub fn render_top_navigation(
     ui: &mut egui::Ui,
     navigation: &mut NavigationState,
-    plugins: &crate::plugins::PluginPreferences,
+    plugins: &crate::plugins::PluginPages,
     tts_configured: bool,
     modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,

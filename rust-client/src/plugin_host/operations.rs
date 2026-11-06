@@ -3,6 +3,45 @@ use super::*;
 use std::time::{Duration, Instant};
 use ui_director::{ToolCall, ToolResult};
 
+/// Host consumers use the same asynchronous receipts as CLI/plugin callers.
+pub(crate) struct Call {
+    next: ToolCall,
+    cancel: Option<ToolCall>,
+}
+impl Call {
+    pub fn new(name: String, arguments: Value) -> Self {
+        Self {
+            next: ToolCall { name, arguments },
+            cancel: None,
+        }
+    }
+    pub fn poll(&mut self, host: &mut Host) -> Option<ToolResult> {
+        use ui_director::ToolProvider;
+        let result = host.call(&self.next);
+        if let Ok(value) = &result
+            && value.get("pending").is_some_and(Value::is_object)
+        {
+            match serde_json::from_value(value["pending"].clone()) {
+                Ok(next) => {
+                    self.next = next;
+                    if let Some(cancel) = value.get("cancel") {
+                        self.cancel = serde_json::from_value(cancel.clone()).ok();
+                    }
+                    return None;
+                }
+                Err(error) => return Some(Err(error.to_string())),
+            }
+        }
+        Some(result)
+    }
+    pub fn cancel(&self, host: &mut Host) {
+        use ui_director::ToolProvider;
+        if let Some(cancel) = &self.cancel {
+            let _ = host.call(cancel);
+        }
+    }
+}
+
 pub(super) struct Pending {
     plugin: String,
     id: u64,

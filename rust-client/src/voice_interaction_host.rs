@@ -1,11 +1,9 @@
 //! Observe existing microphone results; the review UI never owns an inference session.
 use crate::{
     CaptureSource, XRTranslateApp, ask,
-    plugins::PluginId,
     session_coordinator::{TranslationEvent, TranslationSegment},
     voice_interaction::{VoiceController, VoiceEffect},
 };
-use crossbeam_channel::Receiver;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::{
@@ -153,6 +151,12 @@ impl VoiceInbox {
     }
 }
 
+struct Preparation {
+    text: String,
+    tool: String,
+    request: crate::plugin_host::Call,
+    result: Option<Result<String, String>>,
+}
 #[derive(Default)]
 pub(crate) struct VoiceHost {
     controller: VoiceController,
@@ -160,7 +164,8 @@ pub(crate) struct VoiceHost {
     pub inbox: VoiceInbox,
     pub microphone_sync_active: Arc<AtomicBool>,
     ask: Option<(u64, ask::Reply)>,
-    publication: Option<(u64, Receiver<Result<(), String>>)>,
+    publication: Option<(u64, crate::plugin_host::Call)>,
+    preparation: Option<Preparation>,
 }
 impl VoiceHost {
     pub fn action(&mut self, action: crate::voice_interaction::VoiceAction) {
@@ -170,11 +175,24 @@ impl VoiceHost {
     }
 }
 impl XRTranslateApp {
+    fn voice_output(&self) -> Option<String> {
+        self.plugin_host
+            .states()
+            .find_map(|state| state["voice_output"].as_str().map(str::to_owned))
+    }
     pub(crate) fn refresh_microphone_sync(&self) {
-        let enabled = !self.first_run
-            && self.microphone_sync_enabled
-            && self.plugin_enabled(PluginId::OSC)
-            && self.osc_plugin.applied().enabled;
+        let receiver = self
+            .plugin_host
+            .states()
+            .find_map(|state| {
+                serde_json::from_value::<xrtranslate_client_core::osc::ReceiveOptions>(
+                    state["osc_receiver"].clone(),
+                )
+                .ok()
+            })
+            .unwrap_or_default();
+        self.osc_transport.handle().update_settings(&receiver);
+        let enabled = !self.first_run && self.microphone_sync_enabled && receiver.enabled;
         self.voice_interaction
             .microphone_sync_active
             .store(enabled, Ordering::Release);
@@ -215,21 +233,19 @@ impl XRTranslateApp {
                     self.voice_interaction.ask = Some((operation, self.ask.request(prompt, ctx)));
                 }
                 VoiceEffect::Publish { operation, text } => {
-                    match self.osc_plugin.prepare_voice_text(&text) {
-                        Ok(text) if self.plugin_enabled(PluginId::OSC) => {
-                            self.voice_interaction.publication =
-                                Some((operation, self.osc_plugin.publish_voice(operation, &text)));
-                        }
-                        result => {
-                            let error = result.err().unwrap_or_else(|| {
-                                "Enable VRChat OSC to send this message.".into()
-                            });
-                            effects.extend(
-                                self.voice_interaction
-                                    .controller
-                                    .publish_done(operation, Err(error)),
-                            );
-                        }
+                    if let Some(tool) = self.voice_output() {
+                        self.voice_interaction.publication = Some((
+                            operation,
+                            crate::plugin_host::Call::new(
+                                tool,
+                                serde_json::json!({"action":"publish","operation":operation,"text":text}),
+                            ),
+                        ));
+                    } else {
+                        effects.extend(self.voice_interaction.controller.publish_done(
+                            operation,
+                            Err("Enable a text output to send this message.".into()),
+                        ));
                     }
                 }
             }
@@ -262,7 +278,8 @@ impl XRTranslateApp {
         let requested = !self.first_run && mode.requested;
         let active = requested && mode.active;
         let review = requested && mode.review;
-        self.osc_plugin.set_microphone_review(review);
+        self.plugin_host
+            .set_context("voice.review", serde_json::json!(review));
         self.voice_interaction
             .controller
             .set_edit_available(self.service_config.supports_ask());
@@ -311,13 +328,10 @@ impl XRTranslateApp {
         if let Some((operation, result)) =
             self.voice_interaction
                 .publication
-                .as_ref()
-                .and_then(|(id, rx)| match rx.try_recv() {
-                    Ok(result) => Some((*id, result)),
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        Some((*id, Err("OSC sender disconnected.".into())))
-                    }
-                    Err(_) => None,
+                .as_mut()
+                .and_then(|(id, call)| {
+                    call.poll(&mut self.plugin_host)
+                        .map(|result| (*id, result.map(|_| ())))
                 })
         {
             self.voice_interaction.publication = None;
@@ -329,20 +343,60 @@ impl XRTranslateApp {
         }
         let mut snapshot = self.voice_interaction.controller.snapshot();
         snapshot.recording = active && self.input_capturing(CaptureSource::Microphone);
-        if snapshot.review_enabled && !snapshot.text.is_empty() {
-            match self.osc_plugin.prepare_voice_text(&snapshot.text) {
-                Ok(text) => snapshot.text = text,
-                Err(error) if snapshot.can_send => {
-                    snapshot.can_send = false;
-                    snapshot.status = error;
+        let tool = self.voice_output();
+        if snapshot.review_enabled
+            && !snapshot.text.is_empty()
+            && let Some(tool) = &tool
+        {
+            if self
+                .voice_interaction
+                .preparation
+                .as_ref()
+                .is_none_or(|p| p.text != snapshot.text || &p.tool != tool)
+            {
+                if let Some(previous) = self.voice_interaction.preparation.take() {
+                    previous.request.cancel(&mut self.plugin_host);
                 }
-                _ => {}
+                self.voice_interaction.preparation = Some(Preparation {
+                    request: crate::plugin_host::Call::new(
+                        tool.clone(),
+                        serde_json::json!({"action":"prepare","text":snapshot.text}),
+                    ),
+                    text: snapshot.text.clone(),
+                    tool: tool.clone(),
+                    result: None,
+                });
             }
+            let preparation = self.voice_interaction.preparation.as_mut().unwrap();
+            if preparation.result.is_none() {
+                preparation.result =
+                    preparation
+                        .request
+                        .poll(&mut self.plugin_host)
+                        .map(|result| {
+                            result.and_then(|value| {
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .ok_or("Output returned no text".into())
+                            })
+                        });
+            }
+            match &preparation.result {
+                Some(Ok(text)) => snapshot.text = text.clone(),
+                Some(Err(error)) => {
+                    snapshot.can_send = false;
+                    snapshot.status = error.clone();
+                }
+                None => snapshot.can_send = false,
+            }
+        } else if let Some(previous) = self.voice_interaction.preparation.take() {
+            previous.request.cancel(&mut self.plugin_host);
         }
-        if !self.plugin_enabled(PluginId::OSC) {
+        if tool.is_none() {
             snapshot.can_send = false;
             if snapshot.review_enabled {
-                snapshot.status = "Enable VRChat OSC".into();
+                snapshot.status = "Enable a text output".into();
             }
         }
         self.plugin_host

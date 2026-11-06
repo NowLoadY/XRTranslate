@@ -9,7 +9,12 @@ pub fn render(
     let mut actions = Vec::new();
     let game = plugin.game();
     let receiver_status = (game == super::super::OscGame::VRChat)
-        .then(|| plugin.receiver().map(|receiver| receiver.state().listener))
+        .then(|| {
+            plugin
+                .receiver
+                .as_ref()
+                .map(|receiver| receiver.listener.clone())
+        })
         .flatten();
     components::action_card(ui, |ui| {
         components::feature_ui(

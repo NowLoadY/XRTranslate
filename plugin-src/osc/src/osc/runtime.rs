@@ -2,17 +2,14 @@ use super::chatbox::{
     HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
 };
 use crate::client_settings::CaptureSource;
-pub use crate::plugins::text_output::{
-    BannerConfig, BannerContentType, MessageFormat as OscFormatMode,
-};
-use crate::plugins::text_output::{LyricsText, TextOutputHandle};
 use crate::session_coordinator::AudioSourceFilter;
+pub use crate::text_output::{BannerConfig, BannerContentType, MessageFormat as OscFormatMode};
+use crate::text_output::{LyricsText, TextOutputHandle};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
-use rosc::{OscType, encoder};
+use rosc::encoder;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -84,14 +81,6 @@ impl OscMessageSeparator {
     }
 }
 
-fn default_typing_source_lang() -> String {
-    "zh".to_string()
-}
-
-fn default_typing_target_lang() -> String {
-    "en".to_string()
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OscSettings {
     #[serde(skip)]
@@ -116,11 +105,6 @@ pub struct OscSettings {
     #[serde(default)]
     pub message_separator: OscMessageSeparator,
     pub show_speaker_number: bool,
-    // Persisted compatibility only. OSC's composer edits the host language route.
-    #[serde(default = "default_typing_source_lang")]
-    pub typing_source_lang: String,
-    #[serde(default = "default_typing_target_lang")]
-    pub typing_target_lang: String,
     #[serde(default = "default_microphone_prefix")]
     pub microphone_prefix: String,
     #[serde(default = "default_system_audio_prefix")]
@@ -162,8 +146,6 @@ impl Default for OscSettings {
             format_mode: OscFormatMode::BilingualSourceFirst,
             message_separator: OscMessageSeparator::default(),
             show_speaker_number: false,
-            typing_source_lang: default_typing_source_lang(),
-            typing_target_lang: default_typing_target_lang(),
             microphone_prefix: default_microphone_prefix(),
             system_audio_prefix: default_system_audio_prefix(),
             typing_prefix: default_typing_prefix(),
@@ -596,18 +578,19 @@ pub struct OscManager {
     status: Arc<Mutex<RuntimeStatus>>,
     tx: Sender<Command>,
     worker: Option<JoinHandle<()>>,
-    send_permitted: Arc<Mutex<bool>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
     microphone_review: Arc<Mutex<MicrophoneReview>>,
 }
 
 impl OscManager {
-    pub fn new(settings: OscSettings, text_output: TextOutputHandle) -> Self {
+    pub fn new(
+        settings: OscSettings,
+        text_output: TextOutputHandle,
+        client: xrtranslate_plugin::Client,
+    ) -> Self {
         let (tx, rx) = unbounded();
         let status = Arc::new(Mutex::new(RuntimeStatus::default()));
         let dispatch_settings = settings.clone();
-        let send_permitted = Arc::new(Mutex::new(true));
-        let dispatch_permission = send_permitted.clone();
         let dispatch_status = Arc::clone(&status);
         let pending_cancellations = Arc::new(Mutex::new(BTreeSet::new()));
         let dispatch_cancellations = pending_cancellations.clone();
@@ -622,7 +605,7 @@ impl OscManager {
                     dispatch_status,
                     dispatch_cancellations,
                     dispatch_review,
-                    dispatch_permission,
+                    client,
                     text_output,
                 )
             })
@@ -631,15 +614,9 @@ impl OscManager {
             status,
             tx,
             worker: Some(worker),
-            send_permitted,
             pending_cancellations,
             microphone_review,
         }
-    }
-
-    /// Transfer an endpoint without an old queued clear erasing the new writer.
-    pub fn relinquish_endpoint(&self) {
-        *self.send_permitted.lock() = false;
     }
 
     pub fn take_error(&self) -> Option<String> {
@@ -670,9 +647,6 @@ impl OscManager {
     }
     pub fn update_settings(&mut self, settings: OscSettings) -> Result<(), String> {
         settings.validate()?;
-        if settings.enabled {
-            *self.send_permitted.lock() = true;
-        }
         let _ = self.tx.send(Command::Update(settings));
         Ok(())
     }
@@ -691,31 +665,16 @@ impl Drop for OscManager {
     }
 }
 
-pub(super) fn parse_mute_value(value: &OscType) -> Option<bool> {
-    match value {
-        OscType::Bool(value) => Some(*value),
-        OscType::Int(value) => Some(*value != 0),
-        OscType::Long(value) => Some(*value != 0),
-        OscType::Float(value) => Some(*value != 0.0),
-        OscType::Double(value) => Some(*value != 0.0),
-        OscType::String(value) => match value.trim().to_lowercase().as_str() {
-            "true" | "1" | "on" | "yes" | "mute" | "muted" => Some(true),
-            "false" | "0" | "off" | "no" | "unmute" | "unmuted" => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn dispatch_loop(
     rx: Receiver<Command>,
     mut settings: OscSettings,
     status: Arc<Mutex<RuntimeStatus>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
     microphone_review: Arc<Mutex<MicrophoneReview>>,
-    send_permitted: Arc<Mutex<bool>>,
+    client: xrtranslate_plugin::Client,
     text_output: TextOutputHandle,
 ) {
+    let mut destination = 0;
     let mut history = Vec::new();
     let mut live = Vec::new();
     let mut previews: Vec<HistoryMessage> = Vec::new();
@@ -944,19 +903,30 @@ fn dispatch_loop(
                 changed = true;
             }
             Ok(Command::Update(updated)) => {
-                force_send |= settings.ip != updated.ip
+                let destination_changed = settings.ip != updated.ip
                     || settings.send_port != updated.send_port
                     || settings.enabled != updated.enabled;
+                force_send |= destination_changed;
                 if settings.enabled && !updated.enabled {
                     cancel_voice_publication(&mut pending_voice, "OSC Chatbox output was disabled");
                     published_voice = None;
-                    let _ = send_message(&settings, &clear_message(), &status, &send_permitted);
+                    let _ =
+                        send_message(&settings, &clear_message(), &status, &client, destination);
                     pending = None;
                     manual_message = None;
                     history.clear();
                     live.clear();
                     previews.clear();
                     last_send = now;
+                }
+                if updated.enabled && (destination == 0 || destination_changed) {
+                    match open_destination(&client, &updated) {
+                        Ok(id) => destination = id,
+                        Err(error) => {
+                            status.lock().last_error = Some(error);
+                            destination = 0;
+                        }
+                    }
                 }
                 settings = updated;
                 if settings.lyric_budget().is_none() {
@@ -1026,7 +996,7 @@ fn dispatch_loop(
             // Never trim or reformat a body after the user's send gesture.
             let result = settings
                 .validate_voice_text(&message.text)
-                .and_then(|()| send_message(&settings, &message, &status, &send_permitted));
+                .and_then(|()| send_message(&settings, &message, &status, &client, destination));
             last_send = Instant::now();
             if result.is_ok() {
                 last_voice_operation = Some(publication.operation);
@@ -1069,7 +1039,7 @@ fn dispatch_loop(
                 runtime.chatbox_text == message.text && runtime.chatbox_typing == message.typing
             };
             if !unchanged || message.notify || (force_send && published_voice.is_none()) {
-                let _ = send_message(&settings, &message, &status, &send_permitted);
+                let _ = send_message(&settings, &message, &status, &client, destination);
                 last_send = Instant::now();
             }
             force_send = false;
@@ -1100,14 +1070,10 @@ fn send_message(
     settings: &OscSettings,
     message: &QueuedMessage,
     status: &Mutex<RuntimeStatus>,
-    send_permitted: &Mutex<bool>,
+    client: &xrtranslate_plugin::Client,
+    destination: u64,
 ) -> Result<(), String> {
-    // Held only across local UDP submission, so handover fences both packets.
-    let permission = send_permitted.lock();
-    if !*permission {
-        return Err("OSC destination was transferred to another output".into());
-    }
-    let result = send_packets(settings, message);
+    let result = send_packets(settings, message, client, destination);
     let mut runtime = status.lock();
     match &result {
         Ok(()) => {
@@ -1120,21 +1086,56 @@ fn send_message(
     result
 }
 
-fn send_packets(settings: &OscSettings, message: &QueuedMessage) -> Result<(), String> {
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|error| format!("Cannot create OSC sender: {error}"))?;
-    let target = format!("{}:{}", settings.ip, settings.send_port);
-    for packet in settings
+fn open_destination(
+    client: &xrtranslate_plugin::Client,
+    settings: &OscSettings,
+) -> Result<u64, String> {
+    use std::net::ToSocketAddrs;
+    let address = (
+        settings.ip.trim().trim_matches(['[', ']']),
+        settings.send_port,
+    )
+        .to_socket_addrs()
+        .map_err(|e| format!("Cannot resolve OSC destination: {e}"))?
+        .next()
+        .ok_or("Empty OSC destination")?;
+    let close_packets = settings
+        .game
+        .packets("", false, false)
+        .iter()
+        .map(encoder::encode)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    client
+        .request(
+            "udp.configure",
+            serde_json::json!({"address":address.to_string(),"close_packets":close_packets}),
+        )
+        .wait()?
+        .as_u64()
+        .ok_or("Invalid datagram destination".into())
+}
+
+fn send_packets(
+    settings: &OscSettings,
+    message: &QueuedMessage,
+    client: &xrtranslate_plugin::Client,
+    destination: u64,
+) -> Result<(), String> {
+    let packets = settings
         .game
         .packets(&message.text, message.typing, message.notify)
-    {
-        let bytes =
-            encoder::encode(&packet).map_err(|error| format!("Cannot encode OSC: {error}"))?;
-        socket
-            .send_to(&bytes, &target)
-            .map_err(|error| format!("Cannot send OSC: {error}"))?;
-    }
-    Ok(())
+        .iter()
+        .map(encoder::encode)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    client
+        .request(
+            "udp.send",
+            serde_json::json!({"id":destination,"packets":packets}),
+        )
+        .wait()
+        .map(|_| ())
 }
 
 fn build_queued_message(
@@ -1142,7 +1143,7 @@ fn build_queued_message(
     live: &[HistoryMessage],
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
-    metrics: &crate::plugins::text_output::SystemMetrics,
+    metrics: &crate::text_output::SystemMetrics,
     lyrics: &LyricsText,
     typing: bool,
     notify: bool,

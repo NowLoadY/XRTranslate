@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bounded song metadata and the current lyric, supplied together by the host.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LyricsText {
+pub struct LyricsText {
     pub title: String,
     pub lyric: String,
 }
@@ -67,7 +67,7 @@ impl Default for BannerConfig {
 }
 
 impl BannerConfig {
-    pub fn render_text(&self, metrics: &super::system::SystemMetrics, lyric: &str) -> String {
+    pub fn render_text(&self, metrics: &super::SystemMetrics, lyric: &str) -> String {
         match self.content_type {
             BannerContentType::Lyrics => lyric.to_owned(),
             BannerContentType::None => String::new(),
@@ -102,7 +102,7 @@ impl BannerConfig {
 }
 
 /// Format one message without transport-specific punctuation or length rules.
-pub(crate) fn format_message<'a>(
+pub fn format_message<'a>(
     source: &str,
     target: &str,
     additional: impl IntoIterator<Item = &'a str>,
@@ -111,14 +111,14 @@ pub(crate) fn format_message<'a>(
 ) -> String {
     let (mut parts, separator) = message_parts(source, target, additional, mode);
     if let Some(first) = parts.first_mut()
-        && let Some(speaker) = crate::presentation::speaker::compact_speaker_label(speaker)
+        && let Some(speaker) = crate::compact_speaker_label(speaker)
     {
         first.insert_str(0, &format!("[{speaker}] "));
     }
     parts.join(separator)
 }
 
-pub(crate) fn render_banner_selector(
+pub fn render_banner_selector(
     ui: &mut egui::Ui,
     label: &str,
     combo_id: &str,

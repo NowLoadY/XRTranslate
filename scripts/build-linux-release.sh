@@ -25,7 +25,7 @@ fi
 source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager -p xrtranslate-plugin -p xrt-agent -p xrt-media -p xrt-meeting -p xrt-vocabulary -p xrt-vr-overlay -p xrt-lyrics -p xrt-bigwalk --features xrtranslate-backend/managed-ort,xrtranslate-plugin/host --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager -p xrtranslate-plugin -p xrt-agent -p xrt-media -p xrt-meeting -p xrt-vocabulary -p xrt-vr-overlay -p xrt-osc -p xrt-chilloutvr-osc -p xrt-lyrics -p xrt-bigwalk --features xrtranslate-backend/managed-ort,xrtranslate-plugin/host --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
@@ -55,7 +55,7 @@ tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
 ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
 
 plugin_args=()
-for plugin in agent media meeting vocabulary vr-overlay lyrics bigwalk; do
+for plugin in agent media meeting vocabulary vr-overlay osc chilloutvr-osc lyrics bigwalk; do
   directory="${RESOURCE_DIR}/plugins/${plugin}"
   target/release/xrt-plugin stage "plugin-src/${plugin}" "target/release/xrt-${plugin}" "${directory}" --replace
   plugin_args+=(--plugin-directory "${directory}")

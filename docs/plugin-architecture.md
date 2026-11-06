@@ -4,7 +4,7 @@ Optional plugins are native child processes discovered under the application’s
 `plugins/` directory. Each directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
 while running and checks only the declared minimum host version. Motion, Media,
-Meeting, Agent, Vocabulary, SteamVR, Lyrics, Big Walk and automatic input use this boundary.
+Meeting, Agent, Vocabulary, SteamVR, OSC, Lyrics, Big Walk and automatic input use this boundary.
 Their source is absent from the desktop client's dependency graph;
 removal stops their workers and removes their page and tools.
 
@@ -12,8 +12,8 @@ The [MIT protocol SDK](../crates/xrtranslate-plugin/README.md) owns the wire pro
 and process runner. `rust-client/src/plugin_host` adapts it to shared UI, CLI,
 inference, model installation and application lifetime. Plugin manifests declare
 contributions; the dispatcher forwards domain calls without interpreting them.
-Cooperation belongs to consumers, such as `plugins/osc/integrations.rs` connecting
-lyric events to OSC outputs. Missing required capabilities produce a local error;
+Cooperation belongs to consumers: Lyrics reads output requests from plugin state
+and OSC consumes lyric events. Missing required capabilities produce a local error;
 optional consumers report unavailability when used.
 
 Motion source is maintained in a separate private repository in the ignored
@@ -21,9 +21,8 @@ Motion source is maintained in a separate private repository in the ignored
 Other independent plugin source lives under `plugin-src/`. These plugins need the
 host; independence does not require a second application or UI implementation.
 
-OCR and avatar/OSC output still have compiled host bindings. The static feature
-registry remains separate from the installed-plugin catalogue until those
-resource and connection lifecycles are migrated.
+OCR and Avatar control still have compiled host bindings. The installed manifests
+are the sole plugin page catalogue; no static navigation registry remains.
 
 `crates/xrtranslate-client-core` holds the existing UI components and neutral
 session/playback/file contracts once. The native Media, Meeting and Vocabulary
@@ -161,13 +160,10 @@ meetings use the existing meeting recognition and translation jobs. Input EOF
 completion is independent of inference priority, so a live network source can
 drain cleanly without becoming offline work. See [online audio](online-audio.md).
 
-## Compiled feature registration and lifecycle
+## Installation and lifecycle
 
-`PluginDescriptor` declares identity, navigation, settings contribution, and
-default enablement. `PluginRegistry` manages the catalogue and persisted
-preferences. A plugin may have no standalone page. Metadata does not own runtime
-instances; the host explicitly registers typed instances, actions, subscribers,
-and lifecycle hooks.
+The manifest owns identity, navigation and tools. Configuration belongs to the
+plugin; the host owns process enablement and resource cleanup.
 
 Each plugin owns activation, deactivation, cancellation, and worker cleanup.
 Enablement and active work are separate: work starts when the consuming
@@ -185,11 +181,11 @@ affecting unrelated tasks.
 
 | Module | Owns and consumes |
 |---|---|
-| `plugins::osc` | Native Chatbox composition and game wire profiles; exposes the shared OSC receive/OSCQuery transport |
+| Native `plugin-src/osc` / `chilloutvr-osc` | Chatbox composition, game wire profiles and original settings/page |
 | `plugins::game_plugins` | Avatar game connection enablement and page composition |
 | Native `plugin-src/bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
-| `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
+| Client core `text_output` / host `system_metrics` | Shared formatting and banner controls / one system sampler |
 | Native `plugin-src/lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
 | Native `plugin-src/vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless inference for examples |
 | Native `plugin-src/meeting` | Meeting state, recording navigation, and persistence; consumes its normalized session results |
@@ -219,8 +215,8 @@ Video work stays bounded, and the worker completes before its target resources
 are retired. Hidden playback continues without holding UI graphics resources
 while waiting for the playback clock.
 
-VRChat OSC and ChilloutVR OSC are independent registered instances of the same
-plugin. They share composition, scheduling and UI; game profiles own packet
+VRChat OSC and ChilloutVR OSC are independent executable plugins built from
+the same library. They share composition, scheduling and UI; game profiles own packet
 arguments and text limits. Settings and manual input remain per output. The host
 allows one publisher per configured endpoint and transfers ownership before
 enabling another, preventing delayed clears from the old writer. The host owns
@@ -244,11 +240,12 @@ layout and buffered text codecs. Shared OSC transport owns discovery, verified
 snapshots and revocable paced writes independently of Chatbox enablement.
 WebSocket sends one latest display snapshot separately from ordered controls.
 
-`TextOutputPlugin` is an internal capability plugin, composed explicitly by the
-host rather than exposed as another output destination. It owns the shared
-system sampler and joins it on shutdown. OSC and Avatar receive cloneable
-`TextOutputHandle` values and use its public formatting and editor components;
-neither owns or reads the other's private runtime or settings.
+The host owns one system sampler and publishes `system.metrics`. Shared text
+formatting and banner controls live in the UI SDK. Output plugins consume this
+data without starting duplicate samplers. Shared OSC receive/OSCQuery remains a
+host service; datagram destinations are owned and fenced per plugin, with final
+cleanup packets on removal. Reviewed speech uses a tool advertised by an output
+plugin, so the core voice controller has no chatbox implementation dependency.
 
 Avatar consumes the existing host output subscription. It retains message
 identity and expiry, accepts native previews and promotes completed text for

@@ -1,7 +1,7 @@
-use crate::plugins::text_output::{LyricsText, SystemMetrics, message_parts};
+use crate::text_output::{LyricsText, SystemMetrics, message_parts};
 use std::{collections::VecDeque, time::Instant};
 
-use crate::presentation::speaker::compact_speaker_label;
+use crate::compact_speaker_label;
 
 use super::runtime::{
     BannerContentType, OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings,

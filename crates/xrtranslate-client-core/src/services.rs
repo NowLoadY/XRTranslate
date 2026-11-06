@@ -57,6 +57,33 @@ pub struct Capabilities {
     pub ask: bool,
     pub agent: bool,
     pub tts: bool,
+    pub text: TextState,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TextState {
+    pub preparing: bool,
+    pub asr_only: bool,
+    pub additional_target: Option<String>,
+    pub microphone_sync: bool,
+}
+
+/// The same application actions used by the translation page.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum TextAction {
+    Clear,
+    Submit {
+        text: String,
+    },
+    Language {
+        source: String,
+        target: String,
+        asr_only: bool,
+    },
+    MicrophoneSync {
+        enabled: bool,
+    },
 }
 
 pub type Reply = Receiver<Result<String, AskError>>;
