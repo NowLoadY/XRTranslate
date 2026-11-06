@@ -1,0 +1,206 @@
+use crate::{Environment, Manifest, Message, Result, Widget};
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io::{BufRead, BufReader, Write},
+    path::Path,
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex, mpsc},
+    thread::JoinHandle,
+    time::Instant,
+};
+
+#[derive(Default)]
+struct State {
+    view: Vec<Widget>,
+    replies: BTreeMap<u64, (Instant, Option<Result>)>,
+    events: VecDeque<Message>,
+    error: Option<String>,
+}
+
+pub struct Process {
+    child: Child,
+    output: Option<mpsc::SyncSender<Message>>,
+    state: Arc<Mutex<State>>,
+    threads: Vec<JoinHandle<()>>,
+    next_id: u64,
+}
+impl Process {
+    pub fn start(
+        directory: &Path,
+        manifest: &Manifest,
+        environment: Environment,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::result::Result<Self, String> {
+        manifest.validate()?;
+        let mut command = Command::new(directory.join(&manifest.executable));
+        command
+            .current_dir(directory)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        let errors = child.stderr.take().unwrap();
+        let state = Arc::new(Mutex::new(State::default()));
+        let (tx, rx) = mpsc::sync_channel(64);
+        let write_state = state.clone();
+        let writer = std::thread::spawn(move || {
+            for message in rx {
+                if let Err(error) = serde_json::to_writer(&mut input, &message)
+                    .map_err(std::io::Error::other)
+                    .and_then(|_| input.write_all(b"\n"))
+                    .and_then(|_| input.flush())
+                {
+                    write_state.lock().unwrap().error = Some(format!("Plugin input: {error}"));
+                    break;
+                }
+            }
+        });
+        let read_state = state.clone();
+        let reader = std::thread::spawn(move || {
+            let mut output = BufReader::new(output);
+            loop {
+                let mut bytes = Vec::new();
+                use std::io::Read;
+                let read = output
+                    .by_ref()
+                    .take(8 * 1024 * 1024 + 1)
+                    .read_until(b'\n', &mut bytes);
+                let message = match read {
+                    Ok(0) => {
+                        read_state
+                            .lock()
+                            .unwrap()
+                            .error
+                            .get_or_insert("Plugin exited".into());
+                        break;
+                    }
+                    Ok(n) if n <= 8 * 1024 * 1024 => {
+                        serde_json::from_slice::<Message>(&bytes).map_err(|e| e.to_string())
+                    }
+                    Ok(_) => Err("Plugin message is too large".into()),
+                    Err(error) => Err(error.to_string()),
+                };
+                let mut state = read_state.lock().unwrap();
+                match message {
+                    Ok(Message::View { widgets }) => state.view = widgets,
+                    Ok(Message::Reply { id, result }) => {
+                        if let Some((_, reply)) = state.replies.get_mut(&id) {
+                            *reply = Some(result);
+                        }
+                    }
+                    Ok(message @ (Message::Call { .. } | Message::Event { .. }))
+                        if state.events.len() < 128 =>
+                    {
+                        state.events.push_back(message)
+                    }
+                    Ok(_) => {
+                        state.error =
+                            Some("Plugin sent an unexpected message or too many requests".into());
+                        break;
+                    }
+                    Err(error) => {
+                        state.error = Some(format!("Plugin output: {error}"));
+                        break;
+                    }
+                }
+                drop(state);
+                wake();
+            }
+            wake();
+        });
+        let plugin = manifest.id.clone();
+        let error_state = state.clone();
+        let stderr = std::thread::spawn(move || {
+            for line in BufReader::new(errors)
+                .lines()
+                .map_while(std::result::Result::ok)
+            {
+                log::info!("Plugin {plugin}: {line}");
+                // Keep the final diagnostic when the process exits unexpectedly.
+                if line.starts_with("Error:") {
+                    error_state.lock().unwrap().error = Some(line.chars().take(2048).collect());
+                }
+            }
+        });
+        let process = Self {
+            child,
+            output: Some(tx),
+            state,
+            threads: vec![writer, reader, stderr],
+            next_id: 0,
+        };
+        process.send(Message::Initialize { environment })?;
+        Ok(process)
+    }
+    pub fn send(&self, message: Message) -> std::result::Result<(), String> {
+        self.output
+            .as_ref()
+            .ok_or("Plugin is stopped")?
+            .try_send(message)
+            .map_err(|e| format!("Plugin is busy or stopped: {e}"))
+    }
+    pub fn request(&mut self, name: &str, arguments: Value) -> std::result::Result<u64, String> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(error) = &state.error {
+            return Err(error.clone());
+        }
+        if state.replies.len() >= 128 {
+            return Err("Too many pending plugin operations".into());
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        state.replies.insert(id, (Instant::now(), None));
+        drop(state);
+        if let Err(error) = self.send(Message::Call {
+            id,
+            name: name.into(),
+            arguments,
+        }) {
+            self.state.lock().unwrap().replies.remove(&id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+    pub fn result(&mut self, id: u64) -> Option<Result> {
+        let mut state = self.state.lock().unwrap();
+        let error = state.error.clone();
+        let Some((started, result)) = state.replies.get_mut(&id) else {
+            return Some(Err("Unknown plugin operation".into()));
+        };
+        let result = result.take().or_else(|| error.map(Err)).or_else(|| {
+            (started.elapsed().as_secs() > 180).then(|| Err("Plugin operation timed out".into()))
+        });
+        if result.is_some() {
+            state.replies.remove(&id);
+        }
+        result
+    }
+    pub fn events(&mut self) -> Vec<Message> {
+        self.state.lock().unwrap().events.drain(..).collect()
+    }
+    pub fn view(&self) -> Vec<Widget> {
+        self.state.lock().unwrap().view.clone()
+    }
+    pub fn error(&self) -> Option<String> {
+        self.state.lock().unwrap().error.clone()
+    }
+}
+impl Drop for Process {
+    fn drop(&mut self) {
+        self.output.take();
+        // No child may outlive a disabled/uninstalled plugin, including a stuck inference.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}

@@ -2,7 +2,11 @@
 resolver = "3"
 members = [
     "rust-client",
+    "plugin-src/lyrics",
+    "plugin-src/bigwalk",
+    "plugin-src/auto-input",
     "crates/ui-director",
+    "crates/xrtranslate-plugin",
     "crates/xrtranslate-prompt",
     "crates/xrtranslate-protocol",
     "crates/xrtranslate-config",
@@ -22,6 +26,7 @@ members = [
     "apps/xrtranslate-packager",
     "apps/xrtranslate-updater",
 ]
+exclude = ["private-plugins/*"]
 
 [workspace.package]
 version = "0.4.0"

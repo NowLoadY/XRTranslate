@@ -1,0 +1,33 @@
+{
+  "id": "auto_input",
+  "version": "0.1.0",
+  "title": {
+    "en": "Automatic input",
+    "zh": "自动输入"
+  },
+  "description": {
+    "en": "Insert completed translations into the focused Windows text field.",
+    "zh": "将已完成的译文输入到 Windows 当前文本框。"
+  },
+  "executable": "xrt-auto-input.exe",
+  "requires": [
+    "platform.windows"
+  ],
+  "subscriptions": [
+    "translation.committed",
+    "translation.clear",
+    "translation.cancelled"
+  ],
+  "tools": [
+    {
+      "name": "auto_input.status",
+      "description": "Read automatic text input status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "read_only": true
+    }
+  ],
+  "min_host_version": "0.4.0"
+}

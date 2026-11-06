@@ -188,3 +188,7 @@ Please refer to the corresponding license files and source files for the applica
 - Voice cloning may only be used with your own voice. Cloning, imitating, or impersonating another person's voice is prohibited.
 - Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.
 - Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.
+
+Native plugins are discovered in the application’s `plugins/` folder. Add or remove
+a plugin directory to install or uninstall it; enable switches remain in Settings. See the
+[plugin guide](plugin-src/README.md) and [SDK](crates/xrtranslate-plugin/README.md).

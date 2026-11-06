@@ -1,0 +1,31 @@
+{
+  "id": "bigwalk",
+  "version": "0.1.0",
+  "title": {
+    "en": "Big Walk",
+    "zh": "Big Walk"
+  },
+  "description": {
+    "en": "Send completed translations to the Big Walk chat bridge.",
+    "zh": "将翻译结果发送至 Big Walk 聊天桥接。"
+  },
+  "executable": "xrt-bigwalk",
+  "page": true,
+  "subscriptions": [
+    "translation.committed",
+    "translation.clear",
+    "translation.cancelled"
+  ],
+  "tools": [
+    {
+      "name": "bigwalk.status",
+      "description": "Read the game connection and last sent message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "read_only": true
+    }
+  ],
+  "min_host_version": "0.4.0"
+}

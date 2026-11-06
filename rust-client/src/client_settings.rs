@@ -18,23 +18,7 @@ pub enum UpdateChannel {
     Beta,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum CaptureSource {
-    #[default]
-    Microphone,
-    SystemAudio,
-    Both,
-}
-
-impl CaptureSource {
-    pub const fn routes(self) -> &'static [Self] {
-        match self {
-            Self::Microphone => &[Self::Microphone],
-            Self::SystemAudio => &[Self::SystemAudio],
-            Self::Both => &[Self::Microphone, Self::SystemAudio],
-        }
-    }
-}
+pub use xrtranslate_plugin::translation::CaptureSource;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RecognitionSettings {
@@ -125,8 +109,6 @@ pub struct ClientSettings {
     pub osc_settings: OscSettings,
     #[serde(default = "default_chilloutvr_osc_settings")]
     pub chilloutvr_osc_settings: OscSettings,
-    #[serde(default)]
-    pub bigwalk_settings: crate::plugins::bigwalk::BigWalkSettings,
     #[serde(default)]
     pub game_plugins: crate::plugins::game_plugins::Settings,
     #[serde(default)]
@@ -226,7 +208,6 @@ impl Default for ClientSettings {
             update_channel: UpdateChannel::Stable,
             osc_settings: OscSettings::from_project_config(),
             chilloutvr_osc_settings: default_chilloutvr_osc_settings(),
-            bigwalk_settings: Default::default(),
             game_plugins: Default::default(),
             avatar_connector: Default::default(),
             vr_overlay_settings: VrOverlaySettings::default(),

@@ -597,7 +597,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                 failed = true;
             }
             app.model_task_manager.invalidate_discovery();
-            let requirements = app.service_config.runtime_requirements();
+            let requirements = app.runtime_requirements();
             if let Err(error) = app
                 .runtime_installer
                 .prepare_for(project_root.clone(), requirements)
@@ -787,7 +787,7 @@ fn render_onboarding_model_cards(
                 }
                 app.model_task_manager.invalidate_discovery();
                 app.backend_manager.invalidate_runtime();
-                let requirements = app.service_config.runtime_requirements();
+                let requirements = app.runtime_requirements();
                 if let Err(error) = app
                     .runtime_installer
                     .prepare_for(project_root.clone(), requirements)
@@ -1319,18 +1319,35 @@ fn onboarding_model_config_card(
 fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.heading(i18n::tr(app.ui_language, "Optional features"));
     ui.add_space(16.0);
-    let count = if cfg!(target_os = "android") { 2 } else { 3 };
-    crate::ui::layout::responsive_grid(ui, count, 2, 340.0, |ui, index| match index {
-        0 => render_onboarding_model_cards(
-            app,
-            ui,
-            &[("agent", ModelCapability::Translation, "Agent Model")],
-        ),
-        1 => render_onboarding_tts(app, ui),
-        #[cfg(not(target_os = "android"))]
-        2 => render_onboarding_ocr(app, ui),
-        _ => {}
-    });
+    let builtin_count = if cfg!(target_os = "android") { 2 } else { 3 };
+    let plugin_cards = app.plugin_host.model_cards();
+    crate::ui::layout::responsive_grid(
+        ui,
+        builtin_count + plugin_cards.len(),
+        2,
+        340.0,
+        |ui, index| match index {
+            0 => render_onboarding_model_cards(
+                app,
+                ui,
+                &[("agent", ModelCapability::Translation, "Agent Model")],
+            ),
+            1 => render_onboarding_tts(app, ui),
+            #[cfg(not(target_os = "android"))]
+            2 => render_onboarding_ocr(app, ui),
+            _ => {
+                if let Some(id) = plugin_cards.get(index - builtin_count) {
+                    app.plugin_host.model_card(
+                        ui,
+                        id,
+                        app.ui_language,
+                        &app.download_proxy_url,
+                        app.model_task_manager.use_mirror(),
+                    );
+                }
+            }
+        },
+    );
 }
 
 fn onboarding_surface(ui: &egui::Ui, color: Color32) -> Frame {
@@ -1913,7 +1930,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         app.last_error = Some(error);
     }
 
-    let requirements = app.service_config.runtime_requirements();
+    let requirements = app.runtime_requirements();
     let model_assets = app.service_config.selected_model_asset_ids();
     if !app.runtime_installer.is_busy()
         && !app

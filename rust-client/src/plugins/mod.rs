@@ -7,12 +7,8 @@
 //! remains explicit in the host adapter.
 
 pub(crate) mod agent;
-pub(crate) mod auto_input;
 pub(crate) mod avatar;
-pub(crate) mod bigwalk;
 pub(crate) mod game_plugins;
-#[cfg(any(windows, target_os = "linux"))]
-pub(crate) mod lyrics;
 pub mod media;
 pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -29,8 +25,11 @@ pub(crate) fn tool_providers(
 ) -> Vec<&mut dyn ui_director::ToolProvider> {
     let media = app.plugin_enabled(PluginId::MEDIA);
     let agent = app.plugin_enabled(PluginId::AGENT);
-    let mut providers: Vec<&mut dyn ui_director::ToolProvider> =
-        vec![&mut app.ui_tools, &mut app.director_audio];
+    let mut providers: Vec<&mut dyn ui_director::ToolProvider> = vec![
+        &mut app.ui_tools,
+        &mut app.director_audio,
+        &mut app.plugin_host,
+    ];
     if media {
         providers.push(&mut app.media_plugin);
     }
@@ -45,39 +44,56 @@ use std::{collections::BTreeMap, fmt};
 
 /// Stable identifier used by settings, routes and host/plugin messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PluginId(&'static str);
+pub struct PluginId {
+    bytes: [u8; 64],
+    len: u8,
+}
 
 impl PluginId {
-    pub const AGENT: Self = Self("agent");
-    pub const LYRICS: Self = Self("lyrics");
-    pub const VOCABULARY: Self = Self("vocabulary");
-    pub const OSC: Self = Self("osc");
-    pub const CHILLOUTVR_OSC: Self = Self("chilloutvr_osc");
-    pub const AVATAR: Self = Self("avatar");
-    pub const MEETING: Self = Self("meeting");
-    pub const MEDIA: Self = Self("video_player");
-    pub const VR_OVERLAY: Self = Self("vr_overlay");
-    pub const OCR: Self = Self("ocr");
-    pub const AUTO_INPUT: Self = Self("auto_input");
+    pub const AGENT: Self = Self::named("agent");
+    pub const VOCABULARY: Self = Self::named("vocabulary");
+    pub const OSC: Self = Self::named("osc");
+    pub const CHILLOUTVR_OSC: Self = Self::named("chilloutvr_osc");
+    pub const AVATAR: Self = Self::named("avatar");
+    pub const MEETING: Self = Self::named("meeting");
+    pub const MEDIA: Self = Self::named("video_player");
+    pub const VR_OVERLAY: Self = Self::named("vr_overlay");
+    pub const OCR: Self = Self::named("ocr");
+    pub const AUTO_INPUT: Self = Self::named("auto_input");
 
     pub fn is_supported(self) -> bool {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
-            Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
-        self.0
+    const fn named(value: &str) -> Self {
+        let mut bytes = [0; 64];
+        let input = value.as_bytes();
+        let mut i = 0;
+        while i < input.len() {
+            bytes[i] = input[i];
+            i += 1;
+        }
+        Self {
+            bytes,
+            len: input.len() as u8,
+        }
+    }
+    pub const fn as_str(&self) -> &str {
+        match std::str::from_utf8(self.bytes.split_at(self.len as usize).0) {
+            Ok(value) => value,
+            Err(_) => panic!("invalid plugin identifier"),
+        }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "agent" => Some(Self::AGENT),
-            "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
             "chilloutvr_osc" => Some(Self::CHILLOUTVR_OSC),
@@ -87,14 +103,16 @@ impl PluginId {
             "vr_overlay" => Some(Self::VR_OVERLAY),
             "ocr" => Some(Self::OCR),
             "auto_input" => Some(Self::AUTO_INPUT),
-            _ => None,
+            _ => xrtranslate_plugin::identifier(value)
+                .ok()
+                .map(|_| Self::named(value)),
         }
     }
 }
 
 impl fmt::Display for PluginId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -103,7 +121,7 @@ impl Serialize for PluginId {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.0)
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -163,7 +181,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 8] = [
+const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
     PluginDescriptor {
         id: PluginId::AGENT,
         title_key: "Agent",
@@ -255,19 +273,6 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 8] = [
         settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: false,
     },
-    PluginDescriptor {
-        id: PluginId::LYRICS,
-        title_key: "Lyrics",
-        description_key: "Show synced lyrics or the current media title in your selected outputs.",
-        navigation_order: None,
-        icon: PluginIcon {
-            uri: "bytes://plugins/lyrics/icon.svg",
-            bytes: include_bytes!("../../resources/icons/music.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
-    },
 ];
 
 /// Catalogue for built-in plugins compiled into this build.
@@ -314,6 +319,10 @@ impl PluginRegistry {
         page: &mut crate::ui::Page,
     ) {
         if let crate::ui::Page::Plugin(id) = *page
+            && !preferences
+                .installed_pages
+                .iter()
+                .any(|(installed, _)| *installed == id)
             && (self
                 .descriptor(id)
                 .is_none_or(|descriptor| descriptor.navigation_order.is_none())
@@ -330,12 +339,15 @@ pub struct PluginPreferences {
     /// particular build instead of discarding their preference.
     #[serde(default)]
     enabled: BTreeMap<String, bool>,
+    #[serde(skip)]
+    pub(crate) installed_pages: Vec<(PluginId, String)>,
 }
 
 impl Default for PluginPreferences {
     fn default() -> Self {
         let mut preferences = Self {
             enabled: BTreeMap::new(),
+            installed_pages: Vec::new(),
         };
         PluginRegistry::builtin().initialize_preferences(&mut preferences);
         preferences

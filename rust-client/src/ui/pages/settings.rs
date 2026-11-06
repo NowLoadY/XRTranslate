@@ -778,6 +778,7 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     );
     ui.add_space(16.0);
 
+    app.plugin_host.settings(ui, language);
     for descriptor in crate::plugins::PluginRegistry::builtin().descriptors() {
         if !app.plugin_available(descriptor.id) {
             continue;
@@ -804,8 +805,7 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
                     ui.add_space(10.0);
 
-                    let has_cache_action = descriptor.id == crate::plugins::PluginId::LYRICS;
-                    let controls_width = if has_cache_action { 90.0 } else { 56.0 };
+                    let controls_width = 56.0;
                     let available_for_text = (ui.available_width() - controls_width).max(80.0);
                     ui.allocate_ui_with_layout(
                         egui::vec2(available_for_text, 0.0),
@@ -829,20 +829,6 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 .size(12.0)
                                 .color(crate::ui::theme::text_weak()),
                             );
-                            #[cfg(any(windows, target_os = "linux"))]
-                            if has_cache_action && enabled {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(crate::i18n::tr(
-                                        language,
-                                        app.lyrics_plugin.status().message_key(),
-                                    ))
-                                    .size(11.5)
-                                    .color(crate::ui::theme::text_weak()),
-                                );
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_secs(1));
-                            }
                             if let Some(reason) = &disable_reason {
                                 ui.add_space(2.0);
                                 ui.label(
@@ -862,26 +848,6 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             .inner;
                         if response.changed() {
                             app.set_plugin_enabled(descriptor.id, enabled);
-                        }
-                        #[cfg(any(windows, target_os = "linux"))]
-                        if has_cache_action {
-                            let clearing = app.lyrics_plugin.cache_is_clearing();
-                            let hint = crate::i18n::tr(language, "Clear lyrics cache");
-                            let response = ui
-                                .add_enabled_ui(!clearing, |ui| {
-                                    components::reset_button(ui, "lyrics_cache_clear")
-                                })
-                                .inner;
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(egui::Role::Button, !clearing, hint)
-                            });
-                            if response.on_hover_text(hint).clicked() {
-                                app.lyrics_plugin.clear_cache();
-                            }
-                            if clearing {
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(100));
-                            }
                         }
                     });
                 });

@@ -2,7 +2,7 @@
 
 1. Install the [XRT Big Walk bridge](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/bigwalk/installation.md)
    and launch the modded game.
-2. In XRTranslate, open **Game Plugins**, choose **Big Walk**, and turn on **Enable**.
+2. Place the built Big Walk directory under XRTranslate’s `plugins/` folder, then open **Big Walk** in the sidebar.
 3. Join a room. When the page shows **Connected**, start microphone translation
    and speak. You can also translate typed text or send it directly.
 

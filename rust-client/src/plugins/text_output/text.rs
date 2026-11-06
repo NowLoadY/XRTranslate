@@ -4,7 +4,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 /// Bounded song metadata and the current lyric, supplied together by the host.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LyricsText {
     pub title: String,
     pub lyric: String,
@@ -24,27 +24,7 @@ impl LyricsText {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageFormat {
-    BilingualSourceFirst, // Source \n Target
-    BilingualTargetFirst, // Target \n Source
-    Inline,               // Source | Target
-    TargetOnly,           // Target only
-}
-
-impl MessageFormat {
-    pub fn label(&self, language: crate::i18n::UiLanguage) -> &'static str {
-        crate::i18n::tr(
-            language,
-            match self {
-                Self::BilingualSourceFirst => "Bilingual: original first",
-                Self::BilingualTargetFirst => "Bilingual: translation first",
-                Self::Inline => "Bilingual: one line",
-                Self::TargetOnly => "Translation only",
-            },
-        )
-    }
-}
+pub use xrtranslate_plugin::translation::{MessageFormat, message_parts};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BannerContentType {
@@ -138,47 +118,6 @@ pub(crate) fn format_message<'a>(
     parts.join(separator)
 }
 
-pub(crate) fn message_parts(
-    source: &str,
-    target: &str,
-    additional: impl IntoIterator<Item = impl AsRef<str>>,
-    mode: MessageFormat,
-) -> (Vec<String>, &'static str) {
-    let source = source.trim();
-    let target = target.trim();
-    let show_source = !source.is_empty()
-        && !target.is_empty()
-        && source != target
-        && mode != MessageFormat::TargetOnly;
-    let mut parts = Vec::new();
-    if show_source && mode != MessageFormat::BilingualTargetFirst {
-        parts.push(source.to_owned());
-    }
-    let main = if target.is_empty() && mode != MessageFormat::TargetOnly {
-        source
-    } else {
-        target
-    };
-    if !main.is_empty() {
-        parts.push(main.to_owned());
-    }
-    parts.extend(additional.into_iter().filter_map(|text| {
-        let text = text.as_ref().trim();
-        (!text.is_empty()).then(|| text.to_owned())
-    }));
-    if show_source && mode == MessageFormat::BilingualTargetFirst {
-        parts.push(source.to_owned());
-    }
-    (
-        parts,
-        if mode == MessageFormat::Inline {
-            " | "
-        } else {
-            "\n"
-        },
-    )
-}
-
 pub(crate) fn render_banner_selector(
     ui: &mut egui::Ui,
     label: &str,
@@ -189,8 +128,10 @@ pub(crate) fn render_banner_selector(
 ) -> bool {
     let mut changed = false;
     if !lyrics_available && banner.content_type == BannerContentType::Lyrics {
-        banner.content_type = BannerContentType::None;
-        changed = true;
+        ui.colored_label(
+            crate::ui::theme::danger(),
+            crate::i18n::tr(language, "Install and enable the Lyrics plugin."),
+        );
     }
 
     layout::flow_row(ui, |ui| {

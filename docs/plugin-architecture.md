@@ -1,8 +1,30 @@
-# Built-in plugin architecture
+# Plugins and host features
 
-Built-in plugins are statically linked Rust modules with stable IDs, explicit
-ownership, and typed host integration. This document defines how plugins share
-capabilities and participate in application lifecycle.
+Optional plugins are native child processes discovered under the application’s
+`plugins/` directory. Each directory contains `plugin.json` and an executable;
+filesystem presence defines installation. The host synchronizes directory changes
+while running and checks only the declared minimum host version. Motion, Lyrics,
+Big Walk and automatic input use this boundary. Their source is absent from the desktop client's dependency graph;
+removal stops their workers and removes their page and tools.
+
+The [MIT SDK](../crates/xrtranslate-plugin/README.md) owns the wire protocol and
+process runner. `rust-client/src/plugin_host` adapts it to shared UI, CLI,
+inference, model installation and application lifetime. Plugin manifests declare
+contributions; this adapter contains no domain plugin IDs or tool-name branches.
+Cooperation belongs to consumers, such as `plugins/osc/integrations.rs` connecting
+lyric events to OSC outputs. Missing required capabilities produce a local error;
+optional consumers report unavailability when used.
+
+Motion source is maintained in a separate private repository in the ignored
+`private-plugins/` directory. Public releases do not compile or package it.
+Other independent plugin source lives under `plugin-src/`. These plugins need the
+host; independence does not require a second application or UI implementation.
+
+Media, Meeting, Agent, OCR, avatar/VR output and vocabulary remain compiled host
+features for now. Their existing session, renderer and platform-resource bindings
+are not converted into a second RPC implementation just to claim extraction.
+Their ownership contracts below are retained for subsequent migrations; the
+static feature registry is separate from the installed-plugin catalogue.
 
 ## Ownership and dependencies
 
@@ -120,7 +142,7 @@ meetings use the existing meeting recognition and translation jobs. Input EOF
 completion is independent of inference priority, so a live network source can
 drain cleanly without becoming offline work. See [online audio](online-audio.md).
 
-## Registration and lifecycle
+## Compiled feature registration and lifecycle
 
 `PluginDescriptor` declares identity, navigation, settings contribution, and
 default enablement. `PluginRegistry` manages the catalogue and persisted
@@ -145,17 +167,17 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | `plugins::osc` | Native Chatbox composition and game wire profiles; exposes the shared OSC receive/OSCQuery transport |
-| `plugins::game_plugins` | Shared game selector and selection value used by page composition and runtime activation |
-| `plugins::bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
+| `plugins::game_plugins` | Avatar game connection enablement and page composition |
+| Native `plugin-src/bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
-| `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
+| Native `plugin-src/lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
 | `plugins::vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless ask for example work |
 | `plugins::meeting` | Meeting state, recording, playback navigation, and persistence; consumes its normalized session results |
 | `plugins::media` | Media tasks, playback, subtitles, and export; uses shared import and translation |
 | `plugins::vr_overlay` | SteamVR presentation and runtime; consumes shared host output |
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
-| `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
+| Native `plugin-src/auto-input` | Automatic text output; consumes committed results through a platform input capability |
 
 Desktop fullscreen history exposes an explicit lookup action on selected words
 and short phrases. Its in-app card shares the quick-translation task lifecycle
@@ -184,11 +206,9 @@ enabling another, preventing delayed clears from the old writer. The host owns
 one OSC receive/OSCQuery service; Chatbox writers never open duplicate listeners.
 See the [OSC Chatbox guide](osc-chatbox.md) for setup.
 
-**Game Plugins** is an always-visible group page. Its top-level **Enable**
-switch, off by default, activates the selected game. Switching games retires the
-previous connection, owned session and pending output. The page composes Avatar
-display and Big Walk chat controls; their settings and runtime owners remain
-independent.
+**Game Plugins** is the Avatar connector page. Its **Enable** switch, off by
+default, activates the game connection and owned session. Big Walk is a separately
+installed native plugin with its own page, settings and process lifetime.
 
 Big Walk consumes committed translations with their stable result identity and
 audio provenance. It reuses text-output formatting and the shared text composer.
@@ -232,9 +252,10 @@ UI components rather than duplicating pipelines or editor interaction logic.
 
 ## Extending the system
 
-Add a stable descriptor, keep domain logic in the plugin module, and register
-only the host actions, subscribers, and lifecycle hooks that the feature needs.
-Reuse existing task and output contracts before introducing a new shared seam.
+For a native plugin, declare its manifest, implement the SDK and copy its built
+directory into `plugins/`. UI, tools and model cards come from that declaration;
+no host registration is required. Keep domain logic in the plugin and reuse
+existing services and events before introducing a new shared seam.
 Provider connections, prompts, resource installation, and UI primitives retain
 their existing owners.
 

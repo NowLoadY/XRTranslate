@@ -1,0 +1,28 @@
+{
+  "id": "lyrics",
+  "version": "0.1.0",
+  "title": {
+    "en": "Lyrics",
+    "zh": "歌词"
+  },
+  "description": {
+    "en": "Current media title and synchronized lyrics for connected outputs.",
+    "zh": "向已连接的输出提供媒体标题与同步歌词。"
+  },
+  "executable": "xrt-lyrics",
+  "subscriptions": [
+    "outputs.lyrics"
+  ],
+  "tools": [
+    {
+      "name": "lyrics.status",
+      "description": "Read current lyrics playback status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "read_only": true
+    }
+  ],
+  "min_host_version": "0.4.0"
+}

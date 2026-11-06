@@ -116,31 +116,31 @@ pub fn render_toolbar(
                             let format_resp = components::combobox_ui(
                                 ui,
                                 "osc_format_mode",
-                                plugin.draft().format_mode.label(language),
+                                crate::i18n::tr(language, plugin.draft().format_mode.label_key()),
                                 |ui| {
                                     let r1 = components::selectable_value(
                                         ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::BilingualSourceFirst,
-                                        OscFormatMode::BilingualSourceFirst.label(language),
+                                        crate::i18n::tr(language, OscFormatMode::BilingualSourceFirst.label_key()),
                                     );
                                     let r2 = components::selectable_value(
                                         ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::BilingualTargetFirst,
-                                        OscFormatMode::BilingualTargetFirst.label(language),
+                                        crate::i18n::tr(language, OscFormatMode::BilingualTargetFirst.label_key()),
                                     );
                                     let r3 = components::selectable_value(
                                         ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::Inline,
-                                        OscFormatMode::Inline.label(language),
+                                        crate::i18n::tr(language, OscFormatMode::Inline.label_key()),
                                     );
                                     let r4 = components::selectable_value(
                                         ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::TargetOnly,
-                                        OscFormatMode::TargetOnly.label(language),
+                                        crate::i18n::tr(language, OscFormatMode::TargetOnly.label_key()),
                                     );
                                     r1.changed() || r2.changed() || r3.changed() || r4.changed()
                                 },

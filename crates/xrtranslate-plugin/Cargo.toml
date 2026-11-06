@@ -1,0 +1,22 @@
+[package]
+name = "xrtranslate-plugin"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native plugin protocol, lifecycle and host-rendered controls"
+
+[features]
+host = ["dep:tempfile", "dep:log"]
+
+[dependencies]
+log = { version = "0.4", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+
+tempfile = { version = "3", optional = true }
+
+[[bin]]
+name = "xrt-plugin"
+path = "src/bin/stage.rs"
+required-features = ["host"]

@@ -28,7 +28,7 @@ pub fn handles(name: &str) -> bool {
 fn namespace(tool: &Tool) -> &str {
     tool.name
         .split_once('.')
-        .map_or(tool.name, |(prefix, _)| prefix)
+        .map_or(tool.name.as_str(), |(prefix, _)| prefix)
 }
 
 pub fn namespaces(tools: &[Tool]) -> BTreeMap<&str, usize> {
@@ -74,7 +74,7 @@ pub fn call(tools: &[Tool], call: &ToolCall) -> ToolResult {
                             || tool.description.to_lowercase().contains(&query))
                 })
                 .collect::<Vec<_>>();
-            matches.sort_by_key(|tool| tool.name);
+            matches.sort_by(|a, b| a.name.cmp(&b.name));
             let count = matches.len();
             let page = matches.into_iter().skip(args.offset).take(limit).map(|tool| {
                 let mut entry = json!({"name":tool.name,"description":tool.description,"read_only":tool.read_only});
@@ -102,7 +102,7 @@ pub fn call(tools: &[Tool], call: &ToolCall) -> ToolResult {
             for name in &args.names {
                 let tool = tools
                     .iter()
-                    .find(|tool| tool.name == name)
+                    .find(|tool| &tool.name == name)
                     .ok_or_else(|| format!("Tool unavailable: {name}; use tools.list"))?;
                 if !selected
                     .iter()

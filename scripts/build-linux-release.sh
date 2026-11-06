@@ -25,7 +25,7 @@ fi
 source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager --features xrtranslate-backend/managed-ort --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager -p xrtranslate-plugin -p xrt-lyrics -p xrt-bigwalk --features xrtranslate-backend/managed-ort,xrtranslate-plugin/host --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
@@ -51,7 +51,15 @@ tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
   onnxruntime-linux-x64-1.28.0/ThirdPartyNotices.txt
 ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
 
-target/release/xrtranslate-packager \
+plugin_args=()
+for plugin in lyrics bigwalk; do
+  directory="${RESOURCE_DIR}/plugins/${plugin}"
+  rm -rf "${directory}"
+  target/release/xrt-plugin stage "plugin-src/${plugin}" "target/release/xrt-${plugin}" "${directory}"
+  plugin_args+=(--plugin-directory "${directory}")
+done
+
+target/release/xrtranslate-packager "${plugin_args[@]}" \
   --rust-client-bin target/release/rust-client \
   --backend-bin target/release/xrtranslate-backend \
   --account-login-bin target/release/xrtranslate-account-login \

@@ -6920,7 +6920,6 @@ dependencies = [
  "wasapi",
  "windows 0.60.0",
  "windows 0.62.2",
- "windows-future 0.1.1",
  "windows-sys 0.61.2",
  "winit",
  "winres",
@@ -6933,10 +6932,10 @@ dependencies = [
  "xrtranslate-download",
  "xrtranslate-engine",
  "xrtranslate-inference",
+ "xrtranslate-plugin",
  "xrtranslate-prompt",
  "xrtranslate-protocol",
  "xrtranslate-supervisor",
- "zbus",
  "zip",
 ]
 
@@ -10456,12 +10455,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-auto-input"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde_json",
+ "windows 0.60.0",
+ "windows-sys 0.61.2",
+ "xrtranslate-plugin",
+]
+
+[[package]]
+name = "xrt-bigwalk"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "uuid",
+ "xrtranslate-plugin",
+]
+
+[[package]]
 name = "xrt-connector-core"
 version = "0.1.0-dev.1"
 source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=a01af88f7d37263e50b2daa67ca742e353601a80#a01af88f7d37263e50b2daa67ca742e353601a80"
 dependencies = [
  "serde",
  "unicode-normalization",
+]
+
+[[package]]
+name = "xrt-lyrics"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unicode-segmentation",
+ "windows 0.60.0",
+ "windows-future 0.1.1",
+ "xrtranslate-plugin",
+ "zbus",
 ]
 
 [[package]]
@@ -10635,6 +10678,17 @@ dependencies = [
  "xr-corpus-core",
  "xrtranslate-assets",
  "xrtranslate-config",
+]
+
+[[package]]
+name = "xrtranslate-plugin"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

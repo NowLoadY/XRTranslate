@@ -33,15 +33,14 @@ mod client_settings;
 pub(crate) mod contributors;
 mod desktop_shortcut;
 mod director_audio;
-mod director_host;
 #[cfg(test)]
 mod director_feedback_tests;
+mod director_host;
 #[cfg(test)]
 mod director_tools_tests;
 mod export;
 mod feature_access;
 mod file_dialog;
-mod focused_input;
 mod history;
 mod i18n;
 mod logging;
@@ -60,6 +59,7 @@ mod overlay_ipc;
 mod overlay_manager;
 #[cfg(any(windows, target_os = "linux"))]
 mod overlay_native;
+mod plugin_host;
 mod plugins;
 mod presentation;
 #[cfg(any(windows, target_os = "linux"))]
@@ -104,8 +104,6 @@ use history::{
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
-use plugins::bigwalk::{BigWalkPageContext, BigWalkPlugin, BigWalkUiAction};
-use plugins::game_plugins::Selection as GamePluginSelection;
 use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
@@ -706,14 +704,10 @@ struct XRTranslateApp {
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
     chilloutvr_osc_plugin: OscPlugin,
-    bigwalk_plugin: BigWalkPlugin,
     game_plugins: plugins::game_plugins::Settings,
     osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
     text_output_plugin: plugins::text_output::TextOutputPlugin,
-    #[cfg(any(windows, target_os = "linux"))]
-    lyrics_plugin: plugins::lyrics::LyricsPlugin,
-    auto_input_plugin: plugins::auto_input::AutoInputPlugin,
     vr_overlay_plugin: VrOverlayPlugin,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
@@ -723,6 +717,7 @@ struct XRTranslateApp {
     #[cfg(target_os = "android")]
     pending_microphone_meeting: Option<MeetingAction>,
     media_plugin: plugins::media::MediaPlugin,
+    plugin_host: plugin_host::Host,
     #[cfg(any(windows, target_os = "linux"))]
     ocr: ocr_host::OcrHost,
     pending_translations: Vec<TranslationTask>,
@@ -979,34 +974,6 @@ fn same_osc_endpoint(
         }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
-fn lyric_requests(
-    preferences: &PluginPreferences,
-    vrchat: &OscPlugin,
-    chilloutvr: &OscPlugin,
-) -> Vec<plugins::lyrics::DisplayRequest> {
-    use plugins::lyrics::DisplayRequest;
-    if !preferences.is_enabled(PluginId::LYRICS) {
-        return Vec::new();
-    }
-    let mut requests = Vec::new();
-    for (output, plugin) in [
-        (PluginId::OSC, vrchat),
-        (PluginId::CHILLOUTVR_OSC, chilloutvr),
-    ] {
-        if preferences.is_enabled(output)
-            && let Some(budget) = plugin.applied().lyric_budget()
-        {
-            requests.push(DisplayRequest {
-                output,
-                budget,
-                offset_ms: plugin.applied().lyric_offset_ms(),
-            });
-        }
-    }
-    requests
-}
-
 impl Default for XRTranslateApp {
     fn default() -> Self {
         let audio_system = AudioSystem::new();
@@ -1054,33 +1021,7 @@ impl Default for XRTranslateApp {
             text_output_plugin.handle(),
             None,
         );
-        let bigwalk_plugin = BigWalkPlugin::new(
-            settings.bigwalk_settings.clone(),
-            settings.game_plugins.active(GamePluginSelection::BigWalk),
-        );
         let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
-        #[cfg(any(windows, target_os = "linux"))]
-        let lyrics_plugin = {
-            let output = osc_plugin.publisher();
-            let chilloutvr_output = chilloutvr_osc_plugin.publisher();
-            let mut plugin = plugins::lyrics::LyricsPlugin::new(
-                backend_manager
-                    .runtime_layout()
-                    .runtime_root()
-                    .join("cache/lyrics"),
-                move |destination, text| match destination {
-                    PluginId::OSC => output.set_lyrics(text),
-                    PluginId::CHILLOUTVR_OSC => chilloutvr_output.set_lyrics(text),
-                    _ => {}
-                },
-            );
-            plugin.configure(lyric_requests(
-                &settings.plugin_preferences,
-                &osc_plugin,
-                &chilloutvr_osc_plugin,
-            ));
-            plugin
-        };
         let vr_overlay_plugin = VrOverlayPlugin::new(
             settings.vr_overlay_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
@@ -1096,6 +1037,8 @@ impl Default for XRTranslateApp {
             }
         };
         let media_plugin = plugins::media::MediaPlugin::new();
+        let mut plugin_host = plugin_host::Host::load(backend_manager.project_root());
+        plugins::osc::integrations::connect(&mut plugin_host, &osc_plugin, &chilloutvr_osc_plugin);
         const HISTORY_PRODUCERS: &[&str] = &[
             PluginId::OCR.as_str(),
             PluginId::MEDIA.as_str(),
@@ -1110,7 +1053,6 @@ impl Default for XRTranslateApp {
         #[cfg(any(windows, target_os = "linux"))]
         let quick_translate =
             quick_translate::QuickTranslate::new(settings.quick_translation.clone());
-        let auto_input_plugin = plugins::auto_input::AutoInputPlugin::default();
         #[cfg(any(windows, target_os = "linux"))]
         let ocr = ocr_host::OcrHost::default();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
@@ -1171,10 +1113,9 @@ impl Default for XRTranslateApp {
             Box::new(ocr.plugin.event_sink.clone()),
         ]);
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
-            Box::new(auto_input_plugin.publisher()),
+            Box::new(plugin_host.output.clone()),
             Box::new(osc_plugin.publisher()),
             Box::new(chilloutvr_osc_plugin.publisher()),
-            Box::new(bigwalk_plugin.publisher()),
             Box::new(avatar_plugin.output.clone()),
             Box::new(vr_overlay_plugin.handle()),
         ]);
@@ -1960,14 +1901,10 @@ impl Default for XRTranslateApp {
             tts_runtime_cuda_version: None,
             osc_plugin,
             chilloutvr_osc_plugin,
-            bigwalk_plugin,
             game_plugins: settings.game_plugins,
             osc_transport,
             avatar_plugin,
             text_output_plugin,
-            #[cfg(any(windows, target_os = "linux"))]
-            lyrics_plugin,
-            auto_input_plugin,
             vr_overlay_plugin,
             audio_studio,
             voicemeeter_remote,
@@ -1977,6 +1914,7 @@ impl Default for XRTranslateApp {
             #[cfg(target_os = "android")]
             pending_microphone_meeting: None,
             media_plugin,
+            plugin_host,
             #[cfg(any(windows, target_os = "linux"))]
             ocr,
             pending_translations: Vec::new(),
@@ -2139,6 +2077,9 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn plugin_enabled(&self, id: PluginId) -> bool {
+        if self.plugin_host.contains(id) {
+            return self.plugin_host.enabled(id);
+        }
         // Embedded OCR is configured with its model, without a second switch.
         self.plugin_available(id)
             && (id == PluginId::OCR
@@ -2907,6 +2848,12 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn set_plugin_enabled(&mut self, id: PluginId, enabled: bool) {
+        if self.plugin_host.contains(id) {
+            if let Err(error) = self.plugin_host.set_enabled(id.as_str(), enabled) {
+                self.notify_error("Could not change plugin state.", error);
+            }
+            return;
+        }
         if self.plugin_enabled(id) == enabled {
             return;
         }
@@ -3081,17 +3028,17 @@ impl XRTranslateApp {
     }
 
     fn sync_lyrics(&mut self) {
-        #[cfg(any(windows, target_os = "linux"))]
-        self.lyrics_plugin.configure(lyric_requests(
+        plugins::osc::integrations::sync(
+            &mut self.plugin_host,
             &self.plugin_preferences,
             &self.osc_plugin,
             &self.chilloutvr_osc_plugin,
-        ));
+        );
     }
 
     fn render_osc_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
         let languages = self.language_capabilities();
-        let lyrics_available = self.plugin_enabled(PluginId::LYRICS);
+        let lyrics_available = self.plugin_host.available("lyrics");
         let plugin = match id {
             PluginId::OSC => &mut self.osc_plugin,
             PluginId::CHILLOUTVR_OSC => &mut self.chilloutvr_osc_plugin,
@@ -3115,8 +3062,6 @@ impl XRTranslateApp {
     }
 
     fn sync_game_plugins(&mut self) {
-        self.bigwalk_plugin
-            .set_host_enabled(self.game_plugins.active(GamePluginSelection::BigWalk));
         self.poll_avatar(None);
     }
 
@@ -3134,7 +3079,7 @@ impl XRTranslateApp {
                             .strong(),
                     );
                     ui.add_space(8.0);
-                    changed |= self.game_plugins.selection.render(
+                    changed |= plugins::game_plugins::render_selection(
                         ui,
                         &mut self.avatar_plugin.settings.connector,
                         self.ui_language,
@@ -3152,74 +3097,19 @@ impl XRTranslateApp {
                     self.save_settings();
                 }
                 ui.add_space(16.0);
-                match self.game_plugins.selection {
-                    GamePluginSelection::Avatar => {
-                        if self.avatar_plugin.render_content(
-                            ui,
-                            self.ui_language,
-                            self.game_plugins.enabled,
-                        ) {
-                            self.poll_avatar(None);
-                            self.sync_lyrics();
-                            self.save_settings();
-                        }
-                    }
-                    GamePluginSelection::BigWalk => self.render_bigwalk_content(ui),
+                if self.avatar_plugin.render_content(
+                    ui,
+                    self.ui_language,
+                    self.game_plugins.enabled,
+                ) {
+                    self.poll_avatar(None);
+                    self.sync_lyrics();
+                    self.save_settings();
                 }
                 ui.add_space(16.0);
                 ui::components::showcase(ui, self.ui_language, &ui::previews::game_plugins());
                 ui.add_space(8.0);
             });
-    }
-
-    fn render_bigwalk_content(&mut self, ui: &mut egui::Ui) {
-        let languages = self.language_capabilities();
-        let actions = self.bigwalk_plugin.render_content(
-            ui,
-            BigWalkPageContext {
-                language: self.ui_language,
-                preparing_text: self.text_translation.preparing_host(),
-                languages,
-                source_lang: &self.source_lang,
-                target_lang: &self.target_lang,
-                additional_target_lang: self.additional_target_lang.as_deref(),
-                asr_only: self.asr_only,
-            },
-        );
-        for action in actions {
-            match action {
-                BigWalkUiAction::SettingsChanged => {
-                    self.bigwalk_plugin.apply_settings();
-                    self.save_settings();
-                }
-                BigWalkUiAction::SetLanguageRoute {
-                    source_lang,
-                    target_lang,
-                    asr_only,
-                } => {
-                    if self
-                        .select_language_options(
-                            &source_lang,
-                            &target_lang,
-                            self.additional_target_lang.clone().as_deref(),
-                            asr_only,
-                        )
-                        .is_none()
-                    {
-                        return;
-                    }
-                    self.source_lang = source_lang;
-                    self.target_lang = target_lang;
-                    self.asr_only = asr_only;
-                    self.apply_language_route();
-                }
-                BigWalkUiAction::TranslateInput { text } => {
-                    if self.submit_text_translation(&text, None, None, None) {
-                        self.bigwalk_plugin.draft_input_mut().clear();
-                    }
-                }
-            }
-        }
     }
 
     fn render_text_composer(&mut self, ui: &mut egui::Ui) {
@@ -3518,6 +3408,10 @@ impl XRTranslateApp {
     }
 
     fn render_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
+        if self.plugin_host.contains(id) {
+            self.render_installed_page(ui, id);
+            return;
+        }
         match id {
             PluginId::VOCABULARY => {
                 let capabilities = self.language_capabilities().for_text();
@@ -3708,7 +3602,6 @@ impl XRTranslateApp {
             update_channel: self.update_channel,
             osc_settings: self.osc_plugin.draft().clone(),
             chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
-            bigwalk_settings: self.bigwalk_plugin.settings().clone(),
             game_plugins: self.game_plugins,
             avatar_connector: self.avatar_plugin.settings.clone(),
             vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
@@ -3741,7 +3634,7 @@ impl XRTranslateApp {
         let _ = self.service_config.save_onboarding_configuration();
         self.save_settings();
         let project_root = self.project_root();
-        let requirements = self.service_config.runtime_requirements();
+        let requirements = self.runtime_requirements();
         let _ = self
             .runtime_installer
             .prepare_for(project_root, requirements);
@@ -5517,9 +5410,19 @@ impl XRTranslateApp {
         self.save_settings();
     }
 
+    fn set_auto_input_enabled(&mut self, enabled: bool) {
+        if self.plugin_host.available(PluginId::AUTO_INPUT.as_str())
+            && let Err(error) = self.plugin_host.ui_action(
+                PluginId::AUTO_INPUT,
+                serde_json::json!({"id":"active", "value":enabled}),
+            )
+        {
+            self.last_error = Some(error);
+        }
+    }
     fn set_floating_subtitles_enabled(&mut self, enabled: bool) {
         if !enabled {
-            self.auto_input_plugin.set_enabled(false);
+            self.set_auto_input_enabled(false);
         }
         #[cfg(any(windows, target_os = "linux"))]
         if !enabled {
@@ -5601,8 +5504,8 @@ impl XRTranslateApp {
         }
         self.osc_plugin.clear_chatbox();
         self.chilloutvr_osc_plugin.clear_chatbox();
-        self.bigwalk_plugin.clear();
-        self.auto_input_plugin.clear();
+        self.plugin_host
+            .publish("translation.clear", serde_json::Value::Null);
     }
 
     pub(crate) fn translate_text(
@@ -5843,7 +5746,7 @@ impl XRTranslateApp {
     fn stop(&mut self) {
         self.stop_agent("Application stopped");
         self.stop_avatar();
-        self.auto_input_plugin.set_enabled(false);
+        self.set_auto_input_enabled(false);
         director_audio::detach();
         #[cfg(target_os = "android")]
         android::cancel_microphone_request();
@@ -5888,7 +5791,6 @@ impl XRTranslateApp {
             }
             self.retire_audio_task(task);
         }
-        self.bigwalk_plugin.clear();
         self.finalize_meeting_recording();
         self.meeting_plugin.event_sink.cancel_sessions();
         self.meeting_plugin.event_sink.finish_active();
@@ -5937,9 +5839,6 @@ impl XRTranslateApp {
     }
 
     fn poll_session_events(&mut self) {
-        if let Some(error) = self.auto_input_plugin.take_error() {
-            self.last_error = Some(error);
-        }
         for error in [
             self.osc_plugin.manager().take_error(),
             self.chilloutvr_osc_plugin.manager().take_error(),
@@ -5960,8 +5859,13 @@ impl XRTranslateApp {
             .store(self.floating_subtitles_font_size as u32, Ordering::Relaxed);
 
         let overlay_controls = overlay_ipc::OverlayControls {
-            auto_input_available: PluginId::AUTO_INPUT.is_supported(),
-            auto_input_enabled: self.auto_input_plugin.enabled(),
+            auto_input_available: PluginId::AUTO_INPUT.is_supported()
+                && self.plugin_host.available(PluginId::AUTO_INPUT.as_str()),
+            auto_input_enabled: self.plugin_host.available(PluginId::AUTO_INPUT.as_str())
+                && self
+                    .plugin_host
+                    .configuration(PluginId::AUTO_INPUT)
+                    .is_some_and(|value| value["active"] == true),
             translation_enabled: self.translation_enabled,
             microphone_enabled: self
                 .input_control_visible(CaptureSource::Microphone, false)
@@ -6042,7 +5946,7 @@ impl XRTranslateApp {
                     self.set_system_audio_enabled(enabled, None);
                 }
                 overlay_ipc::OverlayEvent::AutoInputEnabled(enabled) => {
-                    self.auto_input_plugin.set_enabled(enabled);
+                    self.set_auto_input_enabled(enabled);
                 }
                 event => {
                     #[cfg(any(windows, target_os = "linux"))]
@@ -6287,6 +6191,7 @@ impl eframe::App for XRTranslateApp {
         self.poll_android_text_actions(ctx);
         // Task progress belongs to logic: occluded/minimized windows may receive
         // logic-only passes while their viewport still reports visible=true.
+        self.poll_installed_plugins(ctx);
         self.refresh_media_director();
         self.poll_audio_import();
         if !self.first_run {
@@ -6327,10 +6232,9 @@ impl eframe::App for XRTranslateApp {
         if let Some(result) = android::take_resources_result() {
             match result {
                 Ok(()) => {
-                    let _ = self.runtime_installer.prepare_for(
-                        self.project_root(),
-                        self.service_config.runtime_requirements(),
-                    );
+                    let _ = self
+                        .runtime_installer
+                        .prepare_for(self.project_root(), self.runtime_requirements());
                 }
                 Err(error) => self.last_error = Some(error),
             }
@@ -6367,7 +6271,10 @@ impl eframe::App for XRTranslateApp {
         );
         self.poll_director();
         if let Some(route) = ui_director::egui::take_pending_page() {
-            if let Some(step) = route.strip_prefix("onboarding:").and_then(|s| s.parse().ok()) {
+            if let Some(step) = route
+                .strip_prefix("onboarding:")
+                .and_then(|s| s.parse().ok())
+            {
                 self.onboarding_page = step;
                 self.first_run = true;
             } else if let Ok(page) = serde_json::from_value(serde_json::json!(route)) {
@@ -6424,7 +6331,7 @@ impl eframe::App for XRTranslateApp {
         if let Some(path) = self.runtime_installer.poll() {
             self.backend_manager.use_installed_llama_server(&path);
         }
-        let runtime_requirements = self.service_config.runtime_requirements();
+        let runtime_requirements = self.runtime_requirements();
         let model_assets = self.service_config.selected_model_asset_ids();
         let failed_without_plan = matches!(
             self.runtime_installer.state(),

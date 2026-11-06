@@ -231,8 +231,8 @@ pub fn render_sidebar(
                         ui,
                         navigation,
                         entry.page,
-                        entry.icon,
-                        crate::i18n::tr(language, entry.title),
+                        entry.icon.clone(),
+                        entry.label(language),
                         expand_factor,
                         compact_height,
                     );
@@ -596,8 +596,16 @@ fn guide_button_animated(
 
 struct NavigationEntry {
     page: Page,
-    title: &'static str,
+    title: std::borrow::Cow<'static, str>,
     icon: egui::ImageSource<'static>,
+}
+impl NavigationEntry {
+    fn label(&self, language: crate::i18n::UiLanguage) -> &str {
+        match &self.title {
+            std::borrow::Cow::Borrowed(key) => crate::i18n::tr(language, key),
+            std::borrow::Cow::Owned(label) => label,
+        }
+    }
 }
 
 /// The CLI uses the same routes and availability as the sidebar.
@@ -614,21 +622,24 @@ pub(crate) fn navigation_pages(
                 .as_str()
                 .unwrap()
                 .to_owned(),
-            title: entry.title.into(),
-            label: crate::i18n::tr(language, entry.title).into(),
+            title: entry.title.to_string(),
+            label: entry.label(language).into(),
         })
         .collect();
-    pages.extend(pages::onboarding::STEPS.iter().enumerate().map(|(step, title)| {
-        ui_director::egui::registry::Page {
-            route: format!("onboarding:{step}"),
-            title: format!("Welcome: {title}"),
-            label: format!(
-                "{}: {}",
-                crate::i18n::tr(language, "Welcome Page"),
-                crate::i18n::tr(language, title)
-            ),
-        }
-    }));
+    pages.extend(
+        pages::onboarding::STEPS
+            .iter()
+            .enumerate()
+            .map(|(step, title)| ui_director::egui::registry::Page {
+                route: format!("onboarding:{step}"),
+                title: format!("Welcome: {title}"),
+                label: format!(
+                    "{}: {}",
+                    crate::i18n::tr(language, "Welcome Page"),
+                    crate::i18n::tr(language, title)
+                ),
+            }),
+    );
     pages
 }
 
@@ -639,7 +650,7 @@ fn navigation_entries(
     use egui::include_image;
     let mut entries = vec![NavigationEntry {
         page: Page::Translation,
-        title: "Translation",
+        title: "Translation".into(),
         icon: include_image!("../../resources/icons/translation.svg"),
     }];
     let mut descriptors = crate::plugins::PluginRegistry::builtin()
@@ -655,42 +666,52 @@ fn navigation_entries(
             })
             .map(|descriptor| NavigationEntry {
                 page: Page::Plugin(descriptor.id),
-                title: descriptor.title_key,
+                title: descriptor.title_key.into(),
                 icon: descriptor.icon.image_source(),
+            }),
+    );
+    entries.extend(
+        plugins
+            .installed_pages
+            .iter()
+            .map(|(id, title)| NavigationEntry {
+                page: Page::Plugin(*id),
+                title: title.clone().into(),
+                icon: include_image!("../../resources/icons/settings.svg"),
             }),
     );
     if crate::plugins::PluginId::AVATAR.is_supported() {
         entries.push(NavigationEntry {
             page: Page::GamePlugins,
-            title: "Game Plugins",
+            title: "Game Plugins".into(),
             icon: include_image!("../../resources/plugins/game_plugins/icon.svg"),
         });
     }
     entries.push(NavigationEntry {
         page: Page::AudioStudio,
-        title: "Audio Studio",
+        title: "Audio Studio".into(),
         icon: include_image!("../../resources/icons/audio-studio.svg"),
     });
     entries.push(NavigationEntry {
         page: Page::PromptStudio,
-        title: "Prompt Studio",
+        title: "Prompt Studio".into(),
         icon: include_image!("../../resources/icons/prompt-studio.svg"),
     });
     if tts_configured {
         entries.push(NavigationEntry {
             page: Page::TtsCenter,
-            title: "TTS Center",
+            title: "TTS Center".into(),
             icon: include_image!("../../resources/icons/tts-center.svg"),
         });
     }
     entries.push(NavigationEntry {
         page: Page::CorpusStudio,
-        title: "Terminology library",
+        title: "Terminology library".into(),
         icon: include_image!("../../resources/icons/corpus-studio.svg"),
     });
     entries.push(NavigationEntry {
         page: Page::Settings,
-        title: "Settings",
+        title: "Settings".into(),
         icon: include_image!("../../resources/icons/settings.svg"),
     });
     entries
@@ -719,9 +740,9 @@ pub fn render_top_navigation(
                 ui.horizontal(|ui| {
                     for entry in navigation_entries(plugins, tts_configured) {
                         let selected = navigation.page == entry.page;
-                        let icon =
-                            egui::Image::new(entry.icon).fit_to_exact_size(egui::vec2(18.0, 18.0));
-                        let title = crate::i18n::tr(language, entry.title);
+                        let icon = egui::Image::new(entry.icon.clone())
+                            .fit_to_exact_size(egui::vec2(18.0, 18.0));
+                        let title = entry.label(language);
                         let button = if icons_only {
                             egui::Button::image(icon)
                         } else {

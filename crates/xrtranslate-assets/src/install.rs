@@ -1,16 +1,15 @@
 use std::{
-    collections::HashSet,
     error::Error,
     fmt, fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use xrtranslate_download::{DownloadClient, DownloadSource, DownloadSpec};
+use xrtranslate_download::{DownloadClient, DownloadSource};
 
 use crate::{
-    ModelAssetId, ModelAssetProblem, ModelAssetsPreflight, ModelAssetsPreflightError, ModelSource,
-    RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets,
+    ModelAssetId, ModelAssetsPreflight, ModelAssetsPreflightError, ResolvedModelAsset,
+    ResolvedModelAssets,
 };
 
 impl ResolvedModelAssets {
@@ -139,6 +138,7 @@ pub struct DownloadProgress {
 /// a safe retry. The installer never deletes an active model package.
 #[derive(Debug)]
 pub enum ModelDownloadError {
+    Manifest(String),
     Download(xrtranslate_download::DownloadError),
     StagingDirectory { path: PathBuf, source: io::Error },
     Removal { path: PathBuf, source: io::Error },
@@ -164,6 +164,7 @@ impl ModelDownloadError {
 impl fmt::Display for ModelDownloadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Manifest(message) => formatter.write_str(message),
             Self::Download(error) => error.fmt(formatter),
             Self::StagingDirectory { path, source } => {
                 write!(
@@ -219,7 +220,7 @@ impl Error for ModelDownloadError {
             | Self::Lock { source, .. } => Some(source),
             Self::AtomicInstall(error) => Some(error),
             Self::ExistingInvalid(error) => Some(error),
-            Self::Locked(_) | Self::Archive { .. } => None,
+            Self::Locked(_) | Self::Archive { .. } | Self::Manifest(_) => None,
         }
     }
 }
@@ -280,234 +281,42 @@ impl NativeModelInstaller {
         id: ModelAssetId,
         mut on_progress: impl FnMut(DownloadProgress),
     ) -> Result<PathBuf, ModelDownloadError> {
-        let target = self.asset(id);
-        let missing_files = if target.directory().exists() {
-            let diagnostics = target.check();
-            if diagnostics.is_empty() {
-                return Ok(target.directory().to_path_buf());
-            }
-            if diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.problem != ModelAssetProblem::Missing)
-            {
-                return Err(ModelDownloadError::ExistingInvalid(
-                    ModelAssetsPreflight { diagnostics }
-                        .into_result()
-                        .expect_err("existing model has invalid files"),
-                ));
-            }
-            Some(
-                diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.required_file.relative_path)
-                    .collect::<HashSet<_>>(),
-            )
-        } else {
-            None
-        };
-        let staging = staging_directory(target);
-        let staging_parent = staging.parent().expect("staging directory has parent");
-        fs::create_dir_all(staging_parent).map_err(|source| {
-            ModelDownloadError::StagingDirectory {
-                path: staging_parent.to_path_buf(),
-                source,
-            }
-        })?;
-        let _lock = InstallLock::acquire(staging_parent, id)?;
-        prune_obsolete_model_staging(staging_parent, &staging, id)?;
-        fs::create_dir_all(&staging).map_err(|source| ModelDownloadError::StagingDirectory {
-            path: staging.clone(),
-            source,
-        })?;
-
-        let archive = target.manifest().source.archive;
-        let archive_needed = archive.is_some_and(|archive| {
-            missing_files.as_ref().is_none_or(|missing| {
-                archive
-                    .entries
-                    .iter()
-                    .any(|entry| missing.contains(entry.relative_path))
-            })
-        });
-        let total_bytes = target.manifest().download_bytes();
-        let mut completed_bytes = 0_u64;
-        if let Some(archive) = archive {
-            if archive_needed {
-                self.download_and_extract_archive(
-                    id,
-                    archive,
-                    &staging,
-                    total_bytes,
-                    &mut on_progress,
-                )
-                .await?;
-            }
-            completed_bytes = archive.bytes;
-        }
-        for file in target.manifest().required_files {
-            if archive.is_some_and(|archive| {
-                archive
-                    .entries
-                    .iter()
-                    .any(|entry| entry.relative_path == file.relative_path)
-            }) {
-                continue;
-            }
-            if missing_files
-                .as_ref()
-                .is_none_or(|missing| missing.contains(file.relative_path))
-            {
-                self.download_file(
-                    *file,
-                    AssetDownloadContext {
-                        id,
-                        source: target.manifest().source,
-                        staging: &staging,
-                        completed_bytes,
-                        total_bytes,
-                    },
-                    &mut on_progress,
-                )
-                .await?;
-            } else {
-                on_progress(DownloadProgress {
-                    asset_id: id,
-                    relative_path: file.relative_path,
-                    downloaded_bytes: completed_bytes.saturating_add(file.bytes),
-                    total_bytes,
-                });
-            }
-            completed_bytes = completed_bytes.saturating_add(file.bytes);
-        }
-        self.client
-            .ensure_not_cancelled("model package")
-            .map_err(ModelDownloadError::Download)?;
-        if let Some(archive) = archive.filter(|_| archive_needed) {
-            remove_downloaded_archive(&staging, archive.filename)?;
-        }
-        if let Some(missing) = missing_files {
-            let staged = ResolvedModelAsset::new(target.manifest(), staging.clone());
-            ModelAssetsPreflight {
-                diagnostics: staged
-                    .check()
-                    .into_iter()
-                    .filter(|diagnostic| missing.contains(diagnostic.required_file.relative_path))
-                    .collect(),
-            }
-            .into_result()
-            .map_err(|source| {
-                ModelDownloadError::AtomicInstall(AtomicInstallError::StagingInvalid {
-                    directory: staging.clone(),
-                    source,
-                })
-            })?;
-            // Legacy packages may predate a required notice. Publish only
-            // missing files; a hard link is atomic and never replaces a file
-            // another process created after the presence scan.
-            for relative_path in missing {
-                let destination = target.directory().join(relative_path);
-                let parent = destination.parent().expect("model file has a parent");
-                fs::create_dir_all(parent).map_err(|source| {
-                    ModelDownloadError::StagingDirectory {
-                        path: parent.to_path_buf(),
-                        source,
-                    }
-                })?;
-                fs::hard_link(staging.join(relative_path), &destination).map_err(|source| {
-                    ModelDownloadError::Download(xrtranslate_download::DownloadError::FileIo {
-                        path: destination,
-                        source,
-                    })
-                })?;
-            }
-            ModelAssetsPreflight {
-                diagnostics: target.check(),
-            }
-            .into_result()
-            .map_err(ModelDownloadError::ExistingInvalid)?;
-            clear_model_staging(&self.assets, id)?;
-            return Ok(target.directory().to_path_buf());
-        }
-        self.assets
-            .install_from_staging(id, staging)
-            .map_err(ModelDownloadError::AtomicInstall)
-    }
-
-    fn asset(&self, id: ModelAssetId) -> &ResolvedModelAsset {
-        self.assets.asset(id)
-    }
-
-    async fn download_and_extract_archive(
-        &self,
-        id: ModelAssetId,
-        archive: crate::ModelArchiveSource,
-        staging: &Path,
-        total_bytes: u64,
-        on_progress: &mut impl FnMut(DownloadProgress),
-    ) -> Result<(), ModelDownloadError> {
-        validate_archive_layout(
-            archive.filename,
-            archive.entries,
-            self.asset(id).manifest().required_files,
-        )
-        .map_err(|message| ModelDownloadError::Archive {
-            path: staging.to_path_buf(),
-            message,
-        })?;
-        let downloads = staging.join(".downloads");
-        fs::create_dir_all(&downloads).map_err(|source| ModelDownloadError::StagingDirectory {
-            path: downloads.clone(),
-            source,
-        })?;
-        let path = downloads.join(archive.filename);
-        self.client
-            .download_to(
-                DownloadSpec::new("model package archive", archive.url, archive.bytes),
-                &path,
-                |progress| {
+        let target = self.assets.asset(id);
+        let manifest = target.manifest();
+        crate::ModelPackage::from(manifest)
+            .install(
+                &self.client,
+                target.directory(),
+                |path, downloaded_bytes, total_bytes| {
+                    let relative_path = manifest
+                        .required_files
+                        .iter()
+                        .find(|f| f.relative_path == path)
+                        .map(|f| f.relative_path)
+                        .or_else(|| {
+                            manifest
+                                .source
+                                .archive
+                                .filter(|a| a.filename == path)
+                                .map(|a| a.filename)
+                        })
+                        .expect("package progress belongs to its manifest");
                     on_progress(DownloadProgress {
                         asset_id: id,
-                        relative_path: archive.filename,
-                        downloaded_bytes: progress.downloaded_bytes,
+                        relative_path,
+                        downloaded_bytes,
                         total_bytes,
                     });
                 },
             )
             .await
-            .map_err(ModelDownloadError::Download)?;
-        extract_archive_entries(&path, staging, archive.entries)?;
-        Ok(())
-    }
-
-    async fn download_file(
-        &self,
-        file: RequiredModelFile,
-        context: AssetDownloadContext<'_>,
-        on_progress: &mut impl FnMut(DownloadProgress),
-    ) -> Result<(), ModelDownloadError> {
-        let complete = context.staging.join(file.relative_path);
-        let url = context.source.file_url(file.relative_path);
-        self.client
-            .download_to(
-                DownloadSpec::new(file.purpose, &url, file.bytes),
-                &complete,
-                |progress| {
-                    on_progress(DownloadProgress {
-                        asset_id: context.id,
-                        relative_path: file.relative_path,
-                        downloaded_bytes: context
-                            .completed_bytes
-                            .saturating_add(progress.downloaded_bytes),
-                        total_bytes: context.total_bytes,
-                    });
-                },
-            )
-            .await
-            .map_err(ModelDownloadError::Download)
     }
 }
 
-fn remove_downloaded_archive(staging: &Path, filename: &str) -> Result<(), ModelDownloadError> {
+pub(crate) fn remove_downloaded_archive(
+    staging: &Path,
+    filename: &str,
+) -> Result<(), ModelDownloadError> {
     let downloads = staging.join(".downloads");
     let path = safe_relative_file(&downloads, filename).map_err(|message| {
         ModelDownloadError::Archive {
@@ -525,22 +334,22 @@ fn remove_downloaded_archive(staging: &Path, filename: &str) -> Result<(), Model
     })
 }
 
-fn extract_archive_entries(
+pub(crate) fn extract_archive_entries<'a>(
     archive_path: &Path,
     staging: &Path,
-    entries: &[crate::ModelArchiveEntry],
+    entries: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<(), ModelDownloadError> {
     // Finish extraction and release the archive handle before evicting a bad
     // completed download. Partial transfers and filesystem failures stay retryable.
     let result = (|| -> io::Result<()> {
         let file = fs::File::open(archive_path)?;
         let mut archive = zip::ZipArchive::new(file)?;
-        for entry in entries {
-            let mut source = archive.by_name(entry.archive_path).map_err(|error| {
+        for (relative_path, archive_path) in entries {
+            let mut source = archive.by_name(archive_path).map_err(|error| {
                 if matches!(error, zip::result::ZipError::FileNotFound) {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("missing {}: {error}", entry.archive_path),
+                        format!("missing {}: {error}", archive_path),
                     )
                 } else {
                     io::Error::from(error)
@@ -549,10 +358,10 @@ fn extract_archive_entries(
             if !source.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("{} is not a regular file", entry.archive_path),
+                    format!("{} is not a regular file", archive_path),
                 ));
             }
-            let destination = safe_relative_file(staging, entry.relative_path)
+            let destination = safe_relative_file(staging, relative_path)
                 .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
             let parent = destination
                 .parent()
@@ -581,52 +390,7 @@ fn extract_archive_entries(
     })
 }
 
-fn validate_archive_layout(
-    filename: &str,
-    entries: &[crate::ModelArchiveEntry],
-    required_files: &[RequiredModelFile],
-) -> Result<(), String> {
-    if Path::new(filename).components().count() != 1 {
-        return Err(format!(
-            "archive filename {filename:?} is not a plain file name"
-        ));
-    }
-    safe_relative_file(Path::new("."), filename)?;
-    if entries.is_empty() {
-        return Err("archive declares no model files".into());
-    }
-    let required = required_files
-        .iter()
-        .map(|file| file.relative_path)
-        .collect::<HashSet<_>>();
-    let mut destinations = HashSet::new();
-    let mut sources = HashSet::new();
-    for entry in entries {
-        safe_relative_file(Path::new("."), entry.relative_path)?;
-        safe_relative_file(Path::new("."), entry.archive_path)?;
-        if !required.contains(entry.relative_path) {
-            return Err(format!(
-                "archive destination {:?} is not a required model file",
-                entry.relative_path
-            ));
-        }
-        if !destinations.insert(entry.relative_path) {
-            return Err(format!(
-                "archive destination {:?} is declared more than once",
-                entry.relative_path
-            ));
-        }
-        if !sources.insert(entry.archive_path) {
-            return Err(format!(
-                "archive source {:?} is declared more than once",
-                entry.archive_path
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     use std::path::Component;
     let relative = Path::new(relative);
     if relative.as_os_str().is_empty()
@@ -741,21 +505,12 @@ fn staging_directory(target: &ResolvedModelAsset) -> PathBuf {
     ))
 }
 
-#[derive(Clone, Copy)]
-struct AssetDownloadContext<'a> {
-    id: ModelAssetId,
-    source: ModelSource,
-    staging: &'a Path,
-    completed_bytes: u64,
-    total_bytes: u64,
-}
-
-fn prune_obsolete_model_staging(
+pub(crate) fn prune_obsolete_model_staging_named(
     staging_parent: &Path,
     current: &Path,
-    id: ModelAssetId,
+    id: &str,
 ) -> Result<(), ModelDownloadError> {
-    let prefix = format!("{}-", id.as_str());
+    let prefix = format!("{id}-");
     let entries =
         fs::read_dir(staging_parent).map_err(|source| ModelDownloadError::StagingDirectory {
             path: staging_parent.to_path_buf(),
@@ -778,14 +533,20 @@ fn prune_obsolete_model_staging(
     Ok(())
 }
 
-struct InstallLock {
+pub(crate) struct InstallLock {
     path: PathBuf,
     file: Option<fs::File>,
 }
 
 impl InstallLock {
     fn acquire(staging_parent: &Path, id: ModelAssetId) -> Result<Self, ModelDownloadError> {
-        let path = staging_parent.join(format!("{}.lock", id.as_str()));
+        Self::acquire_named(staging_parent, id.as_str())
+    }
+    pub(crate) fn acquire_named(
+        staging_parent: &Path,
+        id: &str,
+    ) -> Result<Self, ModelDownloadError> {
+        let path = staging_parent.join(format!("{id}.lock"));
         match open_install_lock(&path) {
             Ok(mut file) => {
                 use std::io::Write;

@@ -20,8 +20,8 @@ pub struct LocationSegment {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Tool {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
     pub read_only: bool,
@@ -29,14 +29,14 @@ pub struct Tool {
 
 impl Tool {
     pub fn new(
-        name: &'static str,
-        description: &'static str,
+        name: impl Into<String>,
+        description: impl Into<String>,
         properties: Value,
         required: &[&str],
     ) -> Self {
         Self {
-            name,
-            description,
+            name: name.into(),
+            description: description.into(),
             read_only: false,
             input_schema: serde_json::json!({
                 "type": "object", "properties": properties, "required": required,

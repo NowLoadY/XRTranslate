@@ -10,6 +10,7 @@ default = []
 mpv = ["dep:libmpv-sys", "dep:windows-gpu"]
 
 [dependencies]
+xrtranslate-plugin = { path = "../crates/xrtranslate-plugin", features = ["host"] }
 ui-director = { path = "../crates/ui-director", features = ["egui"] }
 xrtranslate-connections = { path = "../crates/xrtranslate-connections" }
 tempfile = "3.27"
@@ -71,13 +72,9 @@ xrtranslate-supervisor = { path = "../crates/xrtranslate-supervisor" }
 [target.'cfg(windows)'.dependencies]
 windows-gpu = { package = "windows", version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 # Enable Rust futures for the WinRT media-session operations.
-windows-future = "0.1.1"
 wasapi = "0.23.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 windows = { version = "0.60.0", features = [
-    "Foundation",
-    "Media_Control",
-    "Win32_System_WinRT",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Direct2D",
@@ -94,14 +91,12 @@ windows = { version = "0.60.0", features = [
     "Win32_UI_Accessibility",
     "Win32_System_Com",
     "Win32_System_Ole",
-    "Win32_System_Variant",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18.1", features = ["pulseaudio"] }
-zbus = { version = "5.18.0", default-features = false, features = ["async-io"] }
 eframe = { version = "0.37.0", features = ["glow"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }
 pipewire = "0.10.1"

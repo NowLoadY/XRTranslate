@@ -123,6 +123,9 @@ struct Arguments {
     /// Visual Studio x64 release CRT redistributable directory (required for Windows).
     #[arg(long)]
     vc_runtime_dir: Option<PathBuf>,
+    /// Native plugin directories included under plugins/ in the release.
+    #[arg(long)]
+    plugin_directory: Vec<PathBuf>,
     /// Destination release directory. It must not already exist.
     #[arg(long)]
     output: PathBuf,
@@ -188,6 +191,7 @@ impl From<xrtranslate_assets::ModelAssetsPreflightError> for PackageError {
 
 #[derive(Debug)]
 struct ReleasePlan {
+    plugin_directories: Vec<PathBuf>,
     rust_client_bin: PathBuf,
     backend_bin: PathBuf,
     account_login_bin: PathBuf,
@@ -280,6 +284,17 @@ impl ReleasePlan {
         require_directory("--resources-dir", &arguments.resources_dir)?;
         require_regular_file("--seed-database", &arguments.seed_database)?;
         require_regular_file("--license", &arguments.license)?;
+        let mut plugin_names = std::collections::HashSet::new();
+        for package in &arguments.plugin_directory {
+            require_directory("--plugin-directory", package)?;
+            require_regular_file("plugin.json", &package.join("plugin.json"))?;
+            ensure_directory_is_native("--plugin-directory", package)?;
+            if package.file_name().is_none() || !plugin_names.insert(package.file_name()) {
+                return Err(PackageError::InvalidInput(
+                    "Plugin directories need unique names".into(),
+                ));
+            }
+        }
         let vc_runtime = windows_vc_runtime(
             &arguments.rust_client_bin,
             arguments.vc_runtime_dir.as_deref(),
@@ -335,6 +350,7 @@ impl ReleasePlan {
         );
 
         Ok(Self {
+            plugin_directories: arguments.plugin_directory,
             rust_client_bin: arguments.rust_client_bin,
             backend_bin: arguments.backend_bin,
             account_login_bin: arguments.account_login_bin,
@@ -379,11 +395,14 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
                 &staging.join(INTERNAL_BIN_DIRECTORY).join("rust-client"),
             )?;
             // Preserve the executable mode and the public entrypoint used by updates.
-            fs::write(&client_entry, include_str!("../../../scripts/linux-launcher.sh"))
-                .map_err(|source| PackageError::Io {
-                    context: "cannot write Linux launcher".into(),
-                    source,
-                })?;
+            fs::write(
+                &client_entry,
+                include_str!("../../../scripts/linux-launcher.sh"),
+            )
+            .map_err(|source| PackageError::Io {
+                context: "cannot write Linux launcher".into(),
+                source,
+            })?;
         }
         copy_file_to(
             &plan.backend_bin,
@@ -431,22 +450,12 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
-        let lyric_license = staging.join("licenses/desktop-lyric");
-        fs::create_dir_all(&lyric_license)
-            .and_then(|()| {
-                fs::write(
-                    lyric_license.join("LICENSE.md"),
-                    include_str!("../../../third_party/desktop-lyric/LICENSE.md"),
-                )?;
-                fs::write(
-                    lyric_license.join("SOURCE.md"),
-                    include_str!("../../../third_party/desktop-lyric/XRTranslate-source.md"),
-                )
-            })
-            .map_err(|source| PackageError::Io {
-                context: "cannot write desktop-lyric attribution".into(),
-                source,
-            })?;
+        for plugin in &plan.plugin_directories {
+            copy_native_directory(
+                plugin,
+                &staging.join("plugins").join(plugin.file_name().unwrap()),
+            )?;
+        }
         // Export the exact curated references used by the app, never runtime recordings.
         for voice in xrtranslate_assets::voices::BUILTIN_VOICES {
             let directory = staging.join("resources/voices").join(voice.id);

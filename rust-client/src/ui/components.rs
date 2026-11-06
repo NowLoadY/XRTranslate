@@ -2053,6 +2053,14 @@ pub fn danger_button_enabled_with_id(
 }
 
 pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
+    pill_toggle_control(ui, checked, None)
+}
+
+fn pill_toggle_control(
+    ui: &mut Ui,
+    checked: &mut bool,
+    control: Option<(egui::Id, &str)>,
+) -> egui::Response {
     let id = ui.next_auto_id();
     let is_hovered = ui.memory(|m| {
         m.data
@@ -2079,8 +2087,9 @@ pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
         *checked = !*checked;
         response.mark_changed();
     }
+    let (control_id, label) = control.unwrap_or((id, "toggle"));
     if let Some(new_val) =
-        ui_director::egui::record_toggle(ui, id, "toggle", *checked, true, rect)
+        ui_director::egui::record_toggle(ui, control_id, label, *checked, true, rect)
     {
         *checked = new_val;
         response.mark_changed();
@@ -2248,9 +2257,7 @@ pub fn checkbox_labeled(
         *checked = !*checked;
         response.mark_changed();
     }
-    if let Some(new_val) =
-        ui_director::egui::record_checkbox(ui, id, label, *checked, true, rect)
-    {
+    if let Some(new_val) = ui_director::egui::record_checkbox(ui, id, label, *checked, true, rect) {
         *checked = new_val;
         response.mark_changed();
     }
@@ -2323,13 +2330,7 @@ pub fn checkbox_labeled(
 pub fn toggle_with_label(ui: &mut Ui, checked: &mut bool, label: &str) -> egui::Response {
     let id = ui.make_persistent_id(label);
     ui.horizontal(|ui| {
-        let mut resp = pill_toggle(ui, checked);
-        if let Some(new_val) =
-            ui_director::egui::record_toggle(ui, id, label, *checked, true, resp.rect)
-        {
-            *checked = new_val;
-            resp.mark_changed();
-        }
+        let mut resp = pill_toggle_control(ui, checked, Some((id, label)));
         ui.add_space(4.0);
         let text_resp = ui.label(
             egui::RichText::new(label)
@@ -3214,13 +3215,8 @@ pub fn compact_icon_button(
                 .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
                 .frame(false),
         );
-        let response = ui_director::egui::button_response(
-            ui,
-            response.id,
-            label,
-            ui.is_enabled(),
-            response,
-        );
+        let response =
+            ui_director::egui::button_response(ui, response.id, label, ui.is_enabled(), response);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, label)
         });

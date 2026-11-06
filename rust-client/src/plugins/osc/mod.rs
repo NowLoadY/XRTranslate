@@ -1,5 +1,6 @@
 mod chatbox;
 mod game;
+pub(crate) mod integrations;
 pub use game::OscGame;
 mod microphone;
 pub mod runtime;

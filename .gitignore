@@ -51,6 +51,11 @@ third_party/Audio8_TTS/
 # Local research, design drafts, and validation notes
 deepthink/
 
+# Independently maintained private plugin sources; never part of the host build.
+/private-plugins/
+# Installed plugins; public source lives in plugin-src/.
+/plugins/
+
 # Local demo screenplays and their input assets
 /tools/demos/local/
 

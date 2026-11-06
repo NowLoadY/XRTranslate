@@ -500,7 +500,7 @@ fn render_input_adaptation(
     }
 }
 
-fn render_capture_control(
+pub(crate) fn render_capture_control(
     app: &mut crate::XRTranslateApp,
     ui: &mut egui::Ui,
     source: CaptureSource,

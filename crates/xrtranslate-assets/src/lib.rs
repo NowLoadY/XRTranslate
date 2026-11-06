@@ -8,6 +8,8 @@
 mod bundled;
 mod catalog;
 mod install;
+mod package;
+pub use package::{ModelPackage, PackageArchive, PackageFile};
 pub mod language;
 mod preflight;
 pub mod remote;

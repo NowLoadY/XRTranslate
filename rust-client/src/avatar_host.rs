@@ -1,12 +1,11 @@
 //! Composes Avatar control intent with host-owned capture and translation tasks.
 //! Transport policy stays in the plugin; shared tasks keep their existing pipeline.
 use crate::{
-    XRTranslateApp,
+    XRTranslateApp, plugins,
     plugins::avatar::{
         HostAction as AvatarHostAction, HostResult as AvatarHostResult,
         OperationId as AvatarOperationId,
     },
-    plugins::{self, game_plugins::Selection},
     session_coordinator::{TranslationInput, TranslationSessionOwner, TranslationTask},
     translation_service,
 };
@@ -24,7 +23,7 @@ pub(crate) struct AvatarHostSession {
 
 impl XRTranslateApp {
     pub(crate) fn avatar_enabled(&self) -> bool {
-        self.game_plugins.active(Selection::Avatar)
+        self.game_plugins.active()
     }
 
     pub(crate) fn avatar_owns(&self, owner: &TranslationSessionOwner) -> bool {

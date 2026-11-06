@@ -137,7 +137,7 @@ impl AvatarPlugin {
                         components::combobox_ui_with_width(
                             ui,
                             "avatar_message_format",
-                            self.settings.format.label(language),
+                            tr(language, self.settings.format.label_key()),
                             Some(ui.available_width()),
                             |ui| {
                                 for mode in [
@@ -150,7 +150,7 @@ impl AvatarPlugin {
                                         ui,
                                         &mut self.settings.format,
                                         mode,
-                                        mode.label(language),
+                                        tr(language, mode.label_key()),
                                     );
                                 }
                             },

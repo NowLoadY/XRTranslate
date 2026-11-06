@@ -1,36 +1,7 @@
 use super::{TranslationEvent, TranslationSessionOwner};
 use crate::client_settings::CaptureSource;
-use serde::{Deserialize, Serialize};
 
-/// Per-output audio selection. Text results are independent of audio capture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AudioSourceFilter {
-    pub microphone: bool,
-    pub system_audio: bool,
-}
-
-impl Default for AudioSourceFilter {
-    fn default() -> Self {
-        Self {
-            microphone: true,
-            system_audio: true,
-        }
-    }
-}
-
-impl AudioSourceFilter {
-    pub fn allows(self, source: CaptureSource, is_text: bool) -> bool {
-        is_text
-            || match source {
-                CaptureSource::Microphone => self.microphone,
-                CaptureSource::SystemAudio => self.system_audio,
-                // Live capture expands Both into separate routes. A legacy mixed
-                // caption cannot exclude either source, so requires both enabled.
-                CaptureSource::Both => self.microphone && self.system_audio,
-            }
-    }
-}
+pub use xrtranslate_plugin::translation::AudioSourceFilter;
 
 /// Read-only observer for the generic recognition/translation event stream.
 ///
