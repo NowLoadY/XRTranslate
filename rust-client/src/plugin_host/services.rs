@@ -127,7 +127,6 @@ impl crate::XRTranslateApp {
             runtimes,
             capabilities,
         );
-        self.sync_lyrics();
         for (plugin, message) in calls {
             match message {
                 Message::Call {

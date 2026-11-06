@@ -6192,6 +6192,7 @@ impl eframe::App for XRTranslateApp {
         // Task progress belongs to logic: occluded/minimized windows may receive
         // logic-only passes while their viewport still reports visible=true.
         self.poll_installed_plugins(ctx);
+        self.sync_lyrics();
         self.refresh_media_director();
         self.poll_audio_import();
         if !self.first_run {
