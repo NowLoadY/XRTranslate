@@ -7,7 +7,7 @@ description = "Native plugin protocol, lifecycle and host-rendered controls"
 
 [features]
 host = ["dep:tempfile", "dep:log"]
-egui = ["dep:egui", "dep:ui-director"]
+egui = ["dep:egui", "dep:ui-director", "dep:base64", "dep:flate2"]
 
 [dependencies]
 log = { version = "0.4", optional = true }
@@ -16,6 +16,8 @@ serde_json = "1"
 semver = "1"
 egui = { version = "0.37", features = ["serde"], optional = true }
 ui-director = { path = "../ui-director", features = ["egui"], optional = true }
+base64 = { version = "0.22", optional = true }
+flate2 = { version = "1", optional = true }
 crossbeam-channel = "0.5"
 
 tempfile = { version = "3", optional = true }

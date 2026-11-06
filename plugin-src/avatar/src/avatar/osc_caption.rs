@@ -76,8 +76,16 @@ impl Board {
         self.inflight = None;
         self.buffer.clear();
         self.ready_at = Instant::now();
-        // Submit now: the connection may be dropped immediately after clearing.
         let _ = self.poll();
+    }
+
+    pub fn disconnect(&self) {
+        self.lease.revoke();
+        let (path, value) = self.layout.clear_write();
+        // The transport owns this final command after the display is dropped.
+        let _ = self
+            .transport
+            .write_parameter(self.epoch, &path, OscValue::Int(value));
     }
 
     fn confirm_delivery(&mut self) {
@@ -91,6 +99,9 @@ impl Board {
 
     pub fn poll(&mut self) -> Result<(), String> {
         self.confirm_delivery();
+        if let Some(error) = self.lease.error() {
+            return Err(error);
+        }
         if self.inflight.is_some() || Instant::now() < self.ready_at {
             return Ok(());
         }

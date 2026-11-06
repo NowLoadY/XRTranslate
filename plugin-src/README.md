@@ -12,6 +12,8 @@ plugins' private implementation. Put built plugin directories under the app's
 | `meeting` | Linux, Windows | Meeting records, recording navigation and transcript processing |
 | `vocabulary` | Linux, Windows | Wordbook pages and example work using the shared bookmark store |
 | `vr-overlay` | Windows (page also builds on Linux) | SteamVR subtitles, companion rendering and spatial voice controls |
+| `avatar` | Linux, Windows | Game controls, connections and caption displays using shared OSC and live-task services |
+| `ocr` | Linux, Windows | Screen translation and status using host region capture and OCR |
 | `osc` / `chilloutvr-osc` | Linux, Windows | Independent game outputs using one shared chatbox implementation |
 | `lyrics` | Linux, Windows | Music observation, lyric cache, title and synchronized text |
 | `bigwalk` | Linux, Windows | Translation/direct text delivery through the game bridge |

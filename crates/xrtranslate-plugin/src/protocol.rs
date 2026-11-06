@@ -41,6 +41,8 @@ pub struct Manifest {
     #[serde(default = "default_navigation_order")]
     pub navigation_order: i32,
     #[serde(default)]
+    pub navigation_group: String,
+    #[serde(default)]
     pub requires: Vec<String>,
     #[serde(default)]
     pub subscriptions: Vec<String>,

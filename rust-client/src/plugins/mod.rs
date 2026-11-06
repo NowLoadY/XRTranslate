@@ -1,8 +1,4 @@
 //! Stable plugin identities and navigation data. Installed manifests own their catalogue.
-pub(crate) mod avatar;
-pub(crate) mod game_plugins;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-pub mod ocr;
 
 /// Composition only: each plugin owns its commands and UI-shared handlers.
 /// Register ToolProvider implementations here; the host and Agent need no changes.
@@ -39,16 +35,6 @@ impl PluginId {
     pub const VR_OVERLAY: Self = Self::named("vr_overlay");
     pub const OCR: Self = Self::named("ocr");
     pub const AUTO_INPUT: Self = Self::named("auto_input");
-
-    pub fn is_supported(self) -> bool {
-        match self {
-            Self::AUTO_INPUT => cfg!(windows),
-            Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
-            Self::AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
-            Self::VR_OVERLAY => !cfg!(target_os = "android"),
-            _ => true,
-        }
-    }
 
     const fn named(value: &str) -> Self {
         let mut bytes = [0; 64];
@@ -116,5 +102,13 @@ impl<'de> Deserialize<'de> for PluginId {
 
 #[derive(Default)]
 pub struct PluginPages {
-    pub(crate) installed_pages: Vec<(PluginId, String, i32, Option<(String, Vec<u8>)>)>,
+    pub(crate) installed_pages: Vec<PluginPage>,
+}
+
+pub(crate) struct PluginPage {
+    pub id: PluginId,
+    pub title: String,
+    pub order: i32,
+    pub group: String,
+    pub icon: Option<(String, Vec<u8>)>,
 }

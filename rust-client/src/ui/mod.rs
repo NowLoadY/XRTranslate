@@ -10,7 +10,7 @@ pub(crate) mod graph_editor;
 pub(crate) mod graph_style;
 pub(crate) mod model_comparison;
 pub mod pages;
-pub(crate) mod previews;
+pub use xrtranslate_client_core::ui::previews;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -22,7 +22,6 @@ pub enum Page {
     #[default]
     Translation,
     Plugin(crate::plugins::PluginId),
-    GamePlugins,
     Settings,
     AudioStudio,
     PromptStudio,
@@ -37,7 +36,6 @@ impl Serialize for Page {
     {
         match self {
             Self::Translation => serializer.serialize_str("Translation"),
-            Self::GamePlugins => serializer.serialize_str("GamePlugins"),
             Self::Settings => serializer.serialize_str("Settings"),
             Self::AudioStudio => serializer.serialize_str("AudioStudio"),
             Self::TtsCenter => serializer.serialize_str("TtsCenter"),
@@ -56,7 +54,7 @@ impl<'de> Deserialize<'de> for Page {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "Translation" | "translation" => Ok(Self::Translation),
-            "GamePlugins" | "game_plugins" => Ok(Self::GamePlugins),
+            "GamePlugins" | "game_plugins" => Ok(Self::Plugin(crate::plugins::PluginId::AVATAR)),
             "Settings" | "settings" => Ok(Self::Settings),
             "AudioStudio" => Ok(Self::AudioStudio),
             "PromptStudio" | "prompt_studio" | "prompt-studio" => Ok(Self::PromptStudio),
@@ -207,23 +205,23 @@ pub fn render_sidebar(
             .auto_shrink([false, false])
             .min_scrolled_height(0.0)
             .show(ui, |ui| {
-                use crate::plugins::PluginId;
-
-                let mut in_game_group = false;
+                let mut previous_group = "";
                 for entry in navigation_entries(plugin_pages, tts_configured) {
-                    let is_game_plugin = matches!(
-                        entry.page,
-                        Page::GamePlugins
-                            | Page::Plugin(
-                                PluginId::VR_OVERLAY | PluginId::OSC | PluginId::CHILLOUTVR_OSC
-                            )
-                    );
-                    if (is_game_plugin && !in_game_group) || entry.page == Page::AudioStudio {
+                    let group = match entry.page {
+                        Page::Plugin(id) => plugin_pages
+                            .installed_pages
+                            .iter()
+                            .find(|page| page.id == id)
+                            .map_or("", |page| page.group.as_str()),
+                        Page::AudioStudio => "core-tools",
+                        _ => previous_group,
+                    };
+                    if group != previous_group {
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
                         components::wavy_divider_black_shadow(ui);
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
                     }
-                    in_game_group = is_game_plugin;
+                    previous_group = group;
                     nav_item_animated(
                         ui,
                         navigation,
@@ -652,18 +650,11 @@ fn navigation_entries(
             "../../../crates/xrtranslate-client-core/resources/icons/translation.svg"
         ),
     }];
-    let mut contributed = plugins.installed_pages.iter().map(|(id,title,order,icon)|(*order,NavigationEntry{
-        page:Page::Plugin(*id),title:title.clone().into(),icon:icon.as_ref().map_or_else(||include_image!("../../../crates/xrtranslate-client-core/resources/icons/settings.svg"),|(uri,bytes)|egui::ImageSource::Bytes{uri:uri.clone().into(),bytes:bytes.clone().into()}),
+    let mut contributed = plugins.installed_pages.iter().map(|page|(page.order,NavigationEntry{
+        page:Page::Plugin(page.id),title:page.title.clone().into(),icon:page.icon.as_ref().map_or_else(||include_image!("../../../crates/xrtranslate-client-core/resources/icons/settings.svg"),|(uri,bytes)|egui::ImageSource::Bytes{uri:uri.clone().into(),bytes:bytes.clone().into()}),
     })).collect::<Vec<_>>();
     contributed.sort_by_key(|(order, _)| *order);
     entries.extend(contributed.into_iter().map(|(_, entry)| entry));
-    if crate::plugins::PluginId::AVATAR.is_supported() {
-        entries.push(NavigationEntry {
-            page: Page::GamePlugins,
-            title: "Game Plugins".into(),
-            icon: include_image!("../../resources/plugins/game_plugins/icon.svg"),
-        });
-    }
     entries.push(NavigationEntry {
         page: Page::AudioStudio,
         title: "Audio Studio".into(),

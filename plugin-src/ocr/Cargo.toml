@@ -1,0 +1,11 @@
+[package]
+name = "xrt-ocr"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only"
+
+[dependencies]
+xrtranslate-plugin = {path="../../crates/xrtranslate-plugin"}
+xrtranslate-client-core = {path="../../crates/xrtranslate-client-core"}
+serde_json = "1"
+uuid = {version="1",features=["v4"]}

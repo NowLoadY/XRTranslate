@@ -149,7 +149,7 @@ impl Context {
                 },
                 route: Route::Page(app.navigation.page),
                 cue: match app.navigation.page {
-                    Page::Translation | Page::GamePlugins => Cue::Translation,
+                    Page::Translation => Cue::Translation,
                     Page::AudioStudio => Cue::Audio,
                     Page::PromptStudio => Cue::Styles,
                     Page::TtsCenter => Cue::VoiceCards,

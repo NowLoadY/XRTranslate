@@ -109,6 +109,9 @@ impl Client {
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
+    pub(crate) fn pending(&self, id: u64) -> bool {
+        self.replies.lock().unwrap().contains_key(&id)
+    }
 }
 impl Request {
     pub fn poll(&self) -> Option<Result> {

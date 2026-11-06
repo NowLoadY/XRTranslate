@@ -3,8 +3,8 @@ use super::{
     connectors::Settings, display::TextDisplay, osc_caption::Layout, websocket::SenderHandle,
 };
 use crate::{
-    client_settings::CaptureSource,
     osc_transport::OscTransportHandle,
+    recognition::CaptureSource,
     session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
     text_output::format_message,
 };

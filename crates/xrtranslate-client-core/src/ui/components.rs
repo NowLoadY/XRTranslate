@@ -3387,3 +3387,6 @@ pub fn format_timestamp(ms: i64) -> String {
 
     format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}")
 }
+
+mod showcase;
+pub use showcase::{ShowcaseSlide, showcase};

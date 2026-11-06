@@ -22,7 +22,7 @@ pub(crate) struct TextDisplay {
 }
 impl TextDisplay {
     pub(super) fn bind(&mut self, sender: SenderHandle, session: String, structured: bool) {
-        self.clear();
+        self.disconnect();
         self.connection = Some(Connection::WebSocket {
             sender,
             session,
@@ -40,7 +40,7 @@ impl TextDisplay {
         {
             return false;
         }
-        self.clear();
+        self.disconnect();
         self.connection =
             layout.map(|layout| Connection::Osc(Board::new(transport, epoch, layout)));
         self.revision = 0;
@@ -65,7 +65,11 @@ impl TextDisplay {
         Ok(())
     }
     pub(super) fn disconnect(&mut self) {
-        self.clear();
+        if let Some(Connection::Osc(board)) = &self.connection {
+            board.disconnect();
+        } else {
+            self.clear();
+        }
         self.connection = None;
     }
     pub(crate) fn clear(&mut self) {

@@ -92,6 +92,16 @@ impl crate::XRTranslateApp {
     }
     pub(crate) fn poll_installed_plugins(&mut self, ctx: &egui::Context) {
         self.plugin_host.refresh();
+        if self.plugin_host.osc.active() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let (update, replies) = self.plugin_host.osc.poll();
+        if let Some((plugin, value)) = update {
+            self.plugin_host.send_event(&plugin, "osc.control", value);
+        }
+        for (plugin, id, result) in replies {
+            self.plugin_host.reply(&plugin, id, result);
+        }
         let visible = match self.navigation.page {
             crate::ui::Page::Plugin(id)
                 if !self.first_run && ctx.input(|i| i.viewport().visible().unwrap_or(true)) =>
@@ -186,6 +196,9 @@ impl crate::XRTranslateApp {
                     "text.action",
                     "udp.configure",
                     "udp.send",
+                    "osc.control",
+                    #[cfg(any(windows, target_os = "linux"))]
+                    "screen.text",
                     "audio.capture",
                     "text.compose",
                     "ui",
@@ -270,6 +283,20 @@ impl crate::XRTranslateApp {
                     id,
                     name,
                     arguments,
+                } if name == "osc.control" => {
+                    if let Some(result) = self.plugin_host.osc.call(
+                        &plugin,
+                        id,
+                        arguments,
+                        self.osc_transport.handle(),
+                    ) {
+                        self.plugin_host.reply(&plugin, id, result);
+                    }
+                }
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
                 } if name == "text.action" => {
                     let result = serde_json::from_value(arguments)
                         .map_err(|e| e.to_string())
@@ -340,6 +367,7 @@ impl crate::XRTranslateApp {
                     self.plugin_host.operation_reply(plugin, id, result);
                 }
                 Message::Cancel { id } => {
+                    self.plugin_host.osc.cancel(&plugin, Some(id));
                     self.plugin_host.cancel_operations(&plugin, Some(id));
                     self.plugin_host
                         .preparing
@@ -551,7 +579,31 @@ impl crate::XRTranslateApp {
                     return Err("Translation owner must be the calling plugin".into());
                 }
                 let owner = task.owner();
-                self.start_translation_task(task, Some(ctx.clone()));
+                if self.first_run {
+                    return Err("Complete application setup before starting translation".into());
+                }
+                if matches!(
+                    task.input,
+                    crate::session_coordinator::TranslationInput::ExclusiveLive(_)
+                ) {
+                    if self.live_sessions.iter().any(|s| s.owner == owner) {
+                        return Err("The previous live task is still stopping".into());
+                    }
+                    self.live_sessions
+                        .push(crate::live_sessions::LiveSession::new(owner.clone()));
+                }
+                if !self.start_translation_task(task, Some(ctx.clone())) {
+                    self.mark_live_terminal(
+                        &owner,
+                        xrtranslate_client_core::services::LiveState::Failed(
+                            "Could not start translation".into(),
+                        ),
+                    );
+                    return Err(self
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "Translation task is already active".into()));
+                }
                 Ok(json!(owner))
             }
             "translation.pause" | "translation.resume" | "translation.finish" => {

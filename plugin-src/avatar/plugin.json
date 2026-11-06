@@ -1,0 +1,25 @@
+{
+  "id": "avatar",
+  "version": "0.1.0",
+  "min_host_version": "0.4.0",
+  "title": {
+    "en": "Game Plugins",
+    "zh": "游戏插件"
+  },
+  "executable": "xrt-avatar",
+  "page": true,
+  "icon": "assets/icon.svg",
+  "navigation_order": 210,
+  "requires": [
+    "osc.control",
+    "translation.start",
+    "translation.stop"
+  ],
+  "subscriptions": [
+    "host.services",
+    "translation.output",
+    "translation.state",
+    "osc.control"
+  ],
+  "navigation_group": "games"
+}

@@ -45,3 +45,5 @@ pub fn forward_notices(ctx: &eframe::egui::Context, context: &mut xrtranslate_pl
         }
     }
 }
+
+pub mod previews;

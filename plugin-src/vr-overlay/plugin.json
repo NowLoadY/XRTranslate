@@ -2,10 +2,19 @@
   "id": "vr_overlay",
   "version": "0.1.0",
   "min_host_version": "0.4.0",
-  "title": { "en": "SteamVR Overlay", "zh": "SteamVR 叠加层" },
+  "title": {
+    "en": "SteamVR Overlay",
+    "zh": "SteamVR 叠加层"
+  },
   "executable": "xrt-vr-overlay",
   "page": true,
-  "subscriptions": ["translation.output", "companion.presentation", "companion.command", "voice.state"],
+  "subscriptions": [
+    "translation.output",
+    "companion.presentation",
+    "companion.command",
+    "voice.state"
+  ],
   "icon": "assets/icon.svg",
-  "navigation_order": 180
+  "navigation_order": 180,
+  "navigation_group": "games"
 }

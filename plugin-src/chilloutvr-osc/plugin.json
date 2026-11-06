@@ -25,5 +25,6 @@
     "voice.review",
     "udp.revoked"
   ],
-  "tools": []
+  "tools": [],
+  "navigation_group": "games"
 }

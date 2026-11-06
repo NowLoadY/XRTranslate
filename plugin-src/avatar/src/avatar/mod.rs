@@ -25,7 +25,7 @@ pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
     PluginSessionBinding {
         recording_directory: None,
         owner: PluginSessionOwner::new(
-            super::PluginId::AVATAR.as_str(),
+            "avatar",
             format!(
                 "{}:{}",
                 operation.generation().value(),
@@ -34,7 +34,8 @@ pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
             "Avatar translation",
             "Open Game Plugins",
             "Translation controlled by your Avatar",
-        ),
+        )
+        .with_history(false),
         output_policy: SessionOutputPolicy::Host,
         host_tts: true,
         external_audio_gate: true,

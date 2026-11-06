@@ -82,10 +82,10 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
             let mut bytes = Vec::new();
             match input
                 .by_ref()
-                .take(8 * 1024 * 1024 + 1)
+                .take(crate::MAX_MESSAGE_BYTES as u64 + 1)
                 .read_until(b'\n', &mut bytes)
             {
-                Ok(1..=8_388_608) => {}
+                Ok(n) if n > 0 && n <= crate::MAX_MESSAGE_BYTES => {}
                 _ => break,
             }
             let Ok(message) = serde_json::from_slice::<Message>(&bytes) else {
@@ -110,7 +110,10 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
     std::thread::spawn(move || {
         while !requests.is_closed() {
             if let Ok(message) = outbox.recv_timeout(Duration::from_millis(16)) {
-                send(&writer, &message);
+                // Cancellation may overtake a queued call. Never send it afterwards.
+                if !matches!(&message, Message::Call { id, .. } if !requests.pending(*id)) {
+                    send(&writer, &message);
+                }
             }
             for id in requests.cancelled() {
                 send(&writer, &Message::Cancel { id });

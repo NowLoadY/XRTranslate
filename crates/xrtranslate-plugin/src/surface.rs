@@ -5,6 +5,8 @@
 mod host;
 #[cfg(feature = "host")]
 pub use host::Renderer;
+#[path = "surface_textures.rs"]
+mod textures;
 
 pub fn active(context: &egui::Context) -> bool {
     context
@@ -76,6 +78,7 @@ pub enum Drawing {
 #[derive(Serialize, Deserialize)]
 pub struct Frame {
     pub drawings: Vec<Drawing>,
+    #[serde(with = "textures")]
     pub textures: Vec<(egui::TextureId, Vec<ImageDelta>)>,
     pub free: Vec<egui::TextureId>,
     pub platform: egui::PlatformOutput,

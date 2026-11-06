@@ -13,31 +13,11 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
-use xrtranslate_engine::language::{LanguageCapabilities, LanguageMode, LanguageSelection};
+use xrtranslate_engine::language::{LanguageMode, LanguageSelection};
 use xrtranslate_prompt::TaskContext;
 use xrtranslate_protocol::PromptGraphSet;
 
-pub(crate) fn select_languages_with_options(
-    text: &str,
-    source: &str,
-    target: &str,
-    capabilities: LanguageCapabilities,
-    additional_target: Option<&str>,
-    asr_only: bool,
-) -> Result<LanguageSelection, String> {
-    let capabilities = capabilities.for_text();
-    if asr_only {
-        return capabilities.select_with_options(source, target, None, true);
-    }
-    if let Some((source, target)) =
-        xrtranslate_engine::auto_route_language_pair(text, source, target)
-        && let Ok(selection) =
-            capabilities.select_with_options(source, target, additional_target, false)
-    {
-        return Ok(selection);
-    }
-    capabilities.select_with_options(source, target, additional_target, false)
-}
+pub(crate) use xrtranslate_client_core::services::select_text_languages as select_languages_with_options;
 
 struct TextConnection {
     session: Option<SessionHandle>,

@@ -70,7 +70,7 @@ impl Process {
                 use std::io::Read;
                 let read = output
                     .by_ref()
-                    .take(8 * 1024 * 1024 + 1)
+                    .take(crate::MAX_MESSAGE_BYTES as u64 + 1)
                     .read_until(b'\n', &mut bytes);
                 let message = match read {
                     Ok(0) => {
@@ -81,7 +81,7 @@ impl Process {
                             .get_or_insert("Plugin exited".into());
                         break;
                     }
-                    Ok(n) if n <= 8 * 1024 * 1024 => {
+                    Ok(n) if n <= crate::MAX_MESSAGE_BYTES => {
                         serde_json::from_slice::<Message>(&bytes).map_err(|e| e.to_string())
                     }
                     Ok(_) => Err("Plugin message is too large".into()),

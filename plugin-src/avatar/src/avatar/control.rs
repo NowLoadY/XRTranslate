@@ -56,7 +56,17 @@ impl AvatarPlugin {
             if let Err(error) = transport.set_control_profile(
                 contract
                     .filter(|_| enabled)
-                    .map_or_else(OscPeerProfile::default, |c| c.peer),
+                    .map_or_else(OscPeerProfile::default, |c| OscPeerProfile {
+                        service_name: c.peer.service_name.into(),
+                        identity_path: c.peer.identity_path.into(),
+                        invalidate_paths: c
+                            .peer
+                            .invalidate_paths
+                            .iter()
+                            .map(|p| (*p).to_owned())
+                            .collect(),
+                        mute_path: c.peer.mute_path.map(str::to_owned),
+                    }),
                 contract.filter(|_| enabled).map(OscContract::paths),
             ) {
                 self.invalidate(error);
@@ -216,7 +226,7 @@ impl AvatarPlugin {
             return;
         }
         self.latest_epoch = snapshot.epoch;
-        if snapshot.queried_at.elapsed() > Duration::from_secs(5) {
+        if snapshot.queried_at.elapsed().unwrap_or(Duration::MAX) > Duration::from_secs(5) {
             self.invalidate("Avatar state is stale; waiting for a fresh connection".into());
             return;
         }
@@ -372,7 +382,7 @@ fn enabled_value(snapshot: &AvatarSnapshot, contract: &OscContract) -> Result<bo
 mod tests {
     use super::*;
     use crate::osc_transport::OscQueryNode;
-    use std::{collections::BTreeMap, time::Instant};
+    use std::collections::BTreeMap;
     use xrt_connector_core::Status;
 
     fn snapshot(epoch: u64, enabled: bool, query_id: Option<u64>) -> AvatarSnapshot {
@@ -381,7 +391,7 @@ mod tests {
             epoch,
             query_id,
             avatar_id: "avtr_control_fixture".into(),
-            queried_at: Instant::now(),
+            queried_at: std::time::SystemTime::now(),
             nodes: BTreeMap::from([
                 (
                     contract.enabled.into(),

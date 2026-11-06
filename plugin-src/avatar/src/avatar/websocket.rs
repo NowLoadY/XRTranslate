@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn stopping_messages_preserves_independent_banners() {
         use crate::{
-            plugins::avatar::{connectors::Settings, output::DisplayOutput},
+            avatar::{connectors::Settings, output::DisplayOutput},
             session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
         };
         let (sender, _, _) = output_queue();
@@ -494,7 +494,7 @@ mod tests {
         output.bind(sender.clone(), "session".into(), true);
         let caption = |stream| HostOutputEvent::Caption {
             stream_id: stream,
-            audio_source: crate::client_settings::CaptureSource::Microphone,
+            audio_source: crate::recognition::CaptureSource::Microphone,
             is_typing: false,
             source: ("Hello").into(),
             translated: ("Bonjour").into(),

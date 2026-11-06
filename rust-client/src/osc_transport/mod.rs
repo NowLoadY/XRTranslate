@@ -19,8 +19,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-pub use xrt_connector_core::osc::Peer as OscPeerProfile;
 use xrtranslate_client_core::osc::ReceiveOptions;
+pub use xrtranslate_client_core::osc::{
+    AvatarSnapshot, OscPeerProfile, OscQueryNode, OscValue, TransportEvent, TransportState,
+};
 
 const QUERY_SERVICE: &str = "_oscjson._tcp.local.";
 const OSC_SERVICE: &str = "_osc._udp.local.";
@@ -31,66 +33,24 @@ const MAX_BODY: usize = 4 * 1024 * 1024;
 const MAX_EVENTS: usize = 128;
 const MAX_PATHS: usize = 32;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum OscValue {
-    Bool(bool),
-    Int(i32),
-    Float(f32),
-    String(String),
-}
-
-impl OscValue {
-    fn osc(&self) -> OscType {
-        match self {
-            Self::Bool(v) => OscType::Bool(*v),
-            Self::Int(v) => OscType::Int(*v),
-            Self::Float(v) => OscType::Float(*v),
-            Self::String(v) => OscType::String(v.clone()),
-        }
-    }
-
-    fn from_osc(value: &OscType) -> Option<Self> {
-        match value {
-            OscType::Bool(v) => Some(Self::Bool(*v)),
-            OscType::Int(v) => Some(Self::Int(*v)),
-            OscType::Float(v) if v.is_finite() => Some(Self::Float(*v)),
-            OscType::String(v) if v.len() <= 1024 => Some(Self::String(v.clone())),
-            _ => None,
-        }
+fn to_osc(value: &OscValue) -> OscType {
+    match value {
+        OscValue::Bool(v) => OscType::Bool(*v),
+        OscValue::Int(v) => OscType::Int(*v),
+        OscValue::Float(v) => OscType::Float(*v),
+        OscValue::String(v) => OscType::String(v.clone()),
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct OscQueryNode {
-    pub osc_type: String,
-    pub access: u8,
-    pub value: Option<OscValue>,
+fn from_osc(value: &OscType) -> Option<OscValue> {
+    match value {
+        OscType::Bool(v) => Some(OscValue::Bool(*v)),
+        OscType::Int(v) => Some(OscValue::Int(*v)),
+        OscType::Float(v) if v.is_finite() => Some(OscValue::Float(*v)),
+        OscType::String(v) if v.len() <= 1024 => Some(OscValue::String(v.clone())),
+        _ => None,
+    }
 }
-
-#[derive(Clone, Debug)]
-pub struct AvatarSnapshot {
-    pub epoch: u64,
-    /// A caller-provided identity, present only for a query begun after its write.
-    pub query_id: Option<u64>,
-    pub avatar_id: String,
-    pub nodes: BTreeMap<String, OscQueryNode>,
-    pub queried_at: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub enum TransportEvent {
-    Snapshot(AvatarSnapshot),
-    Invalidated { epoch: u64, reason: String },
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct TransportState {
-    pub epoch: u64,
-    pub control_enabled: bool,
-    pub listener: String,
-    pub diagnostic: Option<String>,
-}
-
 #[derive(Default)]
 struct Shared {
     state: TransportState,
@@ -541,7 +501,7 @@ impl Worker {
     fn peer_profile(&self) -> OscPeerProfile {
         self.config
             .as_ref()
-            .map(|c| c.peer_profile)
+            .map(|c| c.peer_profile.clone())
             .unwrap_or_default()
     }
 
@@ -842,7 +802,7 @@ impl Worker {
             self.invalidate("Avatar changed or reloaded");
         }
         for message in messages {
-            if self.peer_profile().mute_path == Some(message.addr.as_str()) {
+            if self.peer_profile().mute_path.as_deref() == Some(message.addr.as_str()) {
                 if let Some(value) = message.args.first().and_then(parse_mute_value) {
                     self.last_mute_datagram = Some(Instant::now());
                     self.observe_microphone(value);
@@ -856,7 +816,7 @@ impl Worker {
             if !subscribed || self.endpoint.is_none() || self.avatar_id.is_none() {
                 continue;
             }
-            let Some(value) = message.args.first().and_then(OscValue::from_osc) else {
+            let Some(value) = message.args.first().and_then(from_osc) else {
                 continue;
             };
             if self.last_udp_values.get(&message.addr) == Some(&value) {
@@ -912,7 +872,7 @@ impl Worker {
             .map(|(path, value)| {
                 OscPacket::Message(OscMessage {
                     addr: path,
-                    args: vec![value.osc()],
+                    args: vec![to_osc(&value)],
                 })
             })
             .collect::<Vec<_>>();
@@ -1037,6 +997,7 @@ impl Worker {
         }
         let epoch = self.epoch;
         let queried_at = Instant::now();
+        let observed_at = std::time::SystemTime::now();
         let paths = self
             .config
             .as_ref()
@@ -1066,7 +1027,7 @@ impl Worker {
                     && let Some(OscValue::Bool(value)) = self
                         .peer_profile()
                         .mute_path
-                        .and_then(|path| nodes.get(path))
+                        .and_then(|path| nodes.get(&path))
                         .and_then(|node| node.value.as_ref())
                 {
                     self.observe_microphone(*value);
@@ -1081,7 +1042,7 @@ impl Worker {
                         query_id,
                         avatar_id,
                         nodes,
-                        queried_at,
+                        queried_at: observed_at,
                     }));
                 }
             }
@@ -1235,7 +1196,10 @@ fn parse_avatar_tree(
             .get("FULL_PATH")
             .and_then(Value::as_str)
             .ok_or("Invalid OSCQuery node path")?;
-        if path == peer.identity_path || peer.mute_path == Some(path) || paths.contains(path) {
+        if path == peer.identity_path
+            || peer.mute_path.as_deref() == Some(path)
+            || paths.contains(path)
+        {
             let osc_type = node
                 .get("TYPE")
                 .and_then(Value::as_str)
@@ -1299,7 +1263,10 @@ fn parse_avatar_tree(
             stack.extend(children.values().map(|child| (child, depth + 1)));
         }
     }
-    let avatar_id = match nodes.get(peer.identity_path).and_then(|n| n.value.as_ref()) {
+    let avatar_id = match nodes
+        .get(&peer.identity_path)
+        .and_then(|n| n.value.as_ref())
+    {
         Some(OscValue::String(id)) if !id.is_empty() && id.len() <= 256 => id.clone(),
         _ => return Err("Invalid OSCQuery snapshot has no current Avatar identity".into()),
     };
@@ -1504,7 +1471,7 @@ mod tests {
             }
         });
         let mut worker = worker(port, udp_port);
-        let before_write = Instant::now();
+        let before_write = std::time::SystemTime::now();
         worker
             .command(Command::Write {
                 epoch: 7,
@@ -1620,7 +1587,7 @@ mod tests {
                 query_id: None,
                 avatar_id: "avtr_a".into(),
                 nodes: BTreeMap::new(),
-                queried_at: Instant::now(),
+                queried_at: std::time::SystemTime::now(),
             }));
         }
         assert!(matches!(
@@ -1665,14 +1632,16 @@ mod tests {
 
     #[test]
     fn oscquery_peer_profiles_keep_identity_and_writes_separate() {
-        let cvr = xrt_connector_core::Connector::Chilloutvr
-            .osc()
-            .unwrap()
-            .peer;
+        let cvr = OscPeerProfile {
+            service_name: "ChilloutVR".into(),
+            identity_path: "/avatar/change".into(),
+            invalidate_paths: vec!["/avatar/change".into(), "/avatar/profile/change".into()],
+            mute_path: None,
+        };
         let vrchat = OscPeerProfile::default();
         let host = json!({"NAME":"ChilloutVR-ABCDEF", "OSC_PORT":9000});
-        assert!(parse_host_info(&host, cvr).is_ok());
-        assert!(parse_host_info(&host, vrchat).is_err());
+        assert!(parse_host_info(&host, cvr.clone()).is_ok());
+        assert!(parse_host_info(&host, vrchat.clone()).is_err());
         assert!(!cvr.accepts_name("ChilloutVRFake"));
         assert!(cvr.invalidates_on("/avatar/profile/change"));
         assert!(!vrchat.invalidates_on("/avatar/profile/change"));

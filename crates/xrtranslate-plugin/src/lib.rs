@@ -3,6 +3,7 @@
 mod client;
 mod protocol;
 mod server;
+const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub use client::{Client, Request};
 #[cfg(feature = "egui")]
 pub mod surface;

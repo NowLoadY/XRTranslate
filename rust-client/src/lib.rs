@@ -26,7 +26,6 @@ pub use xrtranslate_client_core::audio_playback;
 mod audio_preprocessing_host;
 pub use xrtranslate_client_core::audio_processing;
 mod audio_studio;
-mod avatar_host;
 mod backend;
 mod child_process;
 mod client_settings;
@@ -38,6 +37,7 @@ mod director_feedback_tests;
 mod director_host;
 #[cfg(test)]
 mod director_tools_tests;
+mod live_sessions;
 pub use xrtranslate_client_core::export;
 pub use xrtranslate_client_core::feature_access;
 pub use xrtranslate_client_core::file_dialog;
@@ -49,8 +49,6 @@ mod model_install;
 mod network;
 #[cfg(any(windows, target_os = "linux"))]
 mod ocr_capture;
-#[cfg(any(windows, target_os = "linux"))]
-mod ocr_host;
 #[cfg(any(windows, target_os = "linux"))]
 mod ocr_runtime;
 mod onboarding;
@@ -66,6 +64,8 @@ mod quick_translate;
 mod runtime_install;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen_capture;
+#[cfg(any(windows, target_os = "linux"))]
+mod screen_text_host;
 mod service_config;
 pub mod session_coordinator;
 pub use xrtranslate_client_core::streaming;
@@ -102,7 +102,7 @@ use history::{
 };
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
-use plugins::avatar::AvatarPlugin;
+use xrtranslate_client_core::services::LiveState;
 mod osc_transport;
 mod system_metrics;
 use osc_transport::TransportOwner;
@@ -113,7 +113,6 @@ use session_coordinator::{
     SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSessionOwner,
 };
 use ui::{NavigationState, Page};
-use xrtranslate_client_core::text_output;
 use xrtranslate_prompt::{PromptTemplateLibrary, TaskContext};
 use xrtranslate_protocol::PromptGraphSet;
 
@@ -626,7 +625,7 @@ struct XRTranslateApp {
     system_audio_enabled: bool,
     audio_tasks: Vec<translation_service::AudioTask>,
     exclusive_live_inputs: Vec<(TranslationSessionOwner, CaptureSource)>,
-    avatar_host_session: Option<avatar_host::AvatarHostSession>,
+    live_sessions: Vec<live_sessions::LiveSession>,
     voice_interaction: voice_interaction_host::VoiceHost,
     input_level: Arc<AtomicU32>,
     loopback_level: Arc<AtomicU32>,
@@ -664,9 +663,7 @@ struct XRTranslateApp {
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
-    game_plugins: plugins::game_plugins::Settings,
     osc_transport: TransportOwner,
-    avatar_plugin: AvatarPlugin,
     system_metrics: system_metrics::SystemMonitor,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
@@ -674,7 +671,7 @@ struct XRTranslateApp {
     audio_studio_started_voicemeeter: bool,
     plugin_host: plugin_host::Host,
     #[cfg(any(windows, target_os = "linux"))]
-    ocr: ocr_host::OcrHost,
+    screen_text: screen_text_host::ScreenTextHost,
     pending_translations: Vec<TranslationTask>,
     active_languages: Option<LanguageSelection>,
     plugin_pages: PluginPages,
@@ -926,7 +923,6 @@ impl Default for XRTranslateApp {
         };
         let system_metrics = system_metrics::SystemMonitor::new();
         let osc_transport = TransportOwner::new(&Default::default());
-        let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
         let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
             Ok(remote) => remote,
@@ -936,22 +932,15 @@ impl Default for XRTranslateApp {
             }
         };
         let plugin_host = plugin_host::Host::load(backend_manager.project_root());
-        const HISTORY_PRODUCERS: &[&str] = &[
-            PluginId::OCR.as_str(),
-            PluginId::MEDIA.as_str(),
-            PluginId::MEETING.as_str(),
-            "quick_translate",
-        ];
         let history_archive = history::archive::Archive::new(
             &backend_manager.project_root(),
             settings.save_translation_history,
-            HISTORY_PRODUCERS,
         );
         #[cfg(any(windows, target_os = "linux"))]
         let quick_translate =
             quick_translate::QuickTranslate::new(settings.quick_translation.clone());
         #[cfg(any(windows, target_os = "linux"))]
-        let ocr = ocr_host::OcrHost::default();
+        let screen_text = screen_text_host::ScreenTextHost::default();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
         model_task_manager.set_proxy_url(&settings.download_proxy_url);
         let mut runtime_installer = runtime_install::RuntimeInstaller::default();
@@ -1005,13 +994,9 @@ impl Default for XRTranslateApp {
             Box::new(android_translation_history::ResultSubscriber::default()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(quick_translate.sink.clone()),
-            #[cfg(any(windows, target_os = "linux"))]
-            Box::new(ocr.plugin.event_sink.clone()),
         ]);
-        let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
-            Box::new(plugin_host.output.clone()),
-            Box::new(avatar_plugin.output.clone()),
-        ]);
+        let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> =
+            Arc::new(vec![Box::new(plugin_host.output.clone())]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
         let output_subscribers = Arc::clone(&host_output_subscribers);
 
@@ -1760,7 +1745,7 @@ impl Default for XRTranslateApp {
             system_audio_enabled: false,
             audio_tasks: Vec::new(),
             exclusive_live_inputs: Vec::new(),
-            avatar_host_session: None,
+            live_sessions: Vec::new(),
             voice_interaction,
             input_level,
             loopback_level,
@@ -1798,9 +1783,7 @@ impl Default for XRTranslateApp {
             loopback_clone_state: settings.loopback_clone_state,
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
-            game_plugins: settings.game_plugins,
             osc_transport,
-            avatar_plugin,
             system_metrics,
             audio_studio,
             voicemeeter_remote,
@@ -1808,7 +1791,7 @@ impl Default for XRTranslateApp {
             audio_studio_started_voicemeeter: false,
             plugin_host,
             #[cfg(any(windows, target_os = "linux"))]
-            ocr,
+            screen_text,
             pending_translations: Vec::new(),
             active_languages: None,
             plugin_pages: PluginPages::default(),
@@ -1896,8 +1879,8 @@ impl XRTranslateApp {
         #[cfg(any(windows, target_os = "linux"))]
         {
             self.stop_ocr();
-            if self.ocr.is_stopping() {
-                self.ocr.resource_deletion = Some(resource);
+            if self.screen_text.is_stopping() {
+                self.screen_text.resource_deletion = Some(resource);
                 return;
             }
         }
@@ -1963,16 +1946,8 @@ impl XRTranslateApp {
         }
     }
 
-    pub(crate) fn plugin_available(&self, id: PluginId) -> bool {
-        id.is_supported() && (id != PluginId::OCR || self.service_config.ocr_is_configured())
-    }
-
     pub(crate) fn plugin_enabled(&self, id: PluginId) -> bool {
-        if self.plugin_host.contains(id) {
-            return self.plugin_host.enabled(id);
-        }
-        // Embedded OCR is configured with its model, without a second switch.
-        self.plugin_available(id) && (id == PluginId::OCR || self.plugin_host.enabled(id))
+        self.plugin_host.enabled(id)
     }
 
     /// Selects the first plugin currently requesting the exclusive translation
@@ -2717,55 +2692,6 @@ impl XRTranslateApp {
         }
     }
 
-    fn sync_game_plugins(&mut self) {
-        self.poll_avatar(None);
-    }
-
-    fn render_game_plugins_page(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .id_salt("game_plugins_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let mut changed = false;
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(i18n::tr(self.ui_language, "Game Plugins"))
-                            .size(22.0)
-                            .color(ui::theme::text_strong())
-                            .strong(),
-                    );
-                    ui.add_space(8.0);
-                    changed |= plugins::game_plugins::render_selection(
-                        ui,
-                        &mut self.avatar_plugin.settings.connector,
-                        self.ui_language,
-                    );
-                    changed |= ui::components::toggle_with_label(
-                        ui,
-                        &mut self.game_plugins.enabled,
-                        i18n::tr(self.ui_language, "Enable"),
-                    )
-                    .changed();
-                });
-                if changed {
-                    self.sync_game_plugins();
-                    self.save_settings();
-                }
-                ui.add_space(16.0);
-                if self.avatar_plugin.render_content(
-                    ui,
-                    self.ui_language,
-                    self.game_plugins.enabled,
-                ) {
-                    self.poll_avatar(None);
-                    self.save_settings();
-                }
-                ui.add_space(16.0);
-                ui::components::showcase(ui, self.ui_language, &ui::previews::game_plugins());
-                ui.add_space(8.0);
-            });
-    }
-
     fn render_text_composer(&mut self, ui: &mut egui::Ui) {
         use ui::components::text_composer::{ComposerContext, TextAction};
         let capabilities = self.language_capabilities().for_text();
@@ -3061,8 +2987,6 @@ impl XRTranslateApp {
             server_url: self.server_url.clone(),
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
-            game_plugins: self.game_plugins,
-            avatar_connector: self.avatar_plugin.settings.clone(),
             active_page: self.navigation.page,
             sidebar_collapsed: self.navigation.collapsed,
             usage_guidelines_accepted: self.usage_guidelines_accepted,
@@ -3359,7 +3283,7 @@ impl XRTranslateApp {
             return;
         }
         #[cfg(any(windows, target_os = "linux"))]
-        if self.ocr.enabled {
+        if self.screen_text.enabled {
             self.refresh_ocr();
         }
     }
@@ -3416,7 +3340,7 @@ impl XRTranslateApp {
             return false;
         }
         #[cfg(any(windows, target_os = "linux"))]
-        let ocr_enabled = self.ocr.enabled;
+        let ocr_enabled = self.screen_text.enabled;
         #[cfg(not(any(windows, target_os = "linux")))]
         let ocr_enabled = false;
         let has_work = ocr_enabled
@@ -3616,7 +3540,7 @@ impl XRTranslateApp {
     }
 
     fn stop_task_owner(&mut self, owner: &TranslationSessionOwner) {
-        self.stop_avatar_owner(owner);
+        self.mark_live_terminal(owner, LiveState::Stopped);
         self.cancel_text_tasks(Some(owner));
         self.cancel_pending_tasks(Some(owner));
         let mut kept = Vec::new();
@@ -3648,33 +3572,15 @@ impl XRTranslateApp {
             }
             self.retire_audio_task(task);
         }
-        if !self.avatar_owns(owner) {
+        if !self
+            .live_sessions
+            .iter()
+            .any(|session| &session.owner == owner)
+        {
             self.exclusive_live_inputs
                 .retain(|(lease_owner, _)| lease_owner != owner);
         }
         self.release_unused_inputs();
-    }
-
-    fn stop_plugin_task(&mut self, id: PluginId) {
-        let mut owners: Vec<_> = self
-            .audio_tasks
-            .iter()
-            .map(|task| task.owner.clone())
-            .chain(self.pending_translations.iter().map(TranslationTask::owner))
-            .chain(
-                self.text_translation
-                    .scopes()
-                    .map(|scope| scope.owner.clone()),
-            )
-            .filter(|owner| owner.is_plugin(id.as_str()))
-            .collect();
-        owners.dedup();
-        for owner in owners {
-            self.stop_task_owner(&owner);
-        }
-        match id {
-            _ => {}
-        }
     }
 
     fn finish_caption_stream(&self, stream: u64) {
@@ -3740,12 +3646,12 @@ impl XRTranslateApp {
                 .channels
                 .iter()
                 .any(|channel| channel.scope.failed.load(Ordering::Acquire));
-            let avatar = self.avatar_task_ended(&task.owner, failed);
+            let exclusive = self.live_task_ended(&task.owner, failed);
 
             if let Ok(mut state) = self.shared_session_state.lock() {
                 task.invalidate();
                 for channel in &task.channels {
-                    if failed || avatar {
+                    if failed || exclusive {
                         publish_host_output(
                             &self.host_output_subscribers,
                             HostOutputEvent::StreamCancelled(channel.scope.id()),
@@ -3757,7 +3663,7 @@ impl XRTranslateApp {
             for channel in &task.channels {
                 self.audio_system.stop_capture_group(channel.scope.id());
             }
-            if failed || avatar {
+            if failed || exclusive {
                 self.retire_audio_task(task);
             } else {
                 self.exclusive_live_inputs
@@ -3766,7 +3672,7 @@ impl XRTranslateApp {
             }
         }
         self.release_unused_inputs();
-        self.poll_avatar_session();
+        self.poll_live_sessions();
         if !self.translation_enabled {
             self.set_connection_status("Stopped");
         } else if self.backend_start_deadline.is_none()
@@ -3926,7 +3832,7 @@ impl XRTranslateApp {
     }
 
     fn fail_task_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
-        self.fail_avatar_startup(owner, error);
+        self.mark_live_terminal(owner, LiveState::Failed(error.to_owned()));
         self.notifications.error("", error);
         self.companion_inbox
             .observe_error("application", Some(error));
@@ -4625,7 +4531,7 @@ impl XRTranslateApp {
         #[cfg(any(windows, target_os = "linux"))]
         if !enabled {
             self.stop_ocr();
-            self.ocr.reset_window();
+            self.screen_text.reset_window();
         }
         self.floating_subtitles_enabled = enabled
             && crate::feature_access::is_available(
@@ -4761,7 +4667,14 @@ impl XRTranslateApp {
 
     fn stop(&mut self) {
         self.stop_agent("Application stopped");
-        self.stop_avatar();
+        for owner in self
+            .live_sessions
+            .iter()
+            .map(|s| s.owner.clone())
+            .collect::<Vec<_>>()
+        {
+            self.mark_live_terminal(&owner, LiveState::Stopped);
+        }
         self.set_auto_input_enabled(false);
         director_audio::detach();
         #[cfg(target_os = "android")]
@@ -4810,7 +4723,7 @@ impl XRTranslateApp {
         self.partial_text.clear();
         self.reset_audio_levels();
         self.set_connection_status("Stopped");
-        self.poll_avatar_session();
+        self.poll_live_sessions();
     }
 
     fn poll_text_translation(&mut self, ctx: &egui::Context) {
@@ -4861,8 +4774,7 @@ impl XRTranslateApp {
             .store(self.floating_subtitles_font_size as u32, Ordering::Relaxed);
 
         let overlay_controls = overlay_ipc::OverlayControls {
-            auto_input_available: PluginId::AUTO_INPUT.is_supported()
-                && self.plugin_host.available(PluginId::AUTO_INPUT.as_str()),
+            auto_input_available: self.plugin_host.available(PluginId::AUTO_INPUT.as_str()),
             auto_input_enabled: self.plugin_host.available(PluginId::AUTO_INPUT.as_str())
                 && self
                     .plugin_host
@@ -4877,8 +4789,8 @@ impl XRTranslateApp {
                 .then_some(self.system_audio_enabled),
             #[cfg(any(windows, target_os = "linux"))]
             ocr_enabled: self
-                .plugin_enabled(PluginId::OCR)
-                .then_some(self.ocr.enabled),
+                .screen_text_available()
+                .then_some(self.screen_text.enabled),
             #[cfg(not(any(windows, target_os = "linux")))]
             ocr_enabled: None,
         };
@@ -5059,7 +4971,7 @@ impl XRTranslateApp {
         }
         #[cfg(any(windows, target_os = "linux"))]
         self.companion_inbox
-            .observe_error("ocr", self.ocr.plugin.state.status.as_deref());
+            .observe_error("ocr", self.screen_text.state.status.as_deref());
     }
 }
 
@@ -5114,7 +5026,6 @@ impl XRTranslateApp {
 
 impl Drop for XRTranslateApp {
     fn drop(&mut self) {
-        self.shutdown_avatar();
         self.system_metrics.shutdown();
         self.stop();
         if let Some(route) = self.voicemeeter_route.take() {
@@ -5165,10 +5076,9 @@ impl eframe::App for XRTranslateApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.adapt_model_languages();
-        self.poll_avatar(Some(ctx.clone()));
         self.poll_microphone_sync(ctx);
         self.poll_voice_interaction(ctx);
-        if self.avatar_enabled() || self.avatar_host_session.is_some() {
+        if !self.live_sessions.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
@@ -5551,14 +5461,6 @@ impl eframe::App for XRTranslateApp {
                     );
                     return;
                 }
-                if self.navigation.page == Page::GamePlugins {
-                    ui::animation::AnimationSystem::render_animated_page(
-                        ui,
-                        Page::GamePlugins,
-                        |ui| self.render_game_plugins_page(ui),
-                    );
-                    return;
-                }
                 if let Page::Plugin(id) = self.navigation.page {
                     ui::animation::AnimationSystem::render_animated_page(
                         ui,
@@ -5666,7 +5568,6 @@ impl eframe::App for XRTranslateApp {
                             );
                         }
                         Page::AudioStudio => unreachable!(),
-                        Page::GamePlugins => unreachable!(),
                         Page::PromptStudio => unreachable!(),
                         Page::CorpusStudio => unreachable!(),
                         Page::TtsCenter => unreachable!(),

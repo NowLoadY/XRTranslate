@@ -1,0 +1,9 @@
+{
+  "id": "ocr",
+  "version": "0.1.0",
+  "min_host_version": "0.4.0",
+  "title": {"en":"Screen Translation","zh":"屏幕翻译"},
+  "executable": "xrt-ocr",
+  "requires": ["screen.text", "translation.start", "translation.stop"],
+  "subscriptions": ["host.services", "screen.text", "screen.clear", "translation.event"]
+}

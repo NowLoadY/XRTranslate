@@ -18,27 +18,7 @@ struct Request {
     excluded: [Option<OverlayRegion>; 2],
 }
 
-pub enum CaptureEvent {
-    Busy(u64),
-    Text(u64, String),
-    Idle(u64),
-    Failed {
-        revision: u64,
-        error: String,
-        fatal: bool,
-    },
-}
-
-impl CaptureEvent {
-    fn revision(&self) -> u64 {
-        match self {
-            Self::Busy(revision)
-            | Self::Text(revision, _)
-            | Self::Idle(revision)
-            | Self::Failed { revision, .. } => *revision,
-        }
-    }
-}
+pub use xrtranslate_client_core::screen_text::CaptureEvent;
 
 /// Preserve the newest text while subsequent recognition is busy. Both slots
 /// are bounded and publication never waits for the UI to consume an event.

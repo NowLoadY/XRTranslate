@@ -4,7 +4,8 @@ Optional plugins are native child processes discovered under the application’s
 `plugins/` directory. Each directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
 while running and checks only the declared minimum host version. Motion, Media,
-Meeting, Agent, Vocabulary, SteamVR, OSC, Lyrics, Big Walk and automatic input use this boundary.
+Meeting, Agent, Vocabulary, SteamVR, OSC, Avatar, screen translation, Lyrics,
+Big Walk and automatic input use this boundary.
 Their source is absent from the desktop client's dependency graph;
 removal stops their workers and removes their page and tools.
 
@@ -21,8 +22,9 @@ Motion source is maintained in a separate private repository in the ignored
 Other independent plugin source lives under `plugin-src/`. These plugins need the
 host; independence does not require a second application or UI implementation.
 
-OCR and Avatar control still have compiled host bindings. The installed manifests
-are the sole plugin page catalogue; no static navigation registry remains.
+Installed manifests are the sole plugin page catalogue; no compiled plugin
+controllers or static navigation registry remain. The host retains shared screen
+capture/OCR, OSC transport and task services.
 
 `crates/xrtranslate-client-core` holds the existing UI components and neutral
 session/playback/file contracts once. The native Media, Meeting and Vocabulary
@@ -91,7 +93,9 @@ live requests cannot enter an existing exclusive lease. Cancellation stops only
 the owning task; its lease remains until the owned workers have exited. The host
 reports readiness from actual capture and backend state, and completion only
 after cleanup. These are neutral input and lifecycle contracts, independent of
-the requesting plugin.
+the requesting plugin. `translation.state` reports `Running`, `Stopped` or a
+failure to that owner. History follows each task's `records_history` setting,
+without a plugin allowlist.
 
 Result semantics are shared by every consumer:
 
@@ -182,9 +186,8 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | Native `plugin-src/osc` / `chilloutvr-osc` | Chatbox composition, game wire profiles and original settings/page |
-| `plugins::game_plugins` | Avatar game connection enablement and page composition |
 | Native `plugin-src/bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
-| `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
+| Native `plugin-src/avatar` | Game selection, display composition, control intent and connections; uses shared OSC and exclusive live tasks |
 | Client core `text_output` / host `system_metrics` | Shared formatting and banner controls / one system sampler |
 | Native `plugin-src/lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
 | Native `plugin-src/vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless inference for examples |
@@ -192,7 +195,7 @@ affecting unrelated tasks.
 | Native `plugin-src/media` | Media tasks, playback, subtitles, dubbing and export; uses shared import and translation |
 | Native `plugin-src/agent` | Persistent conversation, tool execution, context compression and progress |
 | Native `plugin-src/vr-overlay` | SteamVR presentation and runtime; consumes shared host output |
-| `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
+| Native `plugin-src/ocr` | Screen-text deduplication, translation and status; uses shared region capture, OCR and task services |
 | Native `plugin-src/auto-input` | Automatic text output; consumes committed results through a platform input capability |
 
 Desktop fullscreen history exposes an explicit lookup action on selected words

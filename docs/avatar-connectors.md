@@ -37,13 +37,13 @@ overlay and TTS keep their own settings.
 
 ## Host integration
 
-`plugins::game_plugins` activates one selected game while **Enable** is on.
+Native `plugin-src/avatar` activates one selected game while **Enable** is on.
 Switching games retires the old connection and clears pending output.
-`plugins::avatar` owns game controls and caption composition;
-`plugins::bigwalk` sends completed translations to native chat.
+The same plugin owns game controls and caption composition;
+`plugin-src/bigwalk` sends completed translations to native chat.
 
-`avatar_host` turns validated game requests into owned translation tasks.
-`session_coordinator` owns input leases and cancellation. Requests cannot take
+The plugin submits ordinary `TranslationTask` requests. Shared host
+`live_sessions` owns readiness, input leases and cancellation. Requests cannot take
 over an input used by an active, paused or pending task. Cancellation keeps the
 lease until workers finish. Disconnect, disable or a required input turning off
 ends the owned task; stale traffic cannot restart it.
@@ -64,8 +64,8 @@ Native text accepts previews; buffered OSC displays use completed messages.
 Queue time reduces remaining lifetime, and a new snapshot replaces obsolete
 work. Header/footer updates do not restart the board.
 
-Shared formatting belongs to the UI SDK; the host samples system metrics once. Lyrics
-uses one host worker, requested by OSC chatbox outputs. Existing
+Shared formatting belongs to the UI SDK; the host samples system metrics once. The native Lyrics plugin
+observes output requests and publishes synchronized text. Existing
 `vrc_avatar` preferences remain an alias of `avatar`.
 
 [Host architecture](plugin-architecture.md) ·

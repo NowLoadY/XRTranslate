@@ -75,3 +75,5 @@ pub fn compact_speaker_label(speaker_id: &str) -> Option<String> {
         Some(value.to_owned())
     }
 }
+
+pub mod screen_text;

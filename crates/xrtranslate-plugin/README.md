@@ -54,8 +54,8 @@ newline-delimited JSON over persistent stdin/stdout pipes. No Python is required
 
 `Context::client()` supplies a cloneable asynchronous client for UI and workers.
 Poll requests on the event thread; `wait()` is for workers only. Dropping an
-unfinished request cancels it. Worker requests and replies progress independently
-of the UI event loop. An implementation using `Context::call` receives
+unfinished request cancels it, including calls still queued for delivery. Worker
+requests and replies progress independently of the UI event loop. An implementation using `Context::call` receives
 results in `reply` and handles cancellation in `cancel`.
 
 Messages are ordinary JSON objects with a `type` field:
@@ -106,12 +106,17 @@ The plugin renders its existing page with the same components and handlers. The
 host forwards input and paints the resulting meshes and texture updates. The
 same frame includes the UI Director registry, so CLI operations invoke those
 handlers and remain visible on screen. No Rust ABI, pointers or GPU devices cross
-the process boundary. `icon` and `navigation_order` control page navigation.
+the process boundary. `icon` and `navigation_order` control page navigation. Optional
+`navigation_group` places a divider between groups without teaching the host
+plugin names.
 
 Only one frame is in flight per visible page; queued input is retained. Hidden
 pages receive `ui.visibility=false` and keep their background work. Native GPU
 resources use named paint callbacks or host-owned textures, not copied video
-frames. Plugin code must use the shared renderers for these resources.
+frames. Texture deltas use losslessly compressed RGBA instead of pixel-by-pixel
+JSON, preserving their colors, resolution and partial updates. Messages are
+bounded at 32 MiB and decoded textures at 128 MiB per frame. Plugin code must
+use the shared renderers for native GPU resources.
 
 XRTranslate's [client core](../xrtranslate-client-core/README.md) contains its
 existing UI components, language and session types, playback and file helpers.

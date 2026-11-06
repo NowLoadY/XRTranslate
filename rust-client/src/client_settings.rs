@@ -79,10 +79,6 @@ pub struct ClientSettings {
     #[serde(default)]
     pub update_channel: UpdateChannel,
     #[serde(default)]
-    pub game_plugins: crate::plugins::game_plugins::Settings,
-    #[serde(default)]
-    pub avatar_connector: crate::plugins::avatar::connectors::Settings,
-    #[serde(default)]
     pub active_page: Page,
     #[serde(default)]
     pub sidebar_collapsed: bool,
@@ -160,8 +156,6 @@ impl Default for ClientSettings {
             server_url: default_server_url(),
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,
-            game_plugins: Default::default(),
-            avatar_connector: Default::default(),
             active_page: Page::default(),
             sidebar_collapsed: false,
             usage_guidelines_accepted: false,

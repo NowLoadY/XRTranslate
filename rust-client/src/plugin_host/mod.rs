@@ -2,6 +2,7 @@
 mod datagram;
 mod models;
 mod operations;
+mod osc;
 pub(crate) use operations::Call;
 mod playback;
 mod services;
@@ -104,6 +105,7 @@ struct Inference {
 }
 pub(crate) struct Host {
     datagrams: datagram::Outputs,
+    osc: osc::Control,
     bookmarks: Vec<(String, u64, xrtranslate_client_core::bookmarks::Reply)>,
     stopped: Vec<String>,
     visible: Option<String>,
@@ -159,6 +161,7 @@ impl Host {
         );
         let mut host = Self {
             datagrams: Default::default(),
+            osc: Default::default(),
             bookmarks: Vec::new(),
             stopped: Vec::new(),
             visible: None,
@@ -339,6 +342,12 @@ impl Host {
             .get(id)
             .map_or(&Value::Null, |entry| &entry.state)
     }
+    pub fn state_owner(&self, capability: &str) -> Option<&str> {
+        self.installed
+            .iter()
+            .find(|(_, entry)| entry.process.is_some() && !entry.state[capability].is_null())
+            .map(|(id, _)| id.as_str())
+    }
     pub fn states(&self) -> impl Iterator<Item = &Value> {
         self.installed
             .values()
@@ -389,6 +398,7 @@ impl Host {
     }
     fn stop(&mut self, id: &str) {
         self.datagrams.remove(id);
+        self.osc.cancel(id, None);
         self.bookmarks.retain(|(plugin, _, _)| plugin != id);
         self.playback.remove(id);
         self.stopped.push(id.to_owned());
@@ -550,13 +560,12 @@ impl Host {
             .installed
             .iter()
             .filter(|(_, p)| p.settings.enabled && p.manifest.page)
-            .map(|(id, p)| {
-                (
-                    PluginId::parse(id).unwrap(),
-                    p.manifest.title.get(language).into(),
-                    p.manifest.navigation_order,
-                    p.icon.clone(),
-                )
+            .map(|(id, p)| crate::plugins::PluginPage {
+                id: PluginId::parse(id).unwrap(),
+                title: p.manifest.title.get(language).into(),
+                order: p.manifest.navigation_order,
+                group: p.manifest.navigation_group.clone(),
+                icon: p.icon.clone(),
             })
             .collect();
         if self.models.busy() || !self.inference.is_empty() {

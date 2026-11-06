@@ -6928,7 +6928,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",
- "tungstenite 0.30.0",
  "ui-director",
  "unicode-segmentation",
  "uuid",
@@ -6939,7 +6938,6 @@ dependencies = [
  "winres",
  "x11rb",
  "xr-corpus-client",
- "xrt-connector-core",
  "xrtranslate-assets",
  "xrtranslate-client-core",
  "xrtranslate-config",
@@ -10500,6 +10498,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-avatar"
+version = "0.4.0"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tungstenite 0.30.0",
+ "ui-director",
+ "uuid",
+ "xrt-connector-core",
+ "xrtranslate-client-core",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+]
+
+[[package]]
 name = "xrt-bigwalk"
 version = "0.1.0"
 dependencies = [
@@ -10594,6 +10612,16 @@ dependencies = [
  "xrtranslate-plugin",
  "xrtranslate-prompt",
  "xrtranslate-protocol",
+]
+
+[[package]]
+name = "xrt-ocr"
+version = "0.4.0"
+dependencies = [
+ "serde_json",
+ "uuid",
+ "xrtranslate-client-core",
+ "xrtranslate-plugin",
 ]
 
 [[package]]
@@ -10876,8 +10904,10 @@ dependencies = [
 name = "xrtranslate-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "crossbeam-channel",
  "egui",
+ "flate2",
  "log",
  "semver",
  "serde",

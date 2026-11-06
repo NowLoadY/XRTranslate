@@ -1,20 +1,7 @@
 //! Settings for the Game Plugins group and its active game integration.
-use super::avatar::connectors::Connector;
+use crate::avatar::connectors::Connector;
 use crate::i18n::{UiLanguage, tr};
 use eframe::egui;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub(crate) struct Settings {
-    pub enabled: bool,
-}
-
-impl Settings {
-    pub(crate) fn active(self) -> bool {
-        self.enabled && super::PluginId::AVATAR.is_supported()
-    }
-}
 
 pub(crate) fn render_selection(
     ui: &mut egui::Ui,

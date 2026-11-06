@@ -124,3 +124,34 @@ impl Inference {
         });
     }
 }
+
+/// Running means every input is capturing and its inference session is ready.
+/// Terminal states are published only after the task has released its inputs.
+#[derive(Clone, Serialize, Deserialize)]
+pub enum LiveState {
+    Running,
+    Stopped,
+    Failed(String),
+}
+
+pub fn select_text_languages(
+    text: &str,
+    source: &str,
+    target: &str,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    additional_target: Option<&str>,
+    asr_only: bool,
+) -> Result<xrtranslate_engine::language::LanguageSelection, String> {
+    let capabilities = capabilities.for_text();
+    if asr_only {
+        return capabilities.select_with_options(source, target, None, true);
+    }
+    if let Some((source, target)) =
+        xrtranslate_engine::auto_route_language_pair(text, source, target)
+        && let Ok(selection) =
+            capabilities.select_with_options(source, target, additional_target, false)
+    {
+        return Ok(selection);
+    }
+    capabilities.select_with_options(source, target, additional_target, false)
+}

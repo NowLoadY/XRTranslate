@@ -9,7 +9,10 @@ does not depend on `rust-client` or any plugin implementation.
 - `session_coordinator`, `recognition` and `media_import`: typed tasks, ownership,
   language selection, import options and normalized results. The host owns device
   capture, model allocation and task scheduling.
-- `services`: the current host capability snapshot and asynchronous inference.
+- `services`: current host capabilities, text-language routing, inference and live-task status.
+- `osc`: shared transport values and an asynchronous client; caption batches are
+  acknowledged after delivery and dropping an unfinished batch revokes it.
+- `screen_text`: recognized text and presentation state, independent of the consumer.
 - `companion` and `voice_interaction`: shared presentation commands, surface
   status and voice-review state. Output devices keep their own rendering and input.
 - `playback` and `audio_playback`: the existing players. `playback::remote` lets a
@@ -36,3 +39,13 @@ subscribe to `companion.presentation`, `companion.command` and `voice.state`;
 their ordinary `state` event reports `companion::SurfaceStatus` in `companion`
 and `companion::VoiceMode` in `voice`. Input gestures publish `voice.action`.
 The SteamVR plugin demonstrates these contracts without host-side SteamVR logic.
+
+Exclusive live tasks receive `translation.state` only when their inputs are ready
+or completely released. `osc.control` configures a single consumer of the shared
+receiver; its snapshots retain observation time across processes.
+
+A screen-text consumer publishes `screen_text: {revision, view}` in its ordinary
+state. The host supplies the existing region selector and recognizes changed
+pixels, sending `screen.text` observations and `screen.clear` revisions to that
+consumer. It retains model/capture ownership; the consumer owns deduplication,
+translation and presentation. Removing it stops recognition and its tasks.

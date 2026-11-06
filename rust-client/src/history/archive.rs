@@ -101,14 +101,10 @@ pub(crate) struct Subscriber {
     tx: Sender<Command>,
     epoch: Arc<AtomicU64>,
     overflow: Arc<AtomicBool>,
-    included_plugins: &'static [&'static str],
 }
 impl SessionEventSubscriber for Subscriber {
     fn accepts_owner(&self, owner: &TranslationSessionOwner) -> bool {
-        owner.is_host()
-            || owner.plugin().is_some_and(|owner| {
-                owner.records_history() && self.included_plugins.contains(&owner.plugin_id())
-            })
+        owner.is_host() || owner.plugin().is_some_and(|owner| owner.records_history())
     }
     fn on_translation_event(&self, _: &TranslationSessionOwner, event: &TranslationEvent) {
         let epoch = self.epoch.load(Ordering::Acquire);
@@ -156,7 +152,6 @@ mod publication_tests {
             tx,
             epoch: Arc::new(AtomicU64::new(0)),
             overflow: Arc::new(AtomicBool::new(false)),
-            included_plugins: &["media"],
         })];
         let owner = PluginSessionOwner::new("media", "file", "Media", "Media", "Media");
         let mut segment = TranslationSegment {
@@ -236,7 +231,7 @@ pub(crate) struct Archive {
 }
 
 impl Archive {
-    pub fn new(root: &Path, enabled: bool, included_plugins: &'static [&'static str]) -> Self {
+    pub fn new(root: &Path, enabled: bool) -> Self {
         let (tx, commands) = bounded(256);
         let (response, rx) = unbounded();
         let epoch = Arc::new(AtomicU64::new(u64::from(enabled)));
@@ -244,7 +239,6 @@ impl Archive {
             tx,
             epoch: epoch.clone(),
             overflow: Arc::new(AtomicBool::new(false)),
-            included_plugins,
         };
         let path = root.join("runtime/translation-history.sqlite3");
         let vocabulary_revision = vocabulary_revision();

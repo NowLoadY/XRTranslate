@@ -1,19 +1,19 @@
 use super::components::ShowcaseSlide;
 use eframe::egui;
 
-pub(crate) fn welcome() -> Vec<ShowcaseSlide> {
+pub fn welcome() -> Vec<ShowcaseSlide> {
     let mut slides = vec![
         ShowcaseSlide {
             title: "VRChat",
             description: "Show your translations above your avatar.",
-            image: egui::include_image!("../../../assets/showcase-vrchat.webp"),
+            image: egui::include_image!("../../../../assets/showcase-vrchat.webp"),
             detail: None,
             url: None,
         },
         ShowcaseSlide {
             title: "Big Walk",
             description: "Translate your speech into Big Walk chat.",
-            image: egui::include_image!("../../../assets/showcase-bigwalk.webp"),
+            image: egui::include_image!("../../../../assets/showcase-bigwalk.webp"),
             detail: None,
             url: None,
         },
@@ -23,21 +23,21 @@ pub(crate) fn welcome() -> Vec<ShowcaseSlide> {
         ShowcaseSlide {
             title: "Live translation",
             description: "Translate microphone and desktop audio in real time.",
-            image: egui::include_image!("../../../assets/showcase-translation.webp"),
+            image: egui::include_image!("../../../../assets/showcase-translation.webp"),
             detail: None,
             url: None,
         },
         ShowcaseSlide {
             title: "Media subtitles",
             description: "Create and translate subtitles for audio and video.",
-            image: egui::include_image!("../../../assets/showcase-media.webp"),
+            image: egui::include_image!("../../../../assets/showcase-media.webp"),
             detail: None,
             url: None,
         },
         ShowcaseSlide {
             title: "Translation styles",
             description: "Choose how your translations sound.",
-            image: egui::include_image!("../../../assets/showcase-styles.webp"),
+            image: egui::include_image!("../../../../assets/showcase-styles.webp"),
             detail: None,
             url: None,
         },
@@ -45,12 +45,12 @@ pub(crate) fn welcome() -> Vec<ShowcaseSlide> {
     slides
 }
 
-pub(crate) fn game_plugins() -> Vec<ShowcaseSlide> {
+pub fn game_plugins() -> Vec<ShowcaseSlide> {
     let mut slides = Vec::from(avatar());
     slides.push(ShowcaseSlide {
         title: "XRT-Avatar-Plugin",
         description: "Translate your speech into Big Walk chat.",
-        image: egui::include_image!("../../../assets/showcase-bigwalk.webp"),
+        image: egui::include_image!("../../../../assets/showcase-bigwalk.webp"),
         detail: Some("Big Walk"),
         url: Some("https://github.com/NowLoadY/XRT-Avatar-Plugin"),
     });
@@ -61,23 +61,23 @@ fn avatar() -> [ShowcaseSlide; 5] {
     [
         (
             "VRChat",
-            egui::include_image!("../../../assets/avatar-plugin-preview.jpg"),
+            egui::include_image!("../../../../assets/avatar-plugin-preview.jpg"),
         ),
         (
             "ChilloutVR",
-            egui::include_image!("../../../assets/avatar-plugin-chilloutvr.webp"),
+            egui::include_image!("../../../../assets/avatar-plugin-chilloutvr.webp"),
         ),
         (
             "Overte",
-            egui::include_image!("../../../assets/avatar-plugin-overte.webp"),
+            egui::include_image!("../../../../assets/avatar-plugin-overte.webp"),
         ),
         (
             "Resonite",
-            egui::include_image!("../../../assets/avatar-plugin-resonite.webp"),
+            egui::include_image!("../../../../assets/avatar-plugin-resonite.webp"),
         ),
         (
             "Second Life",
-            egui::include_image!("../../../assets/avatar-plugin-secondlife.webp"),
+            egui::include_image!("../../../../assets/avatar-plugin-secondlife.webp"),
         ),
     ]
     .map(|(game, image)| ShowcaseSlide {

@@ -17,12 +17,7 @@ pub struct OverlayEntry {
     pub vad_active: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct OcrOverlayState {
-    pub source: String,
-    pub status: Option<String>,
-    pub busy: bool,
-}
+pub use xrtranslate_client_core::screen_text::ScreenTextState as OcrOverlayState;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuickTranslationState {

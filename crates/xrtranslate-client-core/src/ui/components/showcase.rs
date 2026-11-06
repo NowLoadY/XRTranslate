@@ -74,7 +74,7 @@ impl ShowcaseImages {
     }
 }
 
-pub(crate) struct ShowcaseSlide {
+pub struct ShowcaseSlide {
     pub title: &'static str,
     pub description: &'static str,
     pub image: egui::ImageSource<'static>,
@@ -82,7 +82,7 @@ pub(crate) struct ShowcaseSlide {
     pub url: Option<&'static str>,
 }
 
-pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[ShowcaseSlide]) {
+pub fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[ShowcaseSlide]) {
     if slides.is_empty() {
         return;
     }
@@ -200,9 +200,9 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                     ui,
                     tr(language, if preview.paused { "Play" } else { "Pause" }),
                     if preview.paused {
-                        egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/play.svg")
+                        egui::include_image!("../../../resources/icons/play.svg")
                     } else {
-                        egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/pause.svg")
+                        egui::include_image!("../../../resources/icons/pause.svg")
                     },
                 );
                 focused |= playback.has_focus();
@@ -213,7 +213,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                 let next = flat_control(
                     ui,
                     tr(language, "Next"),
-                    egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/chevron-right.svg"),
+                    egui::include_image!("../../../resources/icons/chevron-right.svg"),
                 );
                 focused |= next.has_focus();
                 if next.clicked() {
@@ -222,7 +222,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                 let previous = flat_control(
                     ui,
                     tr(language, "Previous"),
-                    egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg"),
+                    egui::include_image!("../../../resources/icons/chevron-left.svg"),
                 );
                 focused |= previous.has_focus();
                 if previous.clicked() {
