@@ -26,6 +26,9 @@ dependencies already cached by Cargo. Use `--locked` to reject lockfile changes
 in reproducible builds. Install Rust and the platform's usual
 native build prerequisites before building.
 
+For host development, `--sdk` also accepts the host source checkout directly.
+Use its built `target/release/xrt-plugin` tool; no SDK export is needed.
+
 Copy the completed package into the application's `plugins` directory to install
 it. The application does not compile plugins during startup.
 

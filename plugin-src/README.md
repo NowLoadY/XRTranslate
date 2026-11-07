@@ -22,13 +22,18 @@ an optional build cache. On Linux, use `bash build.sh /opt/xrtranslate-sdk
 ~/packages/xrtranslate-plugins` instead. The build tool in the SDK also supports
 building a single plugin directory directly.
 
+The SDK path may also be a host source checkout with its `xrt-plugin` tool already
+built. Linux `scripts/run-linux.sh` uses this to update public plugins automatically
+before launching, without exporting a separate SDK copy.
+
 Copy completed plugin directories into the application's `plugins/` folder.
 For a distributable application package, pass their parent directory to
 `build_release.ps1 -PluginsDirectory`, or set `XRTRANSLATE_PLUGINS_DIR` when
 running `scripts/build-linux-release.sh`. These inputs are ready-to-use plugin
-packages, not plugin source directories. Omitting them builds the host alone.
+packages, not plugin source directories. The Linux release script builds the
+public plugins automatically when no package directory is supplied.
 
-Updating the host does not rebuild plugins. Rebuild a plugin when changing that
+Independent host builds do not rebuild plugins. Rebuild a plugin when changing that
 plugin, or when deliberately adopting an incompatible SDK interface. New optional
 host features do not require existing plugins to adopt them.
 

@@ -33,6 +33,12 @@ cargo "${cargo_args[@]}"
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
+PLUGIN_DIR="${XRTRANSLATE_PLUGINS_DIR:-${ROOT_DIR}/target/release-plugins}"
+if [[ -z "${XRTRANSLATE_PLUGINS_DIR:-}" ]]; then
+  bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${PLUGIN_DIR}" \
+    --target-dir "${ROOT_DIR}/target" --locked
+fi
+
 RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
 mkdir -p "${RESOURCE_DIR}"
 # Use distributable defaults; private configuration and installed large models stay local.
@@ -52,12 +58,14 @@ tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
 ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
 
 plugin_args=()
-if [[ -n "${XRTRANSLATE_PLUGINS_DIR:-}" ]]; then
-  [[ -d "${XRTRANSLATE_PLUGINS_DIR}" ]] || { printf '%s\n' 'Plugin package directory does not exist.' >&2; exit 2; }
-  for directory in "${XRTRANSLATE_PLUGINS_DIR}"/*; do
+if [[ -d "${PLUGIN_DIR}" ]]; then
+  for directory in "${PLUGIN_DIR}"/*; do
     [[ -f "${directory}/plugin.json" ]] || continue
     plugin_args+=(--plugin-directory "${directory}")
   done
+else
+  printf '%s\n' 'Plugin package directory does not exist.' >&2
+  exit 2
 fi
 
 target/release/xrtranslate-packager "${plugin_args[@]}" \

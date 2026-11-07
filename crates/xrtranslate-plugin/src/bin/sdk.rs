@@ -54,11 +54,7 @@ fn local_dependencies(
     Ok(())
 }
 
-fn export(root: &Path, destination: &Path) -> Result<()> {
-    let root = root.canonicalize()?;
-    if destination.exists() {
-        return Err("SDK output already exists; choose a new directory".into());
-    }
+fn source_packages(root: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut packages = BTreeSet::new();
     for name in [
         "xrtranslate-plugin",
@@ -73,6 +69,15 @@ fn export(root: &Path, destination: &Path) -> Result<()> {
             &mut packages,
         )?;
     }
+    Ok(packages)
+}
+
+fn export(root: &Path, destination: &Path) -> Result<()> {
+    let root = root.canonicalize()?;
+    if destination.exists() {
+        return Err("SDK output already exists; choose a new directory".into());
+    }
+    let packages = source_packages(&root)?;
     fs::create_dir_all(destination)?;
     for package in &packages {
         let relative = package.strip_prefix(&root)?;
@@ -180,7 +185,21 @@ fn build(arguments: &[OsString]) -> Result<()> {
     }
     let sdk = sdk.ok_or("Pass --sdk <SDK directory>")?.canonicalize()?;
     let output = output.ok_or("Pass --output <plugin package directory>")?;
-    let info: Value = serde_json::from_slice(&fs::read(sdk.join("sdk.json"))?)?;
+    let packages: Vec<PathBuf> = if sdk.join("sdk.json").is_file() {
+        let info: Value = serde_json::from_slice(&fs::read(sdk.join("sdk.json"))?)?;
+        info["packages"]
+            .as_array()
+            .ok_or("Invalid SDK package list")?
+            .iter()
+            .map(|path| {
+                path.as_str()
+                    .map(|path| sdk.join(path))
+                    .ok_or("Invalid SDK package path")
+            })
+            .collect::<std::result::Result<_, _>>()?
+    } else {
+        source_packages(&sdk)?.into_iter().collect()
+    };
     let plugin: xrtranslate_plugin::Manifest =
         serde_json::from_slice(&fs::read(source.join("plugin.json"))?)?;
     plugin.validate()?;
@@ -213,11 +232,7 @@ fn build(arguments: &[OsString]) -> Result<()> {
     if let Some(features) = features {
         command.arg("--features").arg(features);
     }
-    for relative in info["packages"]
-        .as_array()
-        .ok_or("Invalid SDK package list")?
-    {
-        let directory = sdk.join(relative.as_str().ok_or("Invalid SDK package path")?);
+    for directory in packages {
         let dependency = manifest(&directory.join("Cargo.toml"))?;
         let name = dependency["package"]["name"]
             .as_str()
@@ -239,7 +254,15 @@ fn build(arguments: &[OsString]) -> Result<()> {
         .unwrap_or(&source);
     let lock = workspace.join("Cargo.lock");
     if !lock.exists() {
-        fs::copy(sdk.join("SDK.lock"), &lock)?;
+        let sdk_lock = sdk.join("SDK.lock");
+        fs::copy(
+            if sdk_lock.is_file() {
+                sdk_lock
+            } else {
+                sdk.join("Cargo.lock")
+            },
+            &lock,
+        )?;
     }
     let mut child = command
         .stdout(Stdio::piped())

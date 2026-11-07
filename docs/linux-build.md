@@ -58,9 +58,10 @@ Cargo's build output and the same `runtime/` data without creating a release
 directory. Set `WINIT_UNIX_BACKEND=x11` or `wayland` if the window backend
 needs to be selected explicitly.
 
-The run script builds only the application and services. Install plugin packages
-in `plugins/` separately; the [plugin build guide](../plugin-src/README.md) covers
-building them with an SDK outside the host repository.
+The run script also builds and updates the public plugins in `plugin-src/` before
+launching, using the current source SDK and shared build cache. Plugin data is
+preserved; separately installed private and third-party plugins are untouched.
+The [plugin build guide](../plugin-src/README.md) covers independent builds.
 
 GTCRN speech denoising weights and their license are embedded in the client.
 Model discovery prepares them offline in the configured model directory, just
@@ -84,8 +85,9 @@ the linker files along with the MPV runtime.
 The output directory must not already exist. Set `XRTRANSLATE_RELEASE_DIR` to
 another path when keeping an earlier package and its runtime data.
 
-To include existing plugin packages, set `XRTRANSLATE_PLUGINS_DIR` to the parent
-directory containing them. Without it, this script packages the host alone.
+The release script builds and includes the public Linux plugins automatically.
+To use an existing set of plugin packages instead, set `XRTRANSLATE_PLUGINS_DIR`
+to their parent directory. An empty directory produces a host-only package.
 
 The release script prepares the three basic ONNX models and CPU ONNX core
 through the shared verified resource installer. It packages those fixed

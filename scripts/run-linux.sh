@@ -22,5 +22,7 @@ cargo "${cargo_args[@]}"
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
+bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${ROOT_DIR}/plugins" \
+  --target-dir "${ROOT_DIR}/target" --locked
 
 exec "${ROOT_DIR}/target/release/rust-client" "$@"
