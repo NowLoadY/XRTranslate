@@ -24,6 +24,7 @@ reqwest = { version = "0.13.4", features = ["json", "multipart"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.10.9"
 sherpa-onnx = { version = "1.13.8", optional = true }
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }

@@ -159,25 +159,6 @@ async fn execute(args: &Arguments, options: &Options, report: &mut Value) -> Res
     if !tts.supports_language(target) {
         return Err(format!("TTS does not support {target}"));
     }
-    if let Some(path) = &options.settings.reference_wav {
-        tts.register_voice(
-            &options.settings.voice,
-            std::fs::read(path).map_err(|e| e.to_string())?,
-            options.settings.reference_text.as_deref().unwrap_or(""),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    } else {
-        restore_persisted_voice_clones(
-            &RuntimeLayout::for_config(&root, &config.model_manager).voice_clones_directory(),
-            &tts,
-        )
-        .await;
-    }
-    if !tts.has_voice(&options.settings.voice).await {
-        return Err("voice unavailable; supply --reference-wav and its --reference-text, or an existing --voice".into());
-    }
-
     report["stage"] = json!("translation");
     let start = Instant::now();
     let translated = translate(&inference, &options.text, source, target).await?;
@@ -187,19 +168,47 @@ async fn execute(args: &Arguments, options: &Options, report: &mut Value) -> Res
         json!({"text": translated.translated_text, "prompt_trace": translated.prompt_trace}),
     );
 
+    let voice = if let Some(path) = &options.settings.reference_wav {
+        tts.register_voice(
+            &options.settings.voice,
+            std::fs::read(path).map_err(|e| e.to_string())?,
+            options.settings.reference_text.as_deref().unwrap_or(""),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        restore_persisted_voice_clones(
+            &RuntimeLayout::for_config(&root, &config.model_manager).voice_clones_directory(),
+            &tts,
+        )
+        .await;
+        if !tts.has_voice(&options.settings.voice).await {
+            return Err("voice unavailable; supply --reference-wav and its --reference-text, or an existing --voice".into());
+        }
+        options.settings.voice.clone()
+    };
+
     report["stage"] = json!("tts");
     let start = Instant::now();
-    let mut samples = Vec::new();
-    for chunk in crate::tts_session::split_text(
-        &translated.translated_text,
-        crate::tts_session::max_input_chars(&config),
-    ) {
-        let audio = tts
-            .synthesize(&chunk, &options.settings.voice, target)
-            .await
-            .map_err(|e| e.to_string())?;
-        samples.extend(audio.resample_pcm16(16_000).map_err(|e| e.to_string())?);
+    let output = async {
+        let mut samples = Vec::new();
+        for chunk in crate::tts_session::split_text(
+            &translated.translated_text,
+            crate::tts_session::max_input_chars(&config),
+        ) {
+            let audio = tts
+                .synthesize(&chunk, &voice, target)
+                .await
+                .map_err(|e| e.to_string())?;
+            samples.extend(audio.resample_pcm16(16_000).map_err(|e| e.to_string())?);
+        }
+        Ok::<_, String>(samples)
     }
+    .await;
+    if !tts.is_local() && options.settings.reference_wav.is_some() {
+        tts.delete_reference_voice(&voice, target).await;
+    }
+    let samples = output?;
     if samples.is_empty() || samples.iter().all(|s| *s == 0) {
         return Err("TTS produced empty or silent audio".into());
     }

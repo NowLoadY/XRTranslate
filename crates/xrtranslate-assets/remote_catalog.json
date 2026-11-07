@@ -737,7 +737,7 @@
       "tts": {
         "sample_rate": 48000,
         "max_input_chars": 1000,
-        "voice_cloning": false,
+        "voice_cloning": true,
         "reference_audio": true,
         "voices": ["longanlingxin_v3.1", "xunanchuan_v3.1", "longanhuan_v3.1", "longanfengyue_v3.1"],
         "voice_labels": {
@@ -775,7 +775,7 @@
       "tts": {
         "sample_rate": 48000,
         "max_input_chars": 1000,
-        "voice_cloning": false,
+        "voice_cloning": true,
         "voices": [
           "longanhuan_v3.1",
           "longanlingxin_v3.1",

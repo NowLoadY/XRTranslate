@@ -116,8 +116,7 @@ async fn synthesize_wav(
             .voice
             .clone()
             .unwrap_or_else(|| speech.voices.status().selection);
-        speech.voices.register_selection(&voice).await?;
-        super::voices::voice_name(&voice)
+        speech.voices.register_selection(&voice).await?
     };
     let output = synthesize_voice_wav(
         adapter,

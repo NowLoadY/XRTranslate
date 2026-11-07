@@ -1,8 +1,23 @@
-//! Short-lived provider voices for a single reference-based synthesis.
+//! Provider voice enrollment; the caller owns persistence and removal.
 use super::*;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
+    /// Isolate saved voice IDs by service, model and credentials without storing secrets.
+    pub fn voice_scope(&self) -> String {
+        let mut hash = Sha256::new();
+        for value in [
+            self.endpoint.as_str(),
+            self.model.model.as_str(),
+            self.api_key.as_str(),
+        ] {
+            hash.update(value.as_bytes());
+            hash.update([0]);
+        }
+        format!("{:x}", hash.finalize())
+    }
+
     pub async fn create_reference_voice(&self, wav: &[u8]) -> Result<String, InferenceError> {
         if !self.capabilities().reference_audio
             || self.model.connector != RemoteConnector::DashscopeSpeech
@@ -22,10 +37,12 @@ impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
                 message: "Use 5–60 seconds of clear original speech for voice cloning.".into(),
             });
         }
-        let created = self.voice_request(json!({
-            "action": "create_voice", "target_model": self.model.model,
-            "prefix": "xrtmedia", "audio": format!("data:audio/wav;base64,{}", STANDARD.encode(wav))
-        })).await?;
+        let created = self
+            .voice_request(json!({
+                "action": "create_voice", "target_model": self.model.model,
+                "prefix": "xrt", "audio": format!("data:audio/wav;base64,{}", STANDARD.encode(wav))
+            }))
+            .await?;
         let voice = created["output"]["voice_id"]
             .as_str()
             .filter(|id| !id.is_empty())

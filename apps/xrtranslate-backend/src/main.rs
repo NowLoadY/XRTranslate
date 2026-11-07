@@ -810,6 +810,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
     let mut queued_tts_jobs = VecDeque::new();
     let mut pending_drain = None;
     let mut clone_capture = VoiceCloneCapture::from_config(&state.config);
+    let (clone_sender, mut clone_results) = mpsc::channel::<Result<(), String>>(1);
+    let mut clone_registering = false;
     let tts_max_input_chars = tts_max_input_chars(&state.config);
     let mut audio_source = xrtranslate_protocol::AudioSource::Microphone;
 
@@ -836,6 +838,22 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
             job_sender.take();
         }
         tokio::select! {
+            Some(registration) = clone_results.recv(), if clone_registering => {
+                clone_registering = false;
+                clone_capture.ready = voices.is_some_and(|voices| voices.status().personal_available);
+                let (phase, message) = match registration {
+                    Ok(()) => {
+                        info!(%session_id, voice = MICROPHONE_VOICE_NAME, "TTS voice clone registered");
+                        (VoiceClonePhase::Ready, None)
+                    }
+                    Err(message) => (VoiceClonePhase::Failed, Some(message)),
+                };
+                if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(VoiceCloneState {
+                    state: phase, collected_seconds: 0.0,
+                    required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
+                    message,
+                })).await.is_err() { break; }
+            }
             changed = prompt_trace_receiver.changed(), if prompt_trace_open => {
                 if changed.is_err() {
                     prompt_trace_open = false;
@@ -908,27 +926,21 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                         let registering = VoiceCloneState { state: VoiceClonePhase::Registering, collected_seconds: collected, required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32, message: None };
                         if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(registering)).await.is_err() { break; }
                         let pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect::<Vec<_>>();
-                        let registration = match pcm16_mono_16khz_to_wav(&pcm) {
-                            Ok(wav) => match voices { Some(voices) => voices.register_personal(wav, &transcript).await, None => Err("Voice cloning requires an audio session".into()) },
-                            Err(error) => Err(error.to_string()),
-                        };
-                        if registration.is_ok() {
-                            clone_capture.ready = true;
-                        }
-                        let state = match registration {
-                            Ok(()) => {
-                                info!(
-                                    %session_id,
-                                    voice = MICROPHONE_VOICE_NAME,
-                                    collected_seconds = collected,
-                                    "TTS voice clone registered"
-                                );
-                                VoiceCloneState { state: VoiceClonePhase::Ready, collected_seconds: 0.0, required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32, message: None }
-                            },
-                            Err(message) => VoiceCloneState { state: VoiceClonePhase::Failed, collected_seconds: 0.0, required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32, message: Some(message) },
-                        };
+                        clone_registering = true;
                         clone_capture.clear_capture();
-                        if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(state)).await.is_err() { break; }
+                        let voices = voices.cloned();
+                        let clone_sender = clone_sender.clone();
+                        // Enrollment may take seconds; keep live recognition and translation running.
+                        tokio::spawn(async move {
+                            let registration = match pcm16_mono_16khz_to_wav(&pcm) {
+                                Ok(wav) => match voices {
+                                    Some(voices) => voices.register_personal(wav, &transcript).await,
+                                    None => Err("Voice cloning requires an audio session".into()),
+                                },
+                                Err(error) => Err(error.to_string()),
+                            };
+                            let _ = clone_sender.send(registration).await;
+                        });
                     }
                 }
                 let (active_voice, voice_ready) = voices.map_or((String::new(), false), |voices| voices.active_voice());
@@ -1195,7 +1207,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             }
                             workload = configured_workload;
                             audio_source = configured_audio_source;
-                            clone_capture.ready = voices.map_or((String::new(), false), |voices| voices.active_voice()).1;
+                            clone_capture.ready = voices.is_some_and(|voices| voices.status().personal_available);
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
                             queued_inference_jobs.clear();
@@ -1362,7 +1374,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                 if send_error(&outbound_sender, "The selected TTS connector supports preset voices only.".into()).await.is_err() { break; }
                                 continue;
                             }
-                            if audio_source == AudioSource::Microphone {
+                            if audio_source == AudioSource::Microphone && !clone_registering {
                                 clone_capture.arm();
                                 info!(
                                     %session_id,

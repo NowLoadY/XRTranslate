@@ -10668,6 +10668,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "sherpa-onnx",
  "tokenizers 0.22.2",
  "tokio",

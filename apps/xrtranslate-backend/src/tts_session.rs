@@ -47,15 +47,26 @@ impl VoiceCloneCapture {
                 .and_then(serde_json::Value::as_f64)
                 .unwrap_or(fallback)
         };
+        let minimum = if config.remote_tts().ok().flatten().is_some_and(|remote| {
+            remote
+                .model
+                .tts
+                .as_ref()
+                .is_some_and(|tts| tts.voice_cloning)
+        }) {
+            5.0
+        } else {
+            0.5
+        };
+        let minimum = seconds("clone_min_seconds", minimum).clamp(minimum, 60.0);
+        let maximum = seconds("clone_max_seconds", 30.0).clamp(minimum, 60.0);
         Self {
             armed: false,
             ready: false,
             samples: Vec::new(),
             transcript: Vec::new(),
-            minimum_samples: (seconds("clone_min_seconds", 0.5) * f64::from(SAMPLE_RATE_HZ))
-                as usize,
-            maximum_samples: (seconds("clone_max_seconds", 30.0) * f64::from(SAMPLE_RATE_HZ))
-                as usize,
+            minimum_samples: (minimum * f64::from(SAMPLE_RATE_HZ)) as usize,
+            maximum_samples: (maximum * f64::from(SAMPLE_RATE_HZ)) as usize,
         }
     }
 
@@ -204,4 +215,22 @@ pub(crate) fn split_text(text: &str, max_chars: usize) -> Vec<String> {
         remaining = remaining[end..].trim_start();
     }
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn online_clone_collects_enough_speech_even_with_old_short_settings() {
+        let config = AppConfig::from_value(serde_json::json!({
+            "tts":{"provider":"qwen","providers":{"qwen":{
+                "model":"qwen-audio-3.1-tts-plus","api_key":"test-only","workspace_id":"test-workspace",
+                "clone_min_seconds":0.5,"clone_max_seconds":1.0
+            }}}
+        }))
+        .unwrap();
+        let capture = VoiceCloneCapture::from_config(&config);
+        assert_eq!(capture.minimum_samples, 5 * SAMPLE_RATE_HZ as usize);
+        assert!(capture.maximum_samples >= capture.minimum_samples);
+    }
 }

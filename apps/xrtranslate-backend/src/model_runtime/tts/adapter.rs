@@ -27,7 +27,7 @@ struct TtsModel {
 }
 
 impl TtsAdapter {
-    pub(super) fn remote(adapter: RemoteTtsAdapter, supported_languages: Vec<String>) -> Self {
+    pub(crate) fn remote(adapter: RemoteTtsAdapter, supported_languages: Vec<String>) -> Self {
         Self {
             models: vec![TtsModel {
                 backend: TtsBackend::Remote(adapter),
@@ -51,6 +51,13 @@ impl TtsAdapter {
         })
     }
 
+    pub(crate) fn voice_scope(&self) -> Option<String> {
+        self.models.iter().find_map(|model| match &model.backend {
+            TtsBackend::Remote(adapter) => Some(adapter.voice_scope()),
+            _ => None,
+        })
+    }
+
     pub(crate) async fn create_reference_voice(
         &self,
         wav: &[u8],
@@ -59,11 +66,9 @@ impl TtsAdapter {
         if let Some(TtsModel {
             backend: TtsBackend::Remote(adapter),
             ..
-        }) = self
-            .models
-            .iter()
-            .find(|model| language_is_supported(&model.supported_languages, language))
-        {
+        }) = self.models.iter().find(|model| {
+            language.is_empty() || language_is_supported(&model.supported_languages, language)
+        }) {
             return adapter.create_reference_voice(wav).await;
         }
         Err(InferenceError::InvalidConfiguration {
@@ -76,11 +81,9 @@ impl TtsAdapter {
         if let Some(TtsModel {
             backend: TtsBackend::Remote(adapter),
             ..
-        }) = self
-            .models
-            .iter()
-            .find(|model| language_is_supported(&model.supported_languages, language))
-        {
+        }) = self.models.iter().find(|model| {
+            language.is_empty() || language_is_supported(&model.supported_languages, language)
+        }) {
             adapter.delete_reference_voice(voice).await;
         }
     }
@@ -190,14 +193,11 @@ impl TtsAdapter {
         name: &str,
         reference_wav: Vec<u8>,
         transcript: &str,
-    ) -> Result<(), InferenceError> {
+    ) -> Result<String, InferenceError> {
         for model in self.models.iter() {
             match &model.backend {
-                TtsBackend::Remote(_) => {
-                    return Err(InferenceError::InvalidConfiguration {
-                        field: "tts.voice",
-                        message: "this connector supports preset voices only".into(),
-                    });
+                TtsBackend::Remote(adapter) => {
+                    return adapter.create_reference_voice(&reference_wav).await;
                 }
                 TtsBackend::OpenVoice(adapter) => {
                     adapter
@@ -211,7 +211,7 @@ impl TtsAdapter {
                 }
             }
         }
-        Ok(())
+        Ok(name.to_owned())
     }
 
     pub(crate) async fn synthesize(

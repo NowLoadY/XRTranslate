@@ -89,13 +89,12 @@ pub fn render(
             "Configure a TTS provider on the Welcome page first.",
         ));
     }
-    if !controller.status.supports_cloning {
-        ui.add_space(8.0);
-        components::input_field(
-            ui,
-            &mut controller.catalog.query,
-            tr(language, "Search voices"),
-        );
+    components::input_field(
+        ui,
+        &mut controller.catalog.query,
+        tr(language, "Search voices"),
+    );
+    if !controller.status.preset_voices.is_empty() {
         let mut selected = None;
         let query = controller.catalog.query.trim().to_lowercase();
         let voices: Vec<_> = controller
@@ -177,15 +176,9 @@ pub fn render(
         if let Some(voice) = selected {
             controller.select_preset(voice);
         }
-    } else {
-        ui.horizontal(|ui| {
-            components::input_field(
-                ui,
-                &mut controller.catalog.query,
-                tr(language, "Search voices"),
-            );
-            ui.weak(controller.catalog.cards.len().to_string());
-        });
+    }
+    if controller.status.supports_cloning {
+        ui.add_space(8.0);
         controller.catalog.filter_if_changed(language);
         let mut selected_id = None;
         selection_card::grid(
