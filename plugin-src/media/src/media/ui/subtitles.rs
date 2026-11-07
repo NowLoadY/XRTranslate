@@ -326,19 +326,28 @@ pub(super) fn render_subtitles_card(
                         .as_ref()
                         .is_some_and(|text| !text.trim().is_empty());
                     if ui
-                        .add_enabled_ui(can_generate && !occupied && has_translation, |ui| {
+                        .add_enabled_ui(can_generate && has_translation, |ui| {
                             components::icon_button(
                                 ui,
-                                tr(language, "Generate speech for this range"),
+                                tr(
+                                    language,
+                                    if task
+                                        .is_some_and(|task| task.speech_reference_range.is_some())
+                                    {
+                                        "Clone selected voice for this subtitle"
+                                    } else if occupied {
+                                        "Regenerate speech for this range"
+                                    } else {
+                                        "Generate speech for this range"
+                                    },
+                                ),
                                 xrtranslate_client_core::ui::icon!("music.svg"),
                             )
                         })
                         .inner
                         .on_disabled_hover_text(tr(
                             language,
-                            if occupied {
-                                "This time range already contains speech."
-                            } else if !has_translation {
+                            if !has_translation {
                                 "Translate this subtitle first."
                             } else {
                                 "Finish the current task or edit first."

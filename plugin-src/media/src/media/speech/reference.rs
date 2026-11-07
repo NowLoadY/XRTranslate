@@ -45,7 +45,7 @@ impl References {
         }
         // A known speaker keeps one voice. With no speaker labels, a fresh long
         // passage can update the voice, while short replies retain the last success.
-        if (cue.speaker_name.is_some() || cue.end_ms - cue.start_ms < 5000)
+        if (speaker(cue).is_some() || cue.end_ms - cue.start_ms < 5000)
             && let Some(previous) = self.previous(task, index)
         {
             return Ok(previous);
@@ -54,7 +54,7 @@ impl References {
             && let Ok(audio) = audio(task, cue.start_ms, cue.end_ms)
         {
             return Ok(Prepared {
-                id: cue.speaker_name.as_ref().map_or_else(
+                id: speaker(cue).map_or_else(
                     || {
                         format!(
                             "passage:{}:{}",
@@ -69,7 +69,7 @@ impl References {
         }
         for [start, end] in candidates(task.subtitles.cues(), index) {
             if let Ok(audio) = audio(task, start, end) {
-                let id = cue.speaker_name.as_ref().map_or_else(
+                let id = speaker(cue).map_or_else(
                     || format!("passage:{start}:{end}"),
                     |speaker| format!("speaker:{speaker}"),
                 );
@@ -80,15 +80,22 @@ impl References {
     }
 }
 
+fn speaker(cue: &SubtitleCue) -> Option<&str> {
+    cue.speaker_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && *name != "speaker-unknown")
+}
+
 fn unlabeled_start(cues: &[SubtitleCue], index: usize) -> usize {
     cues[..index]
         .iter()
-        .rposition(|cue| cue.speaker_name.is_some())
+        .rposition(|cue| speaker(cue).is_some())
         .map_or(0, |previous| previous + 1)
 }
 
 fn speaker_key(cues: &[SubtitleCue], index: usize) -> String {
-    cues[index].speaker_name.as_ref().map_or_else(
+    speaker(&cues[index]).map_or_else(
         || format!("unlabeled:{}", unlabeled_start(cues, index)),
         |speaker| format!("speaker:{speaker}"),
     )
@@ -96,14 +103,14 @@ fn speaker_key(cues: &[SubtitleCue], index: usize) -> String {
 
 fn candidates(cues: &[SubtitleCue], index: usize) -> Vec<[i64; 2]> {
     let cue = &cues[index];
-    let same = |other: &SubtitleCue| other.speaker_name == cue.speaker_name;
+    let same = |other: &SubtitleCue| speaker(other) == speaker(cue);
     let mut spans = Vec::new();
-    let (lower, upper) = if cue.speaker_name.is_none() {
+    let (lower, upper) = if speaker(cue).is_none() {
         (
             unlabeled_start(cues, index),
             cues[index..]
                 .iter()
-                .position(|cue| cue.speaker_name.is_some())
+                .position(|cue| speaker(cue).is_some())
                 .map_or(cues.len(), |next| index + next),
         )
     } else {
@@ -256,6 +263,56 @@ mod tests {
         assert!(candidates(&unknown, 0).is_empty());
         let gap = vec![cue(0, 2000, None), cue(6000, 9000, None)];
         assert!(candidates(&gap, 0).is_empty());
+    }
+
+    #[test]
+    fn unknown_speakers_refresh_long_passages_and_reuse_short_replies() {
+        let dir = tempfile::tempdir().unwrap();
+        let vocals = dir.path().join("vocals.wav");
+        let mut writer = hound::WavWriter::create(&vocals, SPEC).unwrap();
+        for frame in 0..SAMPLE_RATE * 11 {
+            writer
+                .write_sample(if frame < SAMPLE_RATE * 5 {
+                    1000_i16
+                } else {
+                    2000_i16
+                })
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+        let mut task = MediaTask::new(
+            "voices".into(),
+            crate::media::backend::MediaSource::LocalFile("source.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            crate::media::task::SubtitleMode::None,
+            Default::default(),
+        );
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+            vocals,
+            background: dir.path().join("unused.wav"),
+        });
+        for (start, end) in [(0, 5000), (5000, 10000), (10000, 11000)] {
+            task.subtitles.add_cue_with_metadata(
+                cue(start, end, Some("speaker-unknown")),
+                Default::default(),
+            );
+        }
+        let mut references = References::default();
+        let first = references.choose(&task, 0).unwrap();
+        references.remember(&task, 0, first.clone());
+        let second = references.choose(&task, 1).unwrap();
+        assert_ne!(
+            first.id, second.id,
+            "unknown is not a shared speaker identity"
+        );
+        assert_ne!(first.audio, second.audio);
+        references.remember(&task, 1, second.clone());
+        assert_eq!(references.choose(&task, 2).unwrap().id, second.id);
+        task.speech_reference_range = Some([0, 5000]);
+        let selected = references.choose(&task, 2).unwrap();
+        assert_eq!(selected.id, "selected:0:5000");
+        assert_eq!(selected.audio, first.audio);
     }
 
     #[test]

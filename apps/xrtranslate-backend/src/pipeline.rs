@@ -762,11 +762,11 @@ impl NativePipeline {
             }
             if let EndpointEvent::Finalized(utterance) = event {
                 let speaker_id = if self.speaker_recognition_enabled {
-                    self.streaming_speaker.as_mut().map(|streaming| {
-                        streaming
-                            .finalize_speech()
-                            .unwrap_or_else(|| "speaker-unknown".into())
-                    })
+                    // No streaming assignment (e.g. separated vocals) must leave
+                    // the whole-utterance voiceprint fallback available.
+                    self.streaming_speaker
+                        .as_mut()
+                        .and_then(StreamingSpeakerSegmenter::finalize_speech)
                 } else {
                     None
                 };
@@ -818,11 +818,9 @@ impl NativePipeline {
                 (window.flush(), Some(sequence), None)
             } else {
                 let speaker = if self.speaker_recognition_enabled {
-                    self.streaming_speaker.as_mut().map(|streaming| {
-                        streaming
-                            .finalize_speech()
-                            .unwrap_or_else(|| "speaker-unknown".into())
-                    })
+                    self.streaming_speaker
+                        .as_mut()
+                        .and_then(StreamingSpeakerSegmenter::finalize_speech)
                 } else {
                     None
                 };

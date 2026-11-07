@@ -62,6 +62,15 @@ pub(super) fn render_task_control_card(
                 .is_some_and(|text| !text.trim().is_empty())
         })
         .count();
+    let current_cue = controller
+        .subtitles
+        .active_cue_at(controller.get_time_ms())
+        .filter(|cue| {
+            cue.translated_text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+        })
+        .map(|cue| cue.id.clone());
     let Some(task) = controller.store.get_mut(&id) else {
         return MediaAction::None;
     };
@@ -104,6 +113,7 @@ pub(super) fn render_task_control_card(
         .filter(|job| job.task_id == id)
         .map(|job| (job.progress(), job.is_waiting()));
     let mut generate_speech = None;
+    let mut generate_cue_speech = None;
     let mut cancel_speech = false;
     let mut preview_reference = None;
     let card_top = ui.next_widget_position();
@@ -329,7 +339,9 @@ pub(super) fn render_task_control_card(
                                         tr(
                                             language,
                                             if use_source_voice {
-                                                "Generate with selected voice"
+                                                "Regenerate with TTS Center voice"
+                                            } else if task.speech_track.is_some() {
+                                                "Regenerate cloned speech"
                                             } else {
                                                 "Generate cloned speech"
                                             },
@@ -364,6 +376,22 @@ pub(super) fn render_task_control_card(
                     .clicked()
                     {
                         preview_reference = Some([start, end]);
+                    }
+                    if components::secondary_button_enabled(
+                        ui,
+                        tr(language, "Dub current subtitle with this voice"),
+                        current_cue.is_some()
+                            && snapshot.can_clone_speech
+                            && end - start >= 5000
+                            && !task.is_task_running
+                            && !optimizing
+                            && can_edit
+                            && controller.speech_edit.is_none()
+                            && controller.speech_job.is_none(),
+                    )
+                    .clicked()
+                    {
+                        generate_cue_speech = current_cue.clone();
                     }
                     if ui
                         .add_enabled_ui(controller.speech_job.is_none(), |ui| {
@@ -568,6 +596,9 @@ pub(super) fn render_task_control_card(
     }
     if let Some([start, end]) = preview_reference {
         controller.audition_vocals(start, end);
+    }
+    if let Some(cue) = generate_cue_speech {
+        controller.start_cue_speech(cue);
     }
     if pause {
         MediaAction::StopTranslation

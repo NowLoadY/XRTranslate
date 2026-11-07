@@ -37,7 +37,7 @@ pub(super) struct SpeechJob {
     progress: Arc<SpeechProgress>,
     total: usize,
     input_key: u64,
-    replace_track: bool,
+    replace_existing: bool,
     cue_id: Option<String>,
 }
 
@@ -593,19 +593,6 @@ impl MediaController {
             self.error = Some(error);
             return;
         }
-        if let Some(cue) = task
-            .subtitles
-            .cues()
-            .iter()
-            .find(|cue| Some(&cue.id) == cue_id.as_ref())
-            && task
-                .speech_track
-                .as_ref()
-                .is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms))
-        {
-            self.error = Some("This time range already contains speech.".into());
-            return;
-        }
         self.error = None;
         let mut pending = task.clone();
         if cue_id.is_none() {
@@ -615,15 +602,28 @@ impl MediaController {
             // A manually selected reference applies only to this local repair.
             pending.speech_use_source_voice = true;
         }
-        // Keep the old track until the first new clip is saved. A fresh run must
-        // not mix the previously selected voice with its replacement.
-        let replace_track = restart
+        // The worker generates replacements, while the published track retains
+        // every old clip until its own replacement has been saved successfully.
+        let replace_existing = restart
+            || cue_id.is_some()
             || (cue_id.is_none()
                 && pending
                     .speech_track
                     .as_ref()
                     .is_some_and(|track| track.completed(task) == task.subtitles.count()));
-        if replace_track {
+        if cue_id.is_some() {
+            let cue = pending
+                .subtitles
+                .cues()
+                .iter()
+                .find(|cue| Some(&cue.id) == cue_id.as_ref())
+                .unwrap();
+            if let Some(track) = &mut pending.speech_track {
+                track
+                    .clips
+                    .retain(|clip| clip.end_ms() <= cue.start_ms || clip.start_ms >= cue.end_ms);
+            }
+        } else if replace_existing {
             pending.speech_track = None;
         }
         self.speech_job = Some(SpeechJob {
@@ -635,7 +635,7 @@ impl MediaController {
                 task.subtitles.count()
             },
             input_key: input_key(task),
-            replace_track,
+            replace_existing,
             pending: Some(pending),
             preparing: None,
             result: None,
@@ -708,86 +708,112 @@ impl MediaController {
                     }
                 }
                 SpeechEvent::Clip(clip, temporary) => {
-                    let job = self.speech_job.as_ref().unwrap();
-                    let (task_id, language, key, replace_track) = (
-                        job.task_id.clone(),
-                        job.language.clone(),
-                        job.input_key,
-                        job.replace_track,
-                    );
-                    self.save_active();
-                    let result = (|| -> Result<(), String> {
-                        let task = self
-                            .store
-                            .get_mut(&task_id)
-                            .ok_or("Media project no longer exists")?;
-                        if input_key(task) != key {
-                            return Err("Subtitles changed during speech generation. Generate the track again.".into());
-                        }
-                        temporary.persist(&clip.path).map_err(|e| e.to_string())?;
-                        let old = task.speech_track.clone();
-                        let was_selected = task.play_speech_track;
-                        let track = task.speech_track.get_or_insert_with(|| SpeechTrack {
-                            path: self
-                                .storage_dir
-                                .join("media-speech")
-                                .join(format!("{}.wav", uuid::Uuid::new_v4())),
-                            language: language.clone(),
-                            clips: Vec::new(),
-                            rendered: false,
-                        });
-                        if replace_track {
-                            track.language = language;
-                            track.clips.clear();
-                        }
-                        if track.overlaps(clip.start_ms, clip.end_ms()) {
-                            self.remove_speech_file(&clip.path);
-                            return Err("This time range already contains speech.".into());
-                        }
-                        track.clips.push(clip.clone());
-                        track.clips.sort_by_key(|clip| clip.start_ms);
-                        track.rendered = false;
-                        task.play_speech_track = was_selected || old.is_none();
-                        if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
-                            let task = self.store.get_mut(&task_id).unwrap();
-                            task.speech_track = old;
-                            task.play_speech_track = was_selected;
-                            self.remove_speech_file(&clip.path);
-                            return Err(error.to_string());
-                        }
-                        self.speech_job.as_mut().unwrap().replace_track = false;
-                        let current = self
-                            .store
-                            .get(&task_id)
-                            .unwrap()
-                            .speech_track
-                            .as_ref()
-                            .unwrap();
-                        let retired = old
-                            .into_iter()
-                            .flat_map(|track| track.clips)
-                            .filter(|clip| !current.clips.iter().any(|new| new.path == clip.path))
-                            .map(|clip| clip.path)
-                            .collect();
-                        self.queue_speech_render(&task_id, retired)?;
-                        log::info!(
-                            "Media speech clip saved: task={task_id} cue={} start_ms={} duration_ms={}",
-                            clip.id,
-                            clip.start_ms,
-                            clip.duration_ms
-                        );
-                        // Retired assets are removed after mixing, so queued renders
-                        // may still finish reading the preceding revision.
-                        Ok(())
-                    })();
-                    if let Err(error) = result {
-                        log::warn!("Media speech not saved: task={task_id} error={error}");
+                    if let Err(error) = self.save_speech_clip(clip, temporary) {
+                        log::warn!("Media speech not saved: {error}");
                         self.error = Some(error);
                         self.speech_job = None;
                     }
                 }
             }
         }
+    }
+
+    fn save_speech_clip(
+        &mut self,
+        clip: SpeechClip,
+        temporary: tempfile::TempPath,
+    ) -> Result<(), String> {
+        let job = self.speech_job.as_ref().unwrap();
+        let (task_id, language, key, replace_existing) = (
+            job.task_id.clone(),
+            job.language.clone(),
+            job.input_key,
+            job.replace_existing,
+        );
+        self.save_active();
+        let task = self
+            .store
+            .get_mut(&task_id)
+            .ok_or("Media project no longer exists")?;
+        if input_key(task) != key {
+            return Err(
+                "Subtitles changed during speech generation. Generate the track again.".into(),
+            );
+        }
+        let was_selected = task.play_speech_track;
+        let mut track = task.speech_track.clone().unwrap_or_else(|| SpeechTrack {
+            path: self
+                .storage_dir
+                .join("media-speech")
+                .join(format!("{}.wav", uuid::Uuid::new_v4())),
+            language: language.clone(),
+            clips: Vec::new(),
+            rendered: false,
+        });
+        if replace_existing {
+            let index = task
+                .subtitles
+                .cues()
+                .iter()
+                .position(|cue| cue.start_ms == clip.start_ms)
+                .ok_or("Subtitle no longer exists.")?;
+            let cue = &task.subtitles.cues()[index];
+            let end = task
+                .subtitles
+                .cues()
+                .get(index + 1)
+                .map_or(task.duration_ms.max(cue.end_ms), |next| next.start_ms);
+            if track.clips.iter().any(|old| {
+                old.start_ms < cue.end_ms
+                    && old.end_ms() > cue.start_ms
+                    && (old.start_ms < cue.start_ms || old.end_ms() > end)
+            }) {
+                return Err("An existing speech clip crosses this subtitle's boundaries. Adjust it before replacing this range.".into());
+            }
+            track.language = language;
+            track
+                .clips
+                .retain(|old| old.end_ms() <= cue.start_ms || old.start_ms >= cue.end_ms);
+        }
+        if track.overlaps(clip.start_ms, clip.end_ms()) {
+            return Err("This time range already contains speech.".into());
+        }
+        track.clips.push(clip.clone());
+        track.clips.sort_by_key(|clip| clip.start_ms);
+        track.rendered = false;
+        temporary.persist(&clip.path).map_err(|e| e.to_string())?;
+        let old = task.speech_track.replace(track);
+        task.play_speech_track = was_selected || old.is_none();
+        if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+            let task = self.store.get_mut(&task_id).unwrap();
+            task.speech_track = old;
+            task.play_speech_track = was_selected;
+            self.remove_speech_file(&clip.path);
+            return Err(error.to_string());
+        }
+        let current = self
+            .store
+            .get(&task_id)
+            .unwrap()
+            .speech_track
+            .as_ref()
+            .unwrap();
+        let retired = old
+            .into_iter()
+            .flat_map(|track| track.clips)
+            .filter(|clip| !current.clips.iter().any(|new| new.path == clip.path))
+            .map(|clip| clip.path)
+            .collect();
+        self.queue_speech_render(&task_id, retired)?;
+        log::info!(
+            "Media speech clip saved: task={task_id} cue={} start_ms={} duration_ms={}",
+            clip.id,
+            clip.start_ms,
+            clip.duration_ms
+        );
+        // Retired assets are removed after mixing, so queued renders
+        // may still finish reading the preceding revision.
+        Ok(())
     }
 
     pub(super) fn queue_speech_render(
@@ -1051,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_cue_creates_an_independent_clip_and_respects_occupied_time() {
+    fn a_single_cue_can_replace_speech_with_a_selected_reference() {
         use crate::media::{backend::MediaSource, subtitles::SubtitleTimeline, task::SubtitleMode};
         use std::io::BufRead;
         let directory = tempfile::tempdir().unwrap();
@@ -1161,11 +1187,27 @@ mod tests {
         controller.subtitles = task.subtitles.clone();
         controller.store.tasks = vec![task];
         controller.start_cue_speech(cue.id.clone());
-        assert!(controller.speech_job.is_none());
-        assert_eq!(
-            controller.error.as_deref(),
-            Some("This time range already contains speech.")
+        let job = controller.speech_job.as_ref().unwrap();
+        assert!(job.replace_existing);
+        assert!(
+            job.pending
+                .as_ref()
+                .unwrap()
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips
+                .is_empty()
         );
+        assert_eq!(
+            controller.store.tasks[0]
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips,
+            [clip.clone()]
+        );
+        controller.speech_job = None;
         controller.store.tasks[0]
             .speech_track
             .as_mut()
@@ -1175,7 +1217,7 @@ mod tests {
         controller.set_vocal_reference(Some([10_000, 18_000]));
         controller.start_cue_speech(cue.id);
         assert_eq!(controller.speech_job.as_ref().unwrap().total, 1);
-        assert!(!controller.speech_job.as_ref().unwrap().replace_track);
+        assert!(controller.speech_job.as_ref().unwrap().replace_existing);
         let pending = controller
             .speech_job
             .as_ref()
@@ -1198,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn restarting_partial_speech_keeps_old_audio_until_a_replacement_arrives() {
+    fn replacements_preserve_other_clips_through_cancellation_and_save_failure() {
         use super::super::{backend::MediaSource, subtitles::SubtitleTimeline, task::SubtitleMode};
         let directory = tempfile::tempdir().unwrap();
         let mut task = MediaTask::new(
@@ -1230,7 +1272,14 @@ mod tests {
             text: "你好。".into(),
             peaks: Vec::new(),
         };
-        std::fs::write(&clip.path, b"previous audio").unwrap();
+        let write_audio = |path: &Path| {
+            let mut writer = hound::WavWriter::create(path, SPEC).unwrap();
+            for _ in 0..SAMPLE_RATE * 2 {
+                writer.write_sample(100_i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        };
+        write_audio(&clip.path);
         task.speech_track = Some(SpeechTrack {
             path: directory.path().join("track.wav"),
             language: "zh".into(),
@@ -1247,7 +1296,7 @@ mod tests {
         for restart in [false, true] {
             controller.start_speech(restart);
             let job = controller.speech_job.as_ref().unwrap();
-            assert_eq!(job.replace_track, restart);
+            assert_eq!(job.replace_existing, restart);
             assert!(job.pending.as_ref().unwrap().speech_use_source_voice);
             assert_eq!(job.pending.as_ref().unwrap().speech_reference_range, None);
             assert_eq!(
@@ -1266,9 +1315,75 @@ mod tests {
                     .clips,
                 [clip.clone()]
             );
-            assert_eq!(std::fs::read(&clip.path).unwrap(), b"previous audio");
+            assert!(clip.path.is_file());
             controller.speech_job = None;
         }
+        let later = SpeechClip {
+            id: "later".into(),
+            path: directory.path().join("later.wav"),
+            start_ms: 4000,
+            text: "再见。".into(),
+            ..clip.clone()
+        };
+        write_audio(&later.path);
+        controller.store.tasks[0]
+            .speech_track
+            .as_mut()
+            .unwrap()
+            .clips
+            .push(later.clone());
+        controller.start_speech(true);
+        let temporary = tempfile::NamedTempFile::new_in(directory.path())
+            .unwrap()
+            .into_temp_path();
+        write_audio(&temporary);
+        let replacement = SpeechClip {
+            id: "replacement".into(),
+            path: directory.path().join("replacement.wav"),
+            ..clip.clone()
+        };
+        controller
+            .save_speech_clip(replacement.clone(), temporary)
+            .unwrap();
+        assert_eq!(
+            controller.store.tasks[0]
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips,
+            [replacement.clone(), later.clone()]
+        );
+        controller.cancel_speech();
+        controller.speech_job = None;
+        assert!(
+            later.path.is_file(),
+            "cancelling must preserve the unreplaced audio"
+        );
+
+        controller.start_cue_speech(ids[1].clone());
+        let temporary = tempfile::NamedTempFile::new_in(directory.path())
+            .unwrap()
+            .into_temp_path();
+        write_audio(&temporary);
+        let invalid = SpeechClip {
+            path: directory.path().join("missing-directory/new.wav"),
+            ..later.clone()
+        };
+        assert!(controller.save_speech_clip(invalid, temporary).is_err());
+        assert_eq!(
+            controller.store.tasks[0]
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips,
+            [replacement.clone(), later.clone()]
+        );
+        assert!(later.path.is_file());
+        let restored = crate::media::task::MediaTaskStore::load_from_dir(directory.path());
+        assert_eq!(
+            restored.tasks[0].speech_track.as_ref().unwrap().clips,
+            [replacement, later]
+        );
     }
 
     #[test]
