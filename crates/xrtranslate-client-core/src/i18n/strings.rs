@@ -2754,6 +2754,13 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Прослушивание синтеза речи",
     ),
     (
+        "Speech playback is waiting for an output. Open Audio Studio to connect one.",
+        "语音播报正在等待输出。点击打开音频工作室，连接播放设备。",
+        "読み上げは出力を待っています。音声スタジオを開いて接続してください。",
+        "음성 출력 대기 중입니다. 오디오 스튜디오에서 출력 장치를 연결하세요.",
+        "Озвучивание ожидает выхода. Подключите его в аудиостудии.",
+    ),
+    (
         "BGM / application audio",
         "背景音乐 / 应用音频",
         "BGM / アプリ音声",

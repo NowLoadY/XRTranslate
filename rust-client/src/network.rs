@@ -579,7 +579,7 @@ async fn run_session(
         url.query_pairs_mut().append_pair("tts", "true");
     }
     log::info!(
-        "Connecting translation session: text_only={text_only}, speech_output={}",
+        "Connecting translation session: text_only={text_only}, speech_capable={}",
         tts_handle.is_some()
     );
     let input_source = if text_only {
@@ -696,11 +696,34 @@ async fn run_session(
     let mut finish_sent = false;
     let mut pcm_input_closed = false;
     let mut session_ready = false;
+    let mut tts_requested = false;
+    let mut active_tts = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     loop {
         if cancel_requested.load(Ordering::Acquire) {
             let _ = write.close().await;
             return;
+        }
+        // The user switch expresses intent; synthesis also requires a live destination.
+        // Keep the connection so speech resumes when the selected route is restored.
+        let output_ready = tts_handle.as_ref().is_some_and(|tts| tts.output_ready());
+        let enabled = tts_requested && output_ready;
+        if active_tts != Some(enabled) {
+            if let Err(error) = send_session_command(
+                &mut write,
+                SessionCommand::SetTtsEnabled(enabled),
+                audio_source,
+                &mut translation_options,
+                &context,
+            )
+            .await
+            {
+                let _ = event_tx.send(SessionEvent::Error(format!(
+                    "Cannot configure speech playback: {error}"
+                )));
+                break;
+            }
+            active_tts = Some(enabled);
         }
         tokio::select! {
             // Receive diagnostics before sending more buffered file audio.
@@ -745,7 +768,9 @@ async fn run_session(
                     Some(Ok(Message::Binary(audio))) => {
                         if cancel_requested.load(Ordering::Acquire){continue;}
                         log::debug!("Received TTS audio: bytes={}", audio.len());
-                        if let Some(tts) = &tts_handle {
+                        if let Some(tts) = &tts_handle
+                            && tts_requested && tts.output_ready()
+                        {
                             match tts.play_pcm(&audio) {
                                 Err(error) if playback_error.as_ref() != Some(&error) => {
                                     log::error!("TTS playback failed: {error}");
@@ -796,6 +821,10 @@ async fn run_session(
                 }
             }
             Some(command) = command_rx.recv() => {
+                if let SessionCommand::SetTtsEnabled(enabled) = command {
+                    tts_requested = enabled;
+                    continue;
+                }
                 if matches!(command, SessionCommand::Cancel) {
                     let _ = write.close().await;
                     let _ = event_tx.send(SessionEvent::StreamEnded {

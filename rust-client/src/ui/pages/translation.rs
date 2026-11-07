@@ -186,6 +186,7 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                         "Configure a TTS provider on the Welcome page to enable TTS playback.",
                     ));
             }
+            app.render_speech_output_status(ui);
 
             if crate::feature_access::is_available(
                 crate::feature_access::Feature::FloatingSubtitles,

@@ -2794,6 +2794,7 @@ impl XRTranslateApp {
                 {
                     self.set_tts_enabled(enabled);
                 }
+                self.render_speech_output_status(ui);
                 if snapshot.selected_graph.nodes.iter().any(|node| {
                     !node.bypassed
                         && matches!(
@@ -4484,6 +4485,22 @@ impl XRTranslateApp {
             .filter(|session| session.uses_host_tts())
         {
             session.set_tts_enabled(self.tts_enabled);
+        }
+    }
+
+    fn render_speech_output_status(&mut self, ui: &mut egui::Ui) {
+        if self.tts_enabled && !self.audio_system.speech_output_ready() {
+            let response = ui::components::status_icon(
+                ui,
+                ui::components::StatusIcon::Paused,
+                i18n::tr(
+                    self.ui_language,
+                    "Speech playback is waiting for an output. Open Audio Studio to connect one.",
+                ),
+            );
+            if response.interact(egui::Sense::click()).clicked() {
+                self.open_audio_studio();
+            }
         }
     }
 

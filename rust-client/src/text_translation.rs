@@ -665,7 +665,7 @@ mod tests {
     {
         for (host_tts, initially_enabled) in [(true, true), (true, false), (false, true)] {
             let (address, wire, server) = speech_backend().await;
-            let audio = crate::audio::AudioSystem::new();
+            let (player, _output) = crate::audio::TtsPlayerHandle::test_output();
             let mut translator = TextTranslation::default();
             translator.set_tts_enabled(initially_enabled);
             translator.submit(speech_task(host_tts)).unwrap();
@@ -674,7 +674,7 @@ mod tests {
                 PromptGraphSet {
                     graph: Default::default(),
                 },
-                Some(audio.tts_handle(44_100)),
+                Some(player),
                 translator.tts_enabled,
                 None,
             );
@@ -685,8 +685,14 @@ mod tests {
             assert_eq!(query.contains("tts=true"), host_tts);
             assert_eq!(
                 receive(),
-                json!({"action": "toggle_feature", "feature": "tts", "enabled": host_tts && initially_enabled})
+                json!({"action": "toggle_feature", "feature": "tts", "enabled": false})
             );
+            if host_tts && initially_enabled {
+                assert_eq!(
+                    receive(),
+                    json!({"action": "toggle_feature", "feature": "tts", "enabled": true})
+                );
+            }
             let task = &mut translator.tasks[0];
             let session = task.connection.session.as_ref().unwrap();
             let stream = session.stream_id();
@@ -706,10 +712,6 @@ mod tests {
                         audio_received = true;
                     }
                     SessionEvent::StreamEnded { .. } => break,
-                    SessionEvent::BackendError { message } if host_tts => {
-                        // This transport test deliberately has no hardware route.
-                        assert!(message.contains("No active speech output"), "{message}");
-                    }
                     SessionEvent::Error(error) | SessionEvent::BackendError { message: error } => {
                         panic!("{error}")
                     }
@@ -758,6 +760,67 @@ mod tests {
             translator.tasks[1].scope.publish_to_host_outputs
         );
         assert!(!translator.tasks[0].compatible_connection(&translator.tasks[1]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn speech_waits_for_output_and_recovers_without_reconnecting() {
+        let (address, wire, server) = speech_backend().await;
+        let (player, set_output_ready) = crate::audio::TtsPlayerHandle::test_output();
+        set_output_ready(false);
+        let mut translator = TextTranslation::default();
+        translator.set_tts_enabled(true);
+        translator.submit(speech_task(true)).unwrap();
+        translator.tasks[0].connect(
+            &address,
+            PromptGraphSet {
+                graph: Default::default(),
+            },
+            Some(player),
+            true,
+            None,
+        );
+        let receive = || wire.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(receive()["query"].as_str().unwrap().contains("tts=true"));
+        assert_eq!(
+            receive(),
+            json!({"action": "toggle_feature", "feature": "tts", "enabled": false})
+        );
+        translator.tasks[0].send_pending().unwrap();
+        assert_eq!(receive()["action"], "translate_text");
+        // A late audio response must not turn a deliberately disconnected output into an error.
+        loop {
+            match translator.tasks[0]
+                .connection
+                .rx
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+            {
+                SessionEvent::StreamEnded { .. } => break,
+                SessionEvent::Error(error) | SessionEvent::BackendError { message: error } => {
+                    panic!("{error}")
+                }
+                _ => {}
+            }
+        }
+        for ready in [true, false, true] {
+            set_output_ready(ready);
+            assert_eq!(
+                receive(),
+                json!({"action": "toggle_feature", "feature": "tts", "enabled": ready})
+            );
+        }
+        translator.set_tts_enabled(false);
+        assert_eq!(
+            receive(),
+            json!({"action": "toggle_feature", "feature": "tts", "enabled": false})
+        );
+        set_output_ready(false);
+        assert!(wire.recv_timeout(Duration::from_millis(250)).is_err());
+        set_output_ready(true);
+        assert!(wire.recv_timeout(Duration::from_millis(250)).is_err());
+        translator.reset();
+        server.abort();
+        let _ = server.await;
     }
 
     #[test]

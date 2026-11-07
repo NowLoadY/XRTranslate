@@ -768,6 +768,15 @@ struct TtsPlaybackScope {
 }
 
 impl TtsPlayerHandle {
+    pub(crate) fn output_ready(&self) -> bool {
+        !self.playback.cancelled.load(Ordering::Acquire)
+            && self
+                .routed_tts_targets
+                .lock()
+                .iter()
+                .any(RoutedTtsTarget::is_running)
+    }
+
     pub fn play_pcm(&self, pcm: &[u8]) -> Result<(), String> {
         if self.playback.cancelled.load(Ordering::Acquire) {
             return Ok(());
@@ -1331,6 +1340,13 @@ impl AudioSystem {
             routed_tts_targets: Arc::clone(&self.routed_tts_targets),
             playback: Arc::new(TtsPlaybackScope::default()),
         }
+    }
+
+    pub(crate) fn speech_output_ready(&self) -> bool {
+        self.routed_tts_targets
+            .lock()
+            .iter()
+            .any(RoutedTtsTarget::is_running)
     }
 
     pub fn preview_voice(&mut self, pcm: &[u8], sample_rate: u32) -> Result<(), String> {
@@ -2484,7 +2500,7 @@ impl RouteRateReader {
 mod route_failure_tests {
     use super::*;
 
-    fn control(state: AudioRouteState) -> Arc<AudioRouteControl> {
+    pub(super) fn control(state: AudioRouteState) -> Arc<AudioRouteControl> {
         Arc::new(AudioRouteControl {
             follow_tts: false,
             tts_enabled: Arc::new(AtomicBool::new(true)),
@@ -2619,6 +2635,40 @@ mod route_failure_tests {
         let restarted = audio.replace_audio_routes(vec![config]).unwrap();
         assert_eq!(restarted[0].status().state, AudioRouteState::Running);
         audio.replace_audio_routes(Vec::new()).unwrap();
+    }
+}
+
+#[cfg(test)]
+impl TtsPlayerHandle {
+    /// An in-memory output for transport tests; never opens a hardware device.
+    pub(crate) fn test_output() -> (Self, impl Fn(bool)) {
+        let control = route_failure_tests::control(AudioRouteState::Running);
+        let source = Arc::new(AudioRouteSourceBuffer::new(
+            None,
+            1.0,
+            &[],
+            control.dropped_samples.clone(),
+            control.studio_metering.clone(),
+        ));
+        let player = Self {
+            source_sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+            routed_tts_targets: Arc::new(Mutex::new(vec![RoutedTtsTarget {
+                control: Arc::downgrade(&control),
+                source,
+                output_sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+            }])),
+            playback: Arc::new(TtsPlaybackScope::default()),
+        };
+        (player, move |ready| {
+            control.state.store(
+                encode_route_state(if ready {
+                    AudioRouteState::Running
+                } else {
+                    AudioRouteState::Stopped
+                }),
+                Ordering::Release,
+            );
+        })
     }
 }
 
@@ -3534,9 +3584,7 @@ fn run_loopback_capture(
         } else if last_audio_received.elapsed() >= Duration::from_secs(3)
             && last_waiting_log.elapsed() >= Duration::from_secs(3)
         {
-            log::info!(
-                "WASAPI loopback is running but has not received audio samples; verify that this is the active Windows playback device"
-            );
+            log::debug!("WASAPI loopback is waiting for audio on '{name}'");
             last_waiting_log = std::time::Instant::now();
         }
         while pending.len() >= bytes_per_frame * 960 {
