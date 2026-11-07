@@ -114,16 +114,24 @@ impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
                 }),
             ),
             RemoteConnector::DashscopeSpeech => {
-                let language_name = SupportedLanguage::parse(language)
-                    .map(SupportedLanguage::name)
-                    .unwrap_or(language);
+                // English instructions can pull a cloned English voice away from Chinese output.
+                let instruction = if language == "zh" {
+                    "请用中文普通话逐字朗读给定文本，不要翻译、改写或添加内容。".to_owned()
+                } else {
+                    let language_name = SupportedLanguage::parse(language)
+                        .map(SupportedLanguage::name)
+                        .unwrap_or(language);
+                    format!(
+                        "Speak in {language_name}. Read only the provided text, without translating it or adding content."
+                    )
+                };
                 HttpRequest::post_json(
                     &self.endpoint,
                     json!({
                         "model": self.model.model,
                         "input": {"text": text, "voice": voice, "format": "pcm",
                             "sample_rate": self.capabilities().sample_rate, "language_hints": [language],
-                            "instruction": format!("Speak in {language_name}. Read only the provided text, without translating it or adding content.")}
+                            "instruction": instruction}
                     }),
                 )
             }

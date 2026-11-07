@@ -121,7 +121,12 @@ async fn qwen_reference_uses_the_active_workspace_and_can_be_cleaned_up() {
         None,
     );
     http.respond(200, vec![0, 0, 1, 0], None);
-    assert!(!synthesize(&adapter, voice, "zh").await.unwrap().is_empty());
+    assert!(
+        !synthesize(&adapter, voice, "zh-CN")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     http.respond(200, b"{}".to_vec(), None);
     adapter.delete_reference_voice(voice).await;
     let requests = http.requests.lock().unwrap();
@@ -143,7 +148,7 @@ async fn qwen_reference_uses_the_active_workspace_and_can_be_cleaned_up() {
     assert_eq!(requests[2].body["input"]["language_hints"], json!(["zh"]));
     assert_eq!(
         requests[2].body["input"]["instruction"],
-        "Speak in Chinese. Read only the provided text, without translating it or adding content."
+        "请用中文普通话逐字朗读给定文本，不要翻译、改写或添加内容。"
     );
     assert_eq!(
         requests.last().unwrap().body["input"]["action"],
