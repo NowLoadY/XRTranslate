@@ -613,6 +613,11 @@ impl Drop for OpenVrOverlay {
 }
 
 impl OpenVrOverlay {
+    pub(super) fn set_premultiplied_alpha(&self, enabled: bool) -> Result<(), OverlayError> {
+        check_overlay_error("SetOverlayFlag", unsafe {
+            (self.table().set_overlay_flag)(self.handle, 1 << 21, enabled)
+        })
+    }
     pub(super) fn set_world_transform(&self, matrix: glam::Mat4) -> Result<(), OverlayError> {
         let transform = HmdMatrix34::from_matrix(matrix);
         if transform.rigid_matrix().is_none() {
@@ -911,6 +916,10 @@ mod tests {
         assert!(api.is_runtime_installed(), "SteamVR should be installed");
         let session = api.init_overlay().unwrap();
         let tracking = session.avatar_tracking().unwrap();
+        eprintln!(
+            "Head tracking available: {}",
+            tracking.eyes_and_head().is_some()
+        );
         let graphics = graphics::create(&tracking).unwrap();
         let overlay = session
             .create_overlay("xrtranslate.test_overlay", "Test Overlay")
@@ -949,5 +958,98 @@ mod tests {
         } else {
             eprintln!("Native GPU image readback unavailable: {result}");
         }
+
+        // Exercise native GPU text rendering on the same persistent image, including
+        // atlas updates, transparent padding, and short/long bilingual captions.
+        use super::super::{
+            renderer::{VrOverlayRenderer, VrSubtitleCard},
+            runtime::VrOverlaySettings,
+        };
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let settings = VrOverlaySettings {
+            max_items: 1,
+            bilingual: true,
+            ..Default::default()
+        };
+        let visible = std::env::var_os("XRT_VR_TEST_VISIBLE").is_some();
+        let mut render_time = std::time::Duration::ZERO;
+        for frame in 0..128 {
+            let card = VrSubtitleCard {
+                id: frame,
+                source: if frame < 64 {
+                    "One short subtitle.".into()
+                } else {
+                    "A longer subtitle wraps naturally while the panel stays in the same place. The background follows the text.".into()
+                },
+                translated: if frame < 64 {
+                    "一条简短字幕。".into()
+                } else {
+                    "更长的字幕会自然换行，面板的位置保持稳定，背景只包住实际显示的文字。".into()
+                },
+                additional_translations: vec![],
+                speaker: String::new(),
+                live: false,
+            };
+            let started = std::time::Instant::now();
+            renderer
+                .render_gpu(&mut image, &overlay, &[card], &settings)
+                .unwrap();
+            render_time += started.elapsed();
+            if frame == 63 || frame == 127 {
+                let result = unsafe {
+                    read(
+                        overlay.handle,
+                        actual.as_mut_ptr().cast(),
+                        actual.len() as u32,
+                        &mut width,
+                        &mut height,
+                    )
+                };
+                if result == 0 {
+                    assert_eq!((width, height), (640, 320));
+                    let occupied: Vec<_> = actual
+                        .chunks_exact(640 * 4)
+                        .enumerate()
+                        .filter_map(|(row, pixels)| {
+                            pixels
+                                .chunks_exact(4)
+                                .any(|pixel| pixel[3] != 0)
+                                .then_some(row)
+                        })
+                        .collect();
+                    assert!(!occupied.is_empty());
+                    assert!(*occupied.first().unwrap() > 8 && *occupied.last().unwrap() < 312);
+                    eprintln!("GPU caption occupied rows: {}", occupied.len());
+                    if let Some(directory) = std::env::var_os("XRT_VR_TEST_OUTPUT") {
+                        use eframe::icon_data::IconDataExt;
+                        let icon = eframe::egui::IconData {
+                            rgba: actual.clone(),
+                            width,
+                            height,
+                        };
+                        std::fs::write(
+                            std::path::Path::new(&directory).join(if frame == 63 {
+                                "short.png"
+                            } else {
+                                "long.png"
+                            }),
+                            icon.to_png_bytes().unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            if visible && (frame == 63 || frame == 127) {
+                overlay.show().unwrap();
+                eprintln!(
+                    "Visible caption: {}",
+                    if frame == 63 { "short" } else { "long" }
+                );
+                std::thread::sleep(std::time::Duration::from_secs(20));
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+        eprintln!("Average GPU caption submission: {:?}", render_time / 128);
     }
 }

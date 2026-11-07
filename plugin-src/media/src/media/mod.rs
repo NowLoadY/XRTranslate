@@ -4,6 +4,7 @@ mod edit_translation;
 pub mod events;
 mod files;
 pub mod i18n;
+mod mixing;
 pub use backend::installer;
 mod speech;
 mod subtitle_job;
@@ -13,6 +14,7 @@ pub mod subtitles;
 pub mod task;
 pub mod ui;
 mod video_export;
+mod waveform;
 pub(crate) mod workspace;
 
 use crate::i18n::UiLanguage;

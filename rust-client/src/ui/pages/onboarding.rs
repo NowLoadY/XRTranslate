@@ -1362,13 +1362,7 @@ fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             2 => render_onboarding_ocr(app, ui),
             _ => {
                 if let Some(id) = plugin_cards.get(index - builtin_count) {
-                    app.plugin_host.model_card(
-                        ui,
-                        id,
-                        app.ui_language,
-                        &app.download_proxy_url,
-                        app.model_task_manager.use_mirror(),
-                    );
+                    app.plugin_host.model_card(ui, id, app.ui_language);
                 }
             }
         },
@@ -1954,8 +1948,8 @@ fn provider_choice_resource(
 // ---------------------------------------------------------------------------
 
 struct DownloadItem {
-    id: xrtranslate_assets::ModelAssetId,
-    category_title: &'static str,
+    id: crate::model_install::ResourceId,
+    category_title: String,
     detail: String,
     download_bytes: u64,
     installed_bytes: u64,
@@ -2005,6 +1999,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             Vec::new()
         }
     };
+    let selected_package_count = packages.len();
     if let Ok(catalog) = catalog_model_packages(&project_root) {
         for package in catalog {
             if !packages.iter().any(|active| active.id == package.id)
@@ -2016,7 +2011,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     }
 
     let local_availability = app.runtime_installer.local_model_availability();
-    let download_items = packages
+    let mut download_items = packages
         .iter()
         .map(|package| {
             let installed = app.model_task_manager.is_model_ready(package.id)
@@ -2040,8 +2035,8 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 }
             };
             DownloadItem {
-                id: package.id,
-                category_title,
+                id: package.id.into(),
+                category_title: i18n::tr(language, category_title).into(),
                 detail: format!(
                     "{} · {}",
                     package.label,
@@ -2055,6 +2050,45 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             }
         })
         .collect::<Vec<_>>();
+
+    let mut selected_plugin_items = Vec::new();
+    for model in app.plugin_host.model_resources(language) {
+        let installed = app.model_task_manager.is_model_ready(&model.id);
+        if model.selected
+            || installed
+            || app.model_task_manager.is_model_queued(&model.id)
+            || app
+                .model_task_manager
+                .model_download_progress(&model.id)
+                .is_some()
+        {
+            let item = DownloadItem {
+                id: model.id,
+                category_title: model.title,
+                detail: model.label,
+                download_bytes: model.resource.package.download_bytes(),
+                installed_bytes: model
+                    .resource
+                    .package
+                    .files
+                    .iter()
+                    .map(|file| file.bytes)
+                    .sum(),
+                installed,
+                hardware_available: true,
+                stroke_color: Color32::from_rgb(139, 92, 246),
+            };
+            if model.selected {
+                selected_plugin_items.push(item);
+            } else {
+                download_items.push(item);
+            }
+        }
+    }
+    download_items.splice(
+        selected_package_count..selected_package_count,
+        selected_plugin_items,
+    );
 
     if !download_items.is_empty() {
         let missing = download_items
@@ -2072,14 +2106,14 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             );
             if !missing.is_empty() {
                 let active_downloads = missing.iter().filter(|item| {
-                    !app.model_task_manager.is_model_paused(item.id)
-                        && (app.model_task_manager.is_model_queued(item.id)
+                    !app.model_task_manager.is_model_paused(&item.id)
+                        && (app.model_task_manager.is_model_queued(&item.id)
                             || matches!(app.model_task_manager.state(),
                                 NativeModelTaskState::Installing { asset_id, .. } if *asset_id == item.id))
-                }).map(|item| item.id).collect::<Vec<_>>();
+                }).map(|item| item.id.clone()).collect::<Vec<_>>();
                 let action = if !active_downloads.is_empty() {
                     "Pause"
-                } else if missing.iter().any(|item| app.model_task_manager.is_model_paused(item.id)) {
+                } else if missing.iter().any(|item| app.model_task_manager.is_model_paused(&item.id)) {
                     "Resume"
                 } else {
                     "Download"
@@ -2091,7 +2125,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     components::format_file_size(missing_download_bytes),
                 );
                 let downloaded = missing.iter().filter_map(|item| {
-                    app.model_task_manager.model_download_progress(item.id).map(|(bytes, _)| bytes)
+                    app.model_task_manager.model_download_progress(&item.id).map(|(bytes, _)| bytes)
                 }).sum::<u64>();
                 let progress = (missing_download_bytes > 0
                     && (!active_downloads.is_empty() || downloaded > 0))
@@ -2108,7 +2142,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 }).inner;
                 if clicked {
                     if active_downloads.is_empty() {
-                        installs.extend(missing.iter().map(|item| item.id));
+                        installs.extend(missing.iter().map(|item| item.id.clone()));
                     } else {
                         pauses.extend(active_downloads);
                     }
@@ -2141,8 +2175,11 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
 
         for item in &download_items {
             let batch = app.model_task_manager.batch_snapshot();
-            let is_active =
-                batch.as_ref().and_then(|batch| batch.current_asset_id) == Some(item.id) && busy;
+            let is_active = batch
+                .as_ref()
+                .and_then(|batch| batch.current_asset_id.as_ref())
+                == Some(&item.id)
+                && busy;
             let queued_position = batch.as_ref().and_then(|batch| {
                 batch
                     .queued_packages
@@ -2150,8 +2187,11 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     .position(|id| *id == item.id)
                     .map(|position| position + 1)
             });
-            let failed = batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
-            let paused = app.model_task_manager.is_model_paused(item.id);
+            let failed = batch
+                .as_ref()
+                .and_then(|batch| batch.failed_asset_id.as_ref())
+                == Some(&item.id);
+            let paused = app.model_task_manager.is_model_paused(&item.id);
             let action = if item.installed {
                 "Installed"
             } else if paused {
@@ -2173,17 +2213,17 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 !item.installed && item.hardware_available && !app.runtime_installer.is_busy(),
                 !busy,
                 if paused { None } else { queued_position },
-                app.model_task_manager.model_download_progress(item.id),
+                app.model_task_manager.model_download_progress(&item.id),
             );
             if clicked {
                 if !paused && (is_active || queued_position.is_some()) {
-                    pauses.push(item.id);
+                    pauses.push(item.id.clone());
                 } else {
-                    installs.push(item.id);
+                    installs.push(item.id.clone());
                 }
             }
             if delete_clicked {
-                delete_model = Some(item.id);
+                delete_model = Some((item.id.clone(), item.detail.clone()));
             }
             ui.add_space(8.0);
         }
@@ -2201,8 +2241,8 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     {
         app.last_error = Some(error);
     }
-    if let Some(asset_id) = delete_model {
-        app.request_model_resource_deletion(asset_id);
+    if let Some((id, label)) = delete_model {
+        app.request_resource_deletion(id, &label);
     }
 
     render_model_task_state(ui, language, app.model_task_manager.state());
@@ -2267,7 +2307,7 @@ fn render_download_card(
                         // it so short descriptions keep actions in their own column.
                         ui.set_width(details_width);
                         ui.label(
-                            RichText::new(i18n::tr(language, item.category_title))
+                            RichText::new(&item.category_title)
                                 .size(14.5)
                                 .color(theme::text_strong())
                                 .strong(),
@@ -2288,7 +2328,7 @@ fn render_download_card(
                     if item.installed {
                         if ui
                             .add_enabled_ui(delete_enabled, |ui| {
-                                components::resource_delete_button(ui, item.id, language)
+                                components::resource_delete_button(ui, &item.id, language)
                             })
                             .inner
                             .clicked()
@@ -2322,7 +2362,7 @@ fn render_download_card(
                             |position| format!("{} #{}", i18n::tr(language, action), position),
                         );
                         let response = ui
-                            .push_id(("download_card", item.id), |ui| {
+                            .push_id(("download_card", &item.id), |ui| {
                                 ui.set_max_width(200.0);
                                 components::download_progress_button(
                                     ui,

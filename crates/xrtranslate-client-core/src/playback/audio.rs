@@ -31,7 +31,7 @@ impl MediaBackend for AudioBackend {
         let path = match selection {
             super::PlaybackAudio::Original(_) => self.original.clone(),
             super::PlaybackAudio::External(path) => Some(path),
-            super::PlaybackAudio::Mix(_) => {
+            super::PlaybackAudio::Mix(_) | super::PlaybackAudio::Adjusted { .. } => {
                 return Err("Multiple audio tracks require the media playback runtime".into());
             }
         };

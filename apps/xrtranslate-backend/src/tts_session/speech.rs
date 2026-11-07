@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{io::Cursor, time::Duration};
 use xrtranslate_inference::InferenceError;
 use xrtranslate_protocol::tts::SpeechRequest;
@@ -70,7 +71,15 @@ pub(crate) async fn synthesize(
     Json(request): Json<SpeechRequest>,
 ) -> Result<impl IntoResponse, SpeechError> {
     let started = std::time::Instant::now();
-    let output = synthesize_wav(&state, &request).await;
+    // Finish cleanup of a temporary cloud voice even if the caller disconnects.
+    let output = if request.reference_audio.is_some() {
+        let (state, request) = (state.clone(), request.clone());
+        tokio::spawn(async move { synthesize_wav(&state, &request).await })
+            .await
+            .map_err(|e| SpeechError::from(e.to_string()))?
+    } else {
+        synthesize_wav(&state, &request).await
+    };
     match &output {
         Ok(wav) => tracing::info!(language = %request.language, audio_bytes = wav.len(),
             elapsed_ms = crate::millis(started.elapsed()), "Speech file synthesized"),
@@ -92,16 +101,49 @@ async fn synthesize_wav(
     if !adapter.supports_language(&request.language) {
         return Err(format!("The TTS model does not support {}", request.language).into());
     }
-    let voice = request
-        .voice
-        .clone()
-        .unwrap_or_else(|| speech.voices.status().selection);
-    speech.voices.register_selection(&voice).await?;
-    let name = super::voices::voice_name(&voice);
+    let name = if let Some(reference) = &request.reference_audio {
+        if reference.len() > 14 * 1024 * 1024 {
+            return Err("Voice reference is too large".into());
+        }
+        let wav = STANDARD
+            .decode(reference)
+            .map_err(|_| "Invalid voice reference")?;
+        adapter
+            .create_reference_voice(&wav, &request.language)
+            .await?
+    } else {
+        let voice = request
+            .voice
+            .clone()
+            .unwrap_or_else(|| speech.voices.status().selection);
+        speech.voices.register_selection(&voice).await?;
+        super::voices::voice_name(&voice)
+    };
+    let output = synthesize_voice_wav(
+        adapter,
+        &name,
+        request,
+        super::max_input_chars(&state.config),
+    )
+    .await;
+    if request.reference_audio.is_some() {
+        adapter
+            .delete_reference_voice(&name, &request.language)
+            .await;
+    }
+    output
+}
+
+async fn synthesize_voice_wav(
+    adapter: &crate::model_runtime::TtsAdapter,
+    name: &str,
+    request: &SpeechRequest,
+    max_chars: usize,
+) -> Result<Vec<u8>, SpeechError> {
     let mut pcm = Vec::new();
     let mut sample_rate = None;
-    for text in super::split_text(&request.text, super::max_input_chars(&state.config)) {
-        let audio = adapter.synthesize(&text, &name, &request.language).await?;
+    for text in super::split_text(&request.text, max_chars) {
+        let audio = adapter.synthesize(&text, name, &request.language).await?;
         if audio.sample_rate == 0 || audio.bytes.is_empty() || !audio.bytes.len().is_multiple_of(2)
         {
             return Err("The TTS model returned invalid or empty audio".into());

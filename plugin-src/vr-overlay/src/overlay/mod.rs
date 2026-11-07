@@ -35,8 +35,18 @@ impl HostOutputSubscriber for VrOverlayHandle {
             } => self.set_previews(stream_id, is_typing, &entries),
             HostOutputEvent::CommittedTranslation { .. } => {}
             HostOutputEvent::StreamCancelled(stream_id) => self.cancel_stream(stream_id),
+            // Modern hosts already publish ASR partials through the preview set.
+            HostOutputEvent::Caption {
+                turn_id,
+                translated,
+                segment_index: 0,
+                update: CaptionUpdate::Replace,
+                ..
+            } if !turn_id.is_empty() && translated.is_empty() => {}
             HostOutputEvent::Caption {
                 stream_id,
+                turn_id,
+                segment_index,
                 audio_source,
                 is_typing,
                 source,
@@ -47,6 +57,7 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 update: CaptionUpdate::RollOver,
                 ..
             } => self.roll_stream(
+                runtime::caption_id(stream_id, &turn_id, segment_index),
                 stream_id,
                 audio_source,
                 is_typing,
@@ -57,6 +68,8 @@ impl HostOutputSubscriber for VrOverlayHandle {
             ),
             HostOutputEvent::Caption {
                 stream_id,
+                turn_id,
+                segment_index,
                 audio_source,
                 is_typing,
                 source,
@@ -67,6 +80,7 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 update,
                 ..
             } => self.add_caption(
+                runtime::caption_id(stream_id, &turn_id, segment_index),
                 stream_id,
                 audio_source,
                 is_typing,

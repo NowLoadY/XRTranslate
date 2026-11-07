@@ -8,6 +8,9 @@ pub struct SpeechRequest {
     pub text: String,
     pub language: String,
     pub voice: Option<VoiceSelection>,
+    /// Optional mono PCM16 WAV reference, encoded as Base64. Applies only to this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_audio: Option<String>,
 }
 
 /// Query for a canonical mono PCM16 / 16 kHz reference body.
@@ -38,6 +41,8 @@ pub struct VoiceStatus {
     pub personal_available: bool,
     #[serde(default)]
     pub supports_cloning: bool,
+    #[serde(default)]
+    pub supports_reference_audio: bool,
     #[serde(default)]
     pub preset_voices: Vec<String>,
 }

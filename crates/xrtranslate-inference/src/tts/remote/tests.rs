@@ -27,8 +27,11 @@ impl SpeechHttp {
 }
 
 impl AsyncHttpClient for SpeechHttp {
-    async fn execute(&self, _: HttpRequest) -> Result<HttpResponse, TransportError> {
-        unreachable!("synthesis uses bounded response reads")
+    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+        self.requests.lock().unwrap().push(request);
+        let (mut response, bytes) = self.responses.lock().unwrap().pop_front().unwrap();
+        response.body = String::from_utf8(bytes).unwrap();
+        Ok(response)
     }
 
     async fn execute_streaming<F, Fut>(
@@ -88,6 +91,105 @@ async fn synthesize(
         })
         .await?;
     Ok(chunks)
+}
+
+#[tokio::test]
+async fn qwen_reference_uses_the_active_workspace_and_can_be_cleaned_up() {
+    let http = SpeechHttp::default();
+    let voice = "qwen-audio-3.1-tts-plus-xrtmedia-test";
+    for body in [
+        json!({"output":{"voice_id":voice}}),
+        json!({"output":{"status":"OK"}}),
+    ] {
+        http.respond(200, body.to_string().into_bytes(), None);
+    }
+    let adapter = adapter(
+        http.clone(),
+        RemoteConnector::DashscopeSpeech,
+        "qwen-audio-3.1-tts-plus",
+    );
+    let reference = crate::pcm16_mono_16khz_to_wav(&vec![0; 16000 * 2 * 6]).unwrap();
+    assert_eq!(
+        adapter.create_reference_voice(&reference).await.unwrap(),
+        voice
+    );
+    http.respond(
+        200,
+        json!({"output":{"finish_reason":"stop","audio":{"url":"https://audio.example.test/pcm"}}})
+            .to_string()
+            .into_bytes(),
+        None,
+    );
+    http.respond(200, vec![0, 0, 1, 0], None);
+    assert!(!synthesize(&adapter, voice, "zh").await.unwrap().is_empty());
+    http.respond(200, b"{}".to_vec(), None);
+    adapter.delete_reference_voice(voice).await;
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(
+        requests[0].url,
+        "https://speech.example.test/api/v1/services/audio/tts/customization"
+    );
+    assert_eq!(
+        requests[0].body["input"]["target_model"],
+        "qwen-audio-3.1-tts-plus"
+    );
+    assert!(
+        requests[0].body["input"]["audio"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:audio/wav;base64,")
+    );
+    assert_eq!(requests[2].body["input"]["voice"], voice);
+    assert_eq!(
+        requests.last().unwrap().body["input"]["action"],
+        "delete_voice"
+    );
+}
+
+#[tokio::test]
+async fn qwen_rejects_short_references_and_removes_failed_enrollments() {
+    let http = SpeechHttp::default();
+    let adapter = adapter(
+        http.clone(),
+        RemoteConnector::DashscopeSpeech,
+        "qwen-audio-3.1-tts-plus",
+    );
+    assert!(adapter.create_reference_voice(&wav(24000)).await.is_err());
+    assert!(http.requests.lock().unwrap().is_empty());
+    for body in [
+        json!({"output":{"voice_id":"qwen-audio-3.1-tts-plus-xrtmedia-test"}}),
+        json!({"output":{"status":"UNDEPLOYED"}}),
+        json!({}),
+    ] {
+        http.respond(200, body.to_string().into_bytes(), None);
+    }
+    let reference = crate::pcm16_mono_16khz_to_wav(&vec![0; 16000 * 2 * 6]).unwrap();
+    assert!(adapter.create_reference_voice(&reference).await.is_err());
+    assert_eq!(
+        http.requests.lock().unwrap().last().unwrap().body["input"]["action"],
+        "delete_voice"
+    );
+}
+
+#[tokio::test]
+async fn qwen_flash_has_more_voices_and_checks_the_selected_voices_language() {
+    let http = SpeechHttp::default();
+    let adapter = adapter(
+        http.clone(),
+        RemoteConnector::DashscopeSpeech,
+        "qwen-audio-3.1-tts-flash",
+    );
+    assert_eq!(adapter.capabilities().voices.len(), 88);
+    assert_eq!(
+        xrtranslate_assets::remote::preset_voice_language("qiaoxiaojiao_v3.1"),
+        "zh"
+    );
+    assert_eq!(
+        xrtranslate_assets::remote::preset_voice_language("Emily_v3.1"),
+        "en"
+    );
+    assert!(synthesize(&adapter, "Emily_v3.1", "zh").await.is_err());
+    assert!(http.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

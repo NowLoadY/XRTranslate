@@ -206,12 +206,13 @@ pub(super) fn texture(
     })
 }
 
-/// Reusable GPU image for straight-alpha, sRGB caption and speech pixels.
+/// Reusable sRGB overlay image for GPU drawing or straight-alpha pixel uploads.
 pub(super) struct RgbaTexture {
     graphics: Rc<Graphics>,
     texture: wgpu::Texture,
     native: VulkanTexture,
     len: usize,
+    renderer: Option<eframe::egui_wgpu::Renderer>,
 }
 
 impl RgbaTexture {
@@ -238,6 +239,7 @@ impl RgbaTexture {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -251,6 +253,7 @@ impl RgbaTexture {
             texture: image,
             native,
             len,
+            renderer: None,
         })
     }
 
@@ -291,6 +294,78 @@ impl RgbaTexture {
         if let Some(error) = futures::executor::block_on(validation.pop()) {
             return Err(OverlayError::InvalidFrame(error.to_string()));
         }
+        overlay.set_premultiplied_alpha(false)?;
+        overlay.set_vulkan_texture(&mut self.native)
+    }
+
+    pub fn render(
+        &mut self,
+        overlay: &OpenVrOverlay,
+        ctx: &eframe::egui::Context,
+        mut output: eframe::egui::FullOutput,
+    ) -> Result<(), OverlayError> {
+        use eframe::egui_wgpu::{Renderer, ScreenDescriptor};
+        let renderer = self.renderer.get_or_insert_with(|| {
+            Renderer::new(
+                &self.graphics.device,
+                wgpu::TextureFormat::Rgba8Unorm,
+                Default::default(),
+            )
+        });
+        for (id, deltas) in std::mem::take(&mut output.textures_delta.set) {
+            for delta in deltas {
+                renderer.update_texture(&self.graphics.device, &self.graphics.queue, id, &delta);
+            }
+        }
+        let freed = std::mem::take(&mut output.textures_delta.free);
+        output.textures_delta.clear();
+        let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let screen = ScreenDescriptor {
+            size_in_pixels: [self.native.width, self.native.height],
+            pixels_per_point: output.pixels_per_point,
+        };
+        let mut encoder = self
+            .graphics
+            .device
+            .create_command_encoder(&Default::default());
+        let mut commands = renderer.update_buffers(
+            &self.graphics.device,
+            &self.graphics.queue,
+            &mut encoder,
+            &primitives,
+            &screen,
+        );
+        let view = self.texture.create_view(&Default::default());
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            renderer.render(&mut pass.forget_lifetime(), &primitives, &screen);
+        }
+        // Submit using SteamVR's queue and the image layout required by OpenVR.
+        encoder.transition_resources(
+            std::iter::empty(),
+            std::iter::once(wgpu::TextureTransition {
+                texture: &self.texture,
+                selector: None,
+                state: wgpu::TextureUses::COPY_SRC,
+            }),
+        );
+        commands.push(encoder.finish());
+        self.graphics.queue.submit(commands);
+        for id in freed {
+            renderer.free_texture(&id);
+        }
+        overlay.set_premultiplied_alpha(true)?;
         overlay.set_vulkan_texture(&mut self.native)
     }
 }

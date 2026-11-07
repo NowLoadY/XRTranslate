@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 mod view;
+mod vocals;
 
 use crate::{
     media::controller::{MediaController, SubtitleField},
@@ -25,6 +26,8 @@ pub(super) enum Action {
     },
     AuditionSpeech(String),
     DeleteSpeech(String),
+    VocalReference(Option<[i64; 2]>),
+    AuditionVocals(i64, i64),
     CancelTrim,
 }
 
@@ -45,6 +48,8 @@ impl Action {
             } => controller.move_speech(&clip, start, position, finished),
             Self::AuditionSpeech(clip) => controller.audition_speech(&clip),
             Self::DeleteSpeech(clip) => controller.delete_speech(&clip),
+            Self::VocalReference(range) => controller.set_vocal_reference(range),
+            Self::AuditionVocals(start, end) => controller.audition_vocals(start, end),
             Self::CancelTrim => controller.cancel_subtitle_trim(),
             Self::Select(_) => {}
         }
@@ -69,6 +74,7 @@ pub(super) fn overview(
     controller: &MediaController,
     subtitles: &crate::media::subtitles::SubtitleTimeline,
     editable: bool,
+    language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) -> Option<Action> {
     let cues = subtitles.cues();
@@ -78,7 +84,10 @@ pub(super) fn overview(
         .and_then(|id| controller.store.get(id));
     let speech = task.and_then(|task| task.speech_track.as_ref());
     let clips = speech.map_or(&[][..], |track| track.clips.as_slice());
-    if cues.is_empty() && clips.is_empty() {
+    let has_vocals = task
+        .and_then(|task| task.separated_audio.as_ref())
+        .is_some_and(|stems| stems.vocals.is_file());
+    if cues.is_empty() && clips.is_empty() && !has_vocals {
         return None;
     }
     let duration = controller
@@ -90,24 +99,42 @@ pub(super) fn overview(
                 .map_or(0, |last| subtitles.effective_end_at(last)),
         )
         .max(clips.iter().map(|clip| clip.end_ms()).max().unwrap_or(0))
+        .max(
+            controller
+                .vocal_waveform
+                .waveform
+                .as_ref()
+                .map_or(0, |wave| wave.duration_ms),
+        )
         .max(1);
-    let (labels, _) = ui.allocate_exact_size(
+    let (mut labels, _) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
             ui.text_style_height(&egui::TextStyle::Body),
         ),
         egui::Sense::hover(),
     );
+    let speech_top = if cues.is_empty() { 0.0 } else { 28.0 };
+    let vocals_top = speech_top + if clips.is_empty() { 0.0 } else { 32.0 };
+    let height = if has_vocals {
+        vocals_top + 28.0
+    } else if clips.is_empty() {
+        24.0
+    } else {
+        speech_top + 28.0
+    };
     let (full_rect, response) = ui.allocate_exact_size(
-        egui::vec2(
-            ui.available_width(),
-            if clips.is_empty() { 24.0 } else { 56.0 },
-        ),
+        egui::vec2(ui.available_width(), height),
         egui::Sense::click_and_drag(),
     );
-    let rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), 24.0));
+    let gutter = if has_vocals { 24.0 } else { 0.0 };
+    labels.min.x += gutter;
+    let rect = egui::Rect::from_min_size(
+        full_rect.min + egui::vec2(gutter, 0.0),
+        egui::vec2((full_rect.width() - gutter).max(1.0), 24.0),
+    );
     let speech_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(0.0, 28.0),
+        rect.min + egui::vec2(0.0, speech_top),
         egui::vec2(rect.width(), 28.0),
     );
     let position = controller.get_time_ms();
@@ -258,8 +285,17 @@ pub(super) fn overview(
     let settling_id = id.with("settling");
     let adjusting =
         drag.is_some() || ui.data(|data| data.get_temp::<bool>(settling_id).unwrap_or(false));
-    let frozen = previous
-        .filter(|_| !adjusting && (response.hovered() || response.is_pointer_button_down_on()));
+    let frozen = previous.filter(|_| {
+        !adjusting
+            && (ui.rect_contains_pointer(full_rect)
+                || ui.input(|input| {
+                    input.pointer.primary_down()
+                        && input
+                            .pointer
+                            .press_origin()
+                            .is_some_and(|origin| full_rect.contains(origin))
+                }))
+    });
     let mut view = frozen.unwrap_or_else(|| {
         let focus = drag.as_ref().map_or(position as f64, |drag| drag.time);
         let view = if controller.can_play() {
@@ -353,7 +389,9 @@ pub(super) fn overview(
         )),
         rect,
     );
-    ui.painter().rect_filled(rect, 6, theme::surface_subtle());
+    if !cues.is_empty() {
+        ui.painter().rect_filled(rect, 6, theme::surface_subtle());
+    }
     let x = |time: i64| rect.left() + view.fraction(time as f64) as f32 * rect.width();
     let current = controller
         .can_play()
@@ -540,6 +578,54 @@ pub(super) fn overview(
             ],
             egui::Stroke::new(2.0, theme::text_strong()),
         );
+    }
+    if has_vocals {
+        let vocal_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(0.0, vocals_top),
+            egui::vec2(rect.width(), 28.0),
+        );
+        for (row, icon, label, visible) in [
+            (
+                rect,
+                xrtranslate_client_core::ui::icon!("media-subtitles.svg"),
+                "Subtitles",
+                !cues.is_empty(),
+            ),
+            (
+                speech_rect,
+                xrtranslate_client_core::ui::icon!("music.svg"),
+                "Speech track",
+                !clips.is_empty(),
+            ),
+            (
+                vocal_rect,
+                xrtranslate_client_core::ui::icon!("file-audio.svg"),
+                "Vocals",
+                true,
+            ),
+        ] {
+            if visible {
+                let area = egui::Rect::from_center_size(
+                    egui::pos2(full_rect.left() + 9.0, row.center().y),
+                    egui::vec2(16.0, 16.0),
+                );
+                egui::Image::new(icon)
+                    .tint(theme::text_weak())
+                    .paint_at(ui, area);
+                ui.interact(area, id.with(label), egui::Sense::hover())
+                    .on_hover_text(crate::media::i18n::tr(language, label));
+            }
+        }
+        if let Some(vocal_action) = vocals::show(
+            controller,
+            view,
+            vocal_rect,
+            editable && controller.speech_job.is_none(),
+            language,
+            ui,
+        ) {
+            return Some(vocal_action);
+        }
     }
     if drag.is_some() {
         let cursor = if matches!(drag.as_ref().unwrap().kind, DragKind::Speech { .. }) {

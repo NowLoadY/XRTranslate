@@ -48,6 +48,8 @@ pub struct MediaController {
     scrub_audio: Option<ScrubAudio>,
     pub(super) speech_edit: Option<(String, i64)>,
     speech_preview_end: Option<i64>,
+    pub(super) previewing_vocals: bool,
+    pub(super) vocal_waveform: super::waveform::Cache,
     pub(super) pending_subtitle_change: Option<super::files::SubtitleChange>,
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
@@ -105,6 +107,8 @@ impl MediaController {
             scrub_audio: None,
             speech_edit: None,
             speech_preview_end: None,
+            previewing_vocals: false,
+            vocal_waveform: Default::default(),
             pending_subtitle_change: None,
             previews: Default::default(),
             show_subtitles: true,
@@ -295,6 +299,9 @@ impl MediaController {
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
         self.prepare_speech_track(task_id);
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
+        if self.active_task_id.as_deref() != Some(task_id) {
+            self.vocal_waveform = Default::default();
+        }
         self.subtitle_edit = None;
         self.pending_subtitle_change = None;
         self.previews = Default::default();
@@ -610,6 +617,7 @@ impl MediaController {
     }
 
     pub(super) fn apply_audio_selection(&mut self, source_changed: bool) {
+        self.finish_vocal_preview();
         let Some(task) = self
             .active_task_id
             .as_deref()
@@ -637,6 +645,7 @@ impl MediaController {
     }
 
     pub(super) fn set_separated_audio(&mut self, stems: xrtranslate_protocol::SeparatedAudio) {
+        self.finish_vocal_preview();
         if !stems.vocals.is_file() || !stems.background.is_file() {
             self.error = Some("Separated audio files are unavailable".into());
             return;
@@ -649,6 +658,8 @@ impl MediaController {
             return;
         };
         let old = task.separated_audio.replace(stems);
+        task.speech_reference_range = None;
+        self.vocal_waveform = Default::default();
         // Keep the selected track when refreshing its saved outputs.
         if let Some(backend) = &mut self.backend {
             if let Err(error) = backend.select_audio(task.playback_audio()) {
@@ -736,6 +747,10 @@ impl MediaController {
     }
 
     pub fn toggle_play(&mut self) {
+        if self.previewing_vocals {
+            self.finish_vocal_preview();
+            return;
+        }
         if self.speech_edit.is_some() {
             return;
         }
@@ -804,6 +819,16 @@ impl MediaController {
     }
 
     pub fn tick(&mut self) {
+        let vocals = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .and_then(|task| task.separated_audio.as_ref())
+            .map(|stems| stems.vocals.as_path());
+        self.vocal_waveform.update(vocals, &self.context);
+        if self.previewing_vocals && self.speech_preview_end.is_none() {
+            self.finish_vocal_preview();
+        }
         self.poll_speech_render();
         if let Some(audio) = &mut self.scrub_audio {
             audio.tick();
@@ -844,6 +869,7 @@ impl MediaController {
             }
 
             if self.playback_loaded
+                && !self.previewing_vocals
                 && let Some(task) = self
                     .active_task_id
                     .as_deref()
@@ -860,6 +886,7 @@ impl MediaController {
 
             // Synchronize detected audio channels from backend stream
             if self.playback_loaded
+                && !self.previewing_vocals
                 && let Some(active_id) = &self.active_task_id
                 && let Some(detected_count) = backend.get_audio_channel_count()
                 && detected_count > 0
@@ -915,6 +942,7 @@ impl MediaController {
     }
 
     pub fn seek_to(&mut self, ms: i64, play: bool) {
+        self.finish_vocal_preview();
         self.speech_preview_end = None;
         if let Some(backend) = &mut self.backend {
             backend.seek(ms);

@@ -8,20 +8,20 @@ use std::{
 };
 use xrtranslate_download::{DownloadClient, DownloadSpec};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageFile {
     pub path: String,
     pub url: String,
     pub bytes: u64,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageArchive {
     pub filename: String,
     pub url: String,
     pub bytes: u64,
     pub entries: Vec<(String, String)>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelPackage {
     pub id: String,
     pub revision: String,
@@ -56,6 +56,58 @@ impl From<&ModelAssetManifest> for ModelPackage {
     }
 }
 impl ModelPackage {
+    /// Removes only declared files and this package's resumable download.
+    pub fn remove(&self, directory: &Path) -> Result<(), ModelDownloadError> {
+        self.validate()?;
+        let parent = directory
+            .parent()
+            .ok_or_else(|| ModelDownloadError::Manifest("Model directory has no parent".into()))?;
+        let staging_parent = parent.join(".xrtranslate-staging");
+        fs::create_dir_all(&staging_parent).map_err(|source| {
+            ModelDownloadError::StagingDirectory {
+                path: staging_parent.clone(),
+                source,
+            }
+        })?;
+        let _lock = InstallLock::acquire_named(&staging_parent, &self.id)?;
+        let staging = staging_parent.join(format!("{}-{}", self.id, self.revision));
+        match fs::remove_dir_all(&staging) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(ModelDownloadError::Removal {
+                    path: staging,
+                    source,
+                });
+            }
+        }
+        for file in &self.files {
+            let path =
+                safe_relative_file(directory, &file.path).map_err(ModelDownloadError::Manifest)?;
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(ModelDownloadError::Removal { path, source }),
+            }
+            crate::install::remove_empty_parents(path.parent(), directory)?;
+        }
+        match fs::remove_dir(directory) {
+            Ok(()) => Ok(()),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                Ok(())
+            }
+            Err(source) => Err(ModelDownloadError::Removal {
+                path: directory.into(),
+                source,
+            }),
+        }
+    }
+
     pub fn download_bytes(&self) -> u64 {
         self.archive.as_ref().map_or(0, |a| a.bytes)
             + self

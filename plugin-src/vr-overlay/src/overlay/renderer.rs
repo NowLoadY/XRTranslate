@@ -55,7 +55,7 @@ impl VrSubtitleCard {
     }
 }
 
-/// Fixed-height captions scroll upward; text elides and the surface clips overflow.
+/// Multiple captions scroll in fixed rows; a single caption fits its text within the surface.
 pub fn paint_cards(
     painter: &Painter,
     rect: Rect,
@@ -105,6 +105,11 @@ pub fn paint_cards(
         // retains outgoing rows until they cross the surface edge.
         if cards.is_empty() {
             scroll.rows.clear();
+        } else if incoming {
+            // Retired previews must not roll out beside their replacement sentence.
+            scroll
+                .rows
+                .retain(|row| !row.card.live || cards.iter().any(|card| card.id == row.card.id));
         } else if !incoming && active_ids != scroll.active_ids {
             scroll
                 .rows
@@ -227,9 +232,27 @@ pub fn paint_cards(
     }
     let mut card_rects = Vec::with_capacity(layouts.len());
     for (card, main, source, y, additional) in layouts {
+        let content_height = main.size().y
+            + source
+                .as_ref()
+                .map_or(0.0, |line| line.size().y + gap * 0.5)
+            + additional
+                .iter()
+                .map(|line| line.size().y + gap * 0.5)
+                .sum::<f32>();
+        let height = if single {
+            (content_height + padding * 2.0).min(budget)
+        } else {
+            budget
+        };
+        let y = if single {
+            rect.center().y - height * 0.5
+        } else {
+            y
+        };
         let bounds = Rect::from_min_size(
             Pos2::new(rect.left() + padding, y),
-            Vec2::new(rect.width() - padding * 2.0, budget),
+            Vec2::new(rect.width() - padding * 2.0, height),
         );
         card_rects.push(bounds);
         let p = painter.with_clip_rect(bounds.intersect(rect));
@@ -278,15 +301,7 @@ pub fn paint_cards(
         };
         let mut position = bounds.min + Vec2::splat(padding);
         if single || !bilingual {
-            let content_height = main.size().y
-                + source
-                    .as_ref()
-                    .map_or(0.0, |line| line.size().y + gap * 0.5)
-                + additional
-                    .iter()
-                    .map(|line| line.size().y + gap * 0.5)
-                    .sum::<f32>();
-            position.y = bounds.top() + ((budget - content_height) * 0.5).max(padding);
+            position.y = bounds.top() + ((height - content_height) * 0.5).max(padding);
         }
         if card.live {
             p.circle_filled(
@@ -310,8 +325,7 @@ pub fn paint_cards(
     card_rects
 }
 
-/// CPU rasterization keeps the exact subtitle layout testable without a headset,
-/// GPU context or Windows-only Direct2D fallback. The only texture is egui's atlas.
+/// Shared layout for GPU overlays and the CPU fallback/headless preview.
 pub struct VrOverlayRenderer {
     width: u32,
     height: u32,
@@ -356,6 +370,27 @@ impl VrOverlayRenderer {
         self.render_surface(|painter, rect| {
             paint_cards(painter, rect, cards, bilingual, single, font_size, colors);
         })
+    }
+
+    pub(super) fn render_gpu(
+        &mut self,
+        target: &mut super::graphics::RgbaTexture,
+        overlay: &super::openvr::OpenVrOverlay,
+        cards: &[VrSubtitleCard],
+        settings: &super::runtime::VrOverlaySettings,
+    ) -> Result<(), super::openvr::OverlayError> {
+        let output = self.paint_surface(|painter, rect| {
+            paint_cards(
+                painter,
+                rect,
+                cards,
+                settings.bilingual,
+                settings.max_items == 1,
+                settings.font_size,
+                [settings.background_color, settings.border_color],
+            );
+        });
+        target.render(overlay, &self.ctx, output)
     }
 
     pub(super) fn render_speech(
@@ -426,20 +461,26 @@ impl VrOverlayRenderer {
         )
     }
 
-    pub(super) fn render_surface(
-        &mut self,
-        mut paint: impl FnMut(&Painter, Rect),
-    ) -> Result<Vec<u8>, String> {
+    fn paint_surface(&mut self, mut paint: impl FnMut(&Painter, Rect)) -> egui::FullOutput {
         let rect =
             Rect::from_min_size(Pos2::ZERO, Vec2::new(self.width as f32, self.height as f32));
-        let mut output = self.ctx.run_ui(
+        self.ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(rect),
                 time: Some(self.started.elapsed().as_secs_f64()),
                 ..Default::default()
             },
             |ui| paint(ui.painter(), rect),
-        );
+        )
+    }
+
+    pub(super) fn render_surface(
+        &mut self,
+        paint: impl FnMut(&Painter, Rect),
+    ) -> Result<Vec<u8>, String> {
+        let mut output = self.paint_surface(paint);
+        let rect =
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(self.width as f32, self.height as f32));
         let deltas = std::mem::take(&mut output.textures_delta.set);
         output.textures_delta.clear();
         for (id, deltas) in &deltas {
@@ -601,7 +642,7 @@ mod raster_tests {
     use super::*;
 
     #[test]
-    fn single_caption_centers_both_languages_without_scroll_or_height_limit() {
+    fn single_caption_centers_both_languages_in_content_sized_background() {
         let ctx = egui::Context::default();
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 320.0));
         let mut card = VrSubtitleCard {
@@ -634,7 +675,10 @@ mod raster_tests {
                 },
             );
             assert_eq!(bounds.len(), 1);
-            assert_eq!(bounds[0].height(), 304.0);
+            assert!(
+                bounds[0].height() < 100.0,
+                "short captions must not fill the panel"
+            );
             let mut text_bounds = Rect::NOTHING;
             for shape in &output.shapes {
                 if let egui::Shape::Text(text) = &shape.shape {
@@ -644,9 +688,55 @@ mod raster_tests {
                 }
             }
             assert!((text_bounds.center().y - rect.center().y).abs() < 0.01);
+            assert!((bounds[0].height() - text_bounds.height() - 24.0).abs() < 0.01);
             output.textures_delta.clear();
         }
         assert!(!ctx.has_requested_repaint());
+    }
+
+    #[test]
+    fn single_caption_background_grows_with_text_and_leaves_panel_transparent() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let mut card = VrSubtitleCard {
+            id: 1,
+            source: String::new(),
+            translated: "One short caption".into(),
+            additional_translations: vec![],
+            speaker: String::new(),
+            live: false,
+        };
+        let mut heights = Vec::new();
+        for text in [
+            "One short caption".to_owned(),
+            "A complete sentence that wraps over several lines. ".repeat(5),
+        ] {
+            card.translated = text;
+            let pixels = renderer
+                .render(
+                    std::slice::from_ref(&card),
+                    false,
+                    true,
+                    20.0,
+                    [[0, 0, 0, 200], [255; 4]],
+                )
+                .unwrap();
+            let occupied: Vec<_> = pixels
+                .chunks_exact(640 * 4)
+                .enumerate()
+                .filter_map(|(row, pixels)| {
+                    pixels
+                        .chunks_exact(4)
+                        .any(|pixel| pixel[3] != 0)
+                        .then_some(row)
+                })
+                .collect();
+            let top = *occupied.first().unwrap();
+            let bottom = *occupied.last().unwrap();
+            assert!(top >= 8 && bottom < 312);
+            assert!((top + bottom).abs_diff(319) <= 1);
+            heights.push(bottom - top + 1);
+        }
+        assert!(heights[0] < 60 && heights[1] > heights[0] * 2);
     }
 
     #[test]
@@ -716,6 +806,47 @@ mod raster_tests {
             }
         }
         assert!(frame(2.4, &[]).is_empty());
+    }
+
+    #[test]
+    fn retiring_a_preview_does_not_animate_a_duplicate_caption() {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 320.0));
+        for (index, live) in [true, true, false].into_iter().enumerate() {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    time: Some(index as f64 * 0.02),
+                    ..Default::default()
+                },
+                |ui| {
+                    let card = VrSubtitleCard {
+                        // An ASR partial (0) becomes a segmented preview (1), then a final result (1).
+                        id: index.min(1) as u64,
+                        source: "A sentence".into(),
+                        translated: "Translation".into(),
+                        additional_translations: vec![],
+                        speaker: String::new(),
+                        live,
+                    };
+                    let bounds = paint_cards(
+                        ui.painter(),
+                        rect,
+                        &[card],
+                        true,
+                        false,
+                        20.0,
+                        [[0, 0, 0, 200], [255; 4]],
+                    );
+                    assert_eq!(
+                        bounds.len(),
+                        1,
+                        "retired previews must disappear immediately"
+                    );
+                },
+            );
+            output.textures_delta.clear();
+        }
     }
 
     #[test]

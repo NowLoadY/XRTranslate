@@ -18,6 +18,7 @@ managed-ort = [
 
 [dependencies]
 hound = "3.5"
+base64 = "0.22"
 tempfile = "3.23"
 xrtranslate-connections = { path = "../../crates/xrtranslate-connections" }
 axum = { version = "0.8.8", features = ["ws"] }

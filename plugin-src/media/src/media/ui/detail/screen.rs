@@ -133,9 +133,38 @@ fn render_detail_contents(
                 .unwrap_or_default()
                 .to_string_lossy();
             let name = format!("{stem}-{speech_language}");
+            let volume = controller
+                .active_task_id
+                .as_deref()
+                .and_then(|id| controller.store.get(id))
+                .map_or(100, |task| task.audio_mix.speech);
             #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
             if let Err(error) =
-                crate::export::copy_file(&name, crate::export::Format::Wav, speech_path.clone())
+                crate::export::write_file(&name, crate::export::Format::Wav, move |output| {
+                    if output
+                        .canonicalize()
+                        .ok()
+                        .zip(speech_path.canonicalize().ok())
+                        .is_some_and(|(a, b)| a == b)
+                    {
+                        return Err(
+                            "Choose a different file to preserve the original audio.".into()
+                        );
+                    }
+                    let temporary = tempfile::Builder::new()
+                        .suffix(".wav")
+                        .tempfile_in(output.parent().ok_or("Invalid output directory")?)
+                        .map_err(|e| e.to_string())?
+                        .into_temp_path();
+                    super::super::super::backend::mpv::encode_audio_volume(
+                        &speech_path,
+                        &temporary,
+                        volume,
+                        &std::sync::atomic::AtomicBool::new(false),
+                    )?;
+                    temporary.persist(output).map_err(|e| e.to_string())?;
+                    Ok(())
+                })
             {
                 controller.error = Some(error);
             }
@@ -146,6 +175,7 @@ fn render_detail_contents(
             {
                 controller.error = Some(error);
             }
+            let _ = volume;
         }
         if export_video && let Some(id) = controller.active_task_id.clone() {
             controller.save_active();
@@ -163,7 +193,13 @@ fn render_detail_contents(
             .inner;
         ui.add_space(12.0);
         ui.push_id(controller.active_task_id.clone(), |ui| {
-            super::super::subtitles::render_subtitles_card(controller, language, optimizing, ui);
+            super::super::subtitles::render_subtitles_card(
+                controller,
+                language,
+                optimizing,
+                snapshot.can_synthesize,
+                ui,
+            );
         });
         return action;
     }
@@ -180,7 +216,11 @@ fn render_detail_contents(
         {
             ui.push_id(controller.active_task_id.clone(), |ui| {
                 super::super::subtitles::render_subtitles_card(
-                    controller, language, optimizing, ui,
+                    controller,
+                    language,
+                    optimizing,
+                    snapshot.can_synthesize,
+                    ui,
                 );
             });
             return action;
@@ -199,7 +239,11 @@ fn render_detail_contents(
                     ui.allocate_ui(egui::vec2(ui.available_width(), list_height), |ui| {
                         ui.push_id(controller.active_task_id.clone(), |ui| {
                             super::super::subtitles::render_subtitles_card(
-                                controller, language, optimizing, ui,
+                                controller,
+                                language,
+                                optimizing,
+                                snapshot.can_synthesize,
+                                ui,
                             );
                         });
                     });
@@ -222,7 +266,11 @@ fn render_detail_contents(
                     .inner;
                 columns[1].push_id(controller.active_task_id.clone(), |ui| {
                     super::super::subtitles::render_subtitles_card(
-                        controller, language, optimizing, ui,
+                        controller,
+                        language,
+                        optimizing,
+                        snapshot.can_synthesize,
+                        ui,
                     );
                 });
             });

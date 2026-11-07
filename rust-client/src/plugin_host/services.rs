@@ -210,6 +210,7 @@ impl crate::XRTranslateApp {
                     "models.preprocessing",
                     "backend.prepare",
                     "playback",
+                    "playback.audio_mix",
                 ]
                 .map(str::to_owned),
             );

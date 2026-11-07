@@ -1,4 +1,4 @@
-//! Background native-model installation for the desktop client.
+//! Shared background installation for built-in and plugin model resources.
 //!
 //! The installer intentionally owns its own worker thread and Tokio runtime:
 //! model downloads and installation can take minutes and must never
@@ -11,12 +11,53 @@ use std::{
     thread,
 };
 use xrtranslate_assets::{
-    DownloadProgress, ModelAssetId, ModelAssetsConfig, ModelCapability, ModelHardwareRequirements,
-    ModelLevel, NativeModelInstaller, ResolvedModelAssets, manifest_for, manifests_for_capability,
-    remove_model_asset, tier_default_manifest,
+    ModelAssetId, ModelAssetsConfig, ModelCapability, ModelHardwareRequirements, ModelLevel,
+    ModelPackage, ResolvedModelAssets, manifest_for, manifests_for_capability,
+    tier_default_manifest,
 };
 use xrtranslate_config::AppConfig;
-use xrtranslate_download::{DownloadCancellation, DownloadSource};
+use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource};
+
+/// A host-owned resource or a model declared by an independently built plugin.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ResourceId {
+    BuiltIn(ModelAssetId),
+    Plugin { plugin: String, model: String },
+}
+impl From<ModelAssetId> for ResourceId {
+    fn from(id: ModelAssetId) -> Self {
+        Self::BuiltIn(id)
+    }
+}
+impl From<&ResourceId> for ResourceId {
+    fn from(id: &ResourceId) -> Self {
+        id.clone()
+    }
+}
+impl ResourceId {
+    fn download_bytes(&self, plugins: &HashMap<ResourceId, RegisteredModel>) -> u64 {
+        match self {
+            Self::BuiltIn(id) => model_download_bytes(*id),
+            Self::Plugin { .. } => plugins
+                .get(self)
+                .map_or(0, |model| model.package.download_bytes()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredModel {
+    pub package: ModelPackage,
+    pub directory: PathBuf,
+}
+
+#[derive(Debug)]
+struct ResourceProgress {
+    asset_id: ResourceId,
+    relative_path: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+}
 
 #[derive(Clone, Debug)]
 pub enum NativeModelTaskState {
@@ -24,7 +65,7 @@ pub enum NativeModelTaskState {
     Discovering,
     Detected,
     Installing {
-        asset_id: ModelAssetId,
+        asset_id: ResourceId,
         relative_path: Option<String>,
         downloaded_bytes: u64,
         total_bytes: u64,
@@ -52,15 +93,15 @@ pub struct NativeModelPackage {
 /// snapshot only explains queue order and aggregate progress.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeModelBatchSnapshot {
-    pub current_asset_id: Option<ModelAssetId>,
+    pub current_asset_id: Option<ResourceId>,
     pub current_relative_path: Option<String>,
     pub completed_packages: usize,
     pub total_packages: usize,
-    pub queued_packages: Vec<ModelAssetId>,
-    pub paused_packages: Vec<ModelAssetId>,
+    pub queued_packages: Vec<ResourceId>,
+    pub paused_packages: Vec<ResourceId>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
-    pub failed_asset_id: Option<ModelAssetId>,
+    pub failed_asset_id: Option<ResourceId>,
 }
 
 impl NativeModelTaskState {
@@ -70,22 +111,22 @@ impl NativeModelTaskState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum NativeModelTask {
     Discover,
-    Install(ModelAssetId),
+    Install(ResourceId),
 }
 
 #[derive(Debug)]
 enum NativeModelTaskEvent {
-    Progress(DownloadProgress),
+    Progress(ResourceProgress),
     Finished(NativeModelTaskResult),
 }
 
 #[derive(Debug)]
 enum NativeModelTaskResult {
-    Detected(Vec<ModelAssetId>),
-    Installed { asset_id: ModelAssetId },
+    Detected(Vec<ResourceId>),
+    Installed { asset_id: ResourceId },
     Cancelled,
     SourceFailed(String),
     Failed(String),
@@ -94,15 +135,15 @@ enum NativeModelTaskResult {
 #[derive(Debug)]
 struct ModelInstallBatch {
     project_root: PathBuf,
-    package_ids: Vec<ModelAssetId>,
-    queued: VecDeque<ModelAssetId>,
-    completed: Vec<ModelAssetId>,
+    package_ids: Vec<ResourceId>,
+    queued: VecDeque<ResourceId>,
+    completed: Vec<ResourceId>,
     completed_bytes: u64,
     total_bytes: u64,
-    failed_asset_id: Option<ModelAssetId>,
+    failed_asset_id: Option<ResourceId>,
 }
 
-/// Coordinates one native model worker and a serial, de-duplicated install
+/// Coordinates one model worker and a serial, de-duplicated install
 /// queue. Results are polled by the UI, while filesystem checks and
 /// network transfer stay on the worker.
 pub struct NativeModelTaskManager {
@@ -114,10 +155,12 @@ pub struct NativeModelTaskManager {
     cancellation: Option<DownloadCancellation>,
     active_task: Option<(PathBuf, NativeModelTask)>,
     restart_after_source_switch: bool,
-    paused: HashSet<ModelAssetId>,
-    download_progress: HashMap<ModelAssetId, (u64, u64)>,
+    paused: HashSet<ResourceId>,
+    download_progress: HashMap<ResourceId, (u64, u64)>,
     install_batch: Option<ModelInstallBatch>,
-    known_ready: HashSet<ModelAssetId>,
+    known_ready: HashSet<ResourceId>,
+    plugin_models: HashMap<ResourceId, RegisteredModel>,
+    changed_resources: Vec<ResourceId>,
 }
 
 impl Default for NativeModelTaskManager {
@@ -135,11 +178,36 @@ impl Default for NativeModelTaskManager {
             download_progress: HashMap::new(),
             install_batch: None,
             known_ready: HashSet::new(),
+            plugin_models: HashMap::new(),
+            changed_resources: Vec::new(),
         }
     }
 }
 
 impl NativeModelTaskManager {
+    pub fn set_plugin_models(&mut self, models: HashMap<ResourceId, RegisteredModel>) {
+        if self.plugin_models != models {
+            // Retire pending work if a plugin is removed or changes its resource.
+            let changed: Vec<_> = self
+                .plugin_models
+                .iter()
+                .filter(|(id, model)| models.get(*id) != Some(*model))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in changed {
+                let _ = self.pause(&id);
+            }
+            self.known_ready
+                .retain(|id| !matches!(id, ResourceId::Plugin { .. }));
+            self.plugin_models = models;
+            self.invalidate_discovery();
+        }
+    }
+
+    pub fn take_changed_resources(&mut self) -> Vec<ResourceId> {
+        std::mem::take(&mut self.changed_resources)
+    }
+
     pub fn set_proxy_url(&mut self, proxy_url: &str) {
         self.proxy_url = (!proxy_url.trim().is_empty()).then(|| proxy_url.trim().to_owned());
     }
@@ -158,7 +226,7 @@ impl NativeModelTaskManager {
         self.use_mirror = use_mirror;
         if let Some((_, NativeModelTask::Install(id))) = self.active_task.as_ref()
             && self.is_busy()
-            && !self.is_model_paused(*id)
+            && !self.is_model_paused(id)
         {
             self.restart_after_source_switch = true;
             if let Some(cancellation) = &self.cancellation {
@@ -184,19 +252,22 @@ impl NativeModelTaskManager {
     }
 
     #[must_use]
-    pub fn is_model_paused(&self, asset_id: ModelAssetId) -> bool {
+    pub fn is_model_paused(&self, asset_id: impl Into<ResourceId>) -> bool {
+        let asset_id = asset_id.into();
         self.paused.contains(&asset_id)
     }
 
     #[must_use]
-    pub fn is_model_queued(&self, asset_id: ModelAssetId) -> bool {
+    pub fn is_model_queued(&self, asset_id: impl Into<ResourceId>) -> bool {
+        let asset_id = asset_id.into();
         self.install_batch
             .as_ref()
             .is_some_and(|batch| batch.queued.contains(&asset_id))
     }
 
     #[must_use]
-    pub fn model_download_progress(&self, asset_id: ModelAssetId) -> Option<(u64, u64)> {
+    pub fn model_download_progress(&self, asset_id: impl Into<ResourceId>) -> Option<(u64, u64)> {
+        let asset_id = asset_id.into();
         if let NativeModelTaskState::Installing {
             asset_id: current,
             downloaded_bytes,
@@ -212,22 +283,23 @@ impl NativeModelTaskManager {
 
     /// Pauses just this package, preserving its partial download. Other
     /// queued packages continue after the current worker releases its files.
-    pub fn pause(&mut self, asset_id: ModelAssetId) -> Result<(), String> {
-        if self.is_model_paused(asset_id) || self.known_ready.contains(&asset_id) {
+    pub fn pause(&mut self, asset_id: impl Into<ResourceId>) -> Result<(), String> {
+        let asset_id = asset_id.into();
+        if self.is_model_paused(&asset_id) || self.known_ready.contains(&asset_id) {
             return Ok(());
         }
         let active = matches!(
-            self.active_task,
-            Some((_, NativeModelTask::Install(current))) if current == asset_id
+            &self.active_task,
+            Some((_, NativeModelTask::Install(current))) if *current == asset_id
         );
-        if !active && !self.is_model_queued(asset_id) {
+        if !active && !self.is_model_queued(&asset_id) {
             return Err("The model is not downloading or queued.".into());
         }
         let progress = self
-            .model_download_progress(asset_id)
-            .unwrap_or((0, model_download_bytes(asset_id)));
-        self.download_progress.insert(asset_id, progress);
-        self.paused.insert(asset_id);
+            .model_download_progress(&asset_id)
+            .unwrap_or((0, asset_id.download_bytes(&self.plugin_models)));
+        self.download_progress.insert(asset_id.clone(), progress);
+        self.paused.insert(asset_id.clone());
         if let Some(batch) = &mut self.install_batch {
             batch.queued.retain(|id| *id != asset_id);
         }
@@ -247,7 +319,7 @@ impl NativeModelTaskManager {
     pub fn enqueue_many(
         &mut self,
         project_root: PathBuf,
-        asset_ids: impl IntoIterator<Item = ModelAssetId>,
+        asset_ids: impl IntoIterator<Item = impl Into<ResourceId>>,
     ) -> Result<(), String> {
         if let Some((active_root, _)) = &self.active_task
             && *active_root != project_root
@@ -257,6 +329,7 @@ impl NativeModelTaskManager {
 
         let requested = asset_ids
             .into_iter()
+            .map(Into::into)
             .filter(|id| !self.known_ready.contains(id))
             .collect::<Vec<_>>();
         if requested.is_empty() {
@@ -288,9 +361,11 @@ impl NativeModelTaskManager {
                 }
                 continue;
             }
-            batch.package_ids.push(id);
-            batch.queued.push_back(id);
-            batch.total_bytes = batch.total_bytes.saturating_add(model_download_bytes(id));
+            batch.package_ids.push(id.clone());
+            batch.queued.push_back(id.clone());
+            batch.total_bytes = batch
+                .total_bytes
+                .saturating_add(id.download_bytes(&self.plugin_models));
         }
         batch.failed_asset_id = None;
 
@@ -303,13 +378,17 @@ impl NativeModelTaskManager {
     pub fn delete(
         &mut self,
         project_root: &std::path::Path,
-        asset_id: ModelAssetId,
+        asset_id: impl Into<ResourceId>,
     ) -> Result<(), String> {
+        let asset_id = asset_id.into();
         if self.is_busy() {
             return Err("Wait for the current model task before deleting a model resource.".into());
         }
-        let assets = load_assets(project_root)?;
-        remove_model_asset(&assets, asset_id).map_err(|error| error.to_string())?;
+        let model = resolve_model(project_root, &asset_id, &self.plugin_models)?;
+        model
+            .package
+            .remove(&model.directory)
+            .map_err(|error| error.to_string())?;
         self.state = NativeModelTaskState::Idle;
         self.events = None;
         self.active_task = None;
@@ -345,7 +424,8 @@ impl NativeModelTaskManager {
 
     /// Whether the latest background scan or install found all required files.
     #[must_use]
-    pub fn is_model_ready(&self, asset_id: ModelAssetId) -> bool {
+    pub fn is_model_ready(&self, asset_id: impl Into<ResourceId>) -> bool {
+        let asset_id = asset_id.into();
         self.known_ready.contains(&asset_id)
     }
 
@@ -358,20 +438,24 @@ impl NativeModelTaskManager {
                 relative_path,
                 downloaded_bytes,
                 ..
-            } => (Some(*asset_id), relative_path.clone(), *downloaded_bytes),
-            _ => (batch.failed_asset_id, None, 0),
+            } => (
+                Some(asset_id.clone()),
+                relative_path.clone(),
+                *downloaded_bytes,
+            ),
+            _ => (batch.failed_asset_id.clone(), None, 0),
         };
         Some(NativeModelBatchSnapshot {
-            current_asset_id,
+            current_asset_id: current_asset_id.clone(),
             current_relative_path,
             completed_packages: batch.completed.len(),
             total_packages: batch.package_ids.len(),
-            queued_packages: batch.queued.iter().copied().collect(),
+            queued_packages: batch.queued.iter().cloned().collect(),
             paused_packages: batch
                 .package_ids
                 .iter()
-                .copied()
                 .filter(|id| self.is_model_paused(*id))
+                .cloned()
                 .collect(),
             downloaded_bytes: batch
                 .completed_bytes
@@ -380,14 +464,14 @@ impl NativeModelTaskManager {
                     batch
                         .package_ids
                         .iter()
-                        .filter(|id| Some(**id) != current_asset_id)
+                        .filter(|id| Some(*id) != current_asset_id.as_ref())
                         .filter(|id| !batch.completed.contains(id))
                         .filter_map(|id| self.download_progress.get(id))
                         .map(|(downloaded, _)| *downloaded)
                         .sum::<u64>(),
                 ),
             total_bytes: batch.total_bytes,
-            failed_asset_id: batch.failed_asset_id,
+            failed_asset_id: batch.failed_asset_id.clone(),
         })
     }
 
@@ -402,7 +486,7 @@ impl NativeModelTaskManager {
             match events.try_recv() {
                 Ok(NativeModelTaskEvent::Progress(progress)) => {
                     self.download_progress.insert(
-                        progress.asset_id,
+                        progress.asset_id.clone(),
                         (progress.downloaded_bytes, progress.total_bytes),
                     );
                     self.state = NativeModelTaskState::Installing {
@@ -421,9 +505,9 @@ impl NativeModelTaskManager {
                     self.state = NativeModelTaskState::Failed(
                         "The native model worker stopped before reporting a result.".into(),
                     );
-                    if let Some((_, NativeModelTask::Install(id))) = self.active_task {
+                    if let Some((_, NativeModelTask::Install(id))) = &self.active_task {
                         if let Some(batch) = &mut self.install_batch {
-                            batch.failed_asset_id = Some(id);
+                            batch.failed_asset_id = Some(id.clone());
                         }
                     }
                     finished = Some(NativeModelTaskResult::Failed(
@@ -446,7 +530,7 @@ impl NativeModelTaskManager {
             result,
             NativeModelTaskResult::Failed(_) | NativeModelTaskResult::SourceFailed(_)
         ) && (self.restart_after_source_switch
-            || matches!(active_task, Some((_, NativeModelTask::Install(id))) if self.is_model_paused(id)))
+            || matches!(&active_task, Some((_, NativeModelTask::Install(id))) if self.is_model_paused(id)))
         {
             NativeModelTaskResult::Cancelled
         } else {
@@ -465,15 +549,16 @@ impl NativeModelTaskManager {
             }
             NativeModelTaskResult::Installed { asset_id } => {
                 self.restart_after_source_switch = false;
-                self.known_ready.insert(asset_id);
+                self.known_ready.insert(asset_id.clone());
+                self.changed_resources.push(asset_id.clone());
                 self.paused.remove(&asset_id);
                 self.download_progress.remove(&asset_id);
                 if let Some(batch) = &mut self.install_batch {
                     if !batch.completed.contains(&asset_id) {
-                        batch.completed.push(asset_id);
+                        batch.completed.push(asset_id.clone());
                         batch.completed_bytes = batch
                             .completed_bytes
-                            .saturating_add(model_download_bytes(asset_id));
+                            .saturating_add(asset_id.download_bytes(&self.plugin_models));
                     }
                     batch.failed_asset_id = None;
                 }
@@ -531,10 +616,10 @@ impl NativeModelTaskManager {
         while let Some(asset_id) = batch.queued.pop_front() {
             if self.known_ready.contains(&asset_id) {
                 if !batch.completed.contains(&asset_id) {
-                    batch.completed.push(asset_id);
+                    batch.completed.push(asset_id.clone());
                     batch.completed_bytes = batch
                         .completed_bytes
-                        .saturating_add(model_download_bytes(asset_id));
+                        .saturating_add(asset_id.download_bytes(&self.plugin_models));
                 }
                 continue;
             }
@@ -556,12 +641,15 @@ impl NativeModelTaskManager {
             matches!(task, NativeModelTask::Install(_)).then(DownloadCancellation::default);
         let worker_cancellation = cancellation.clone();
         let worker_root = project_root.clone();
+        let plugin_models = self.plugin_models.clone();
+        let worker_task = task.clone();
         thread::Builder::new()
             .name("native-model-installer".into())
             .spawn(move || {
                 run_task(
                     worker_root,
-                    task,
+                    worker_task,
+                    plugin_models,
                     event_tx,
                     proxy_url,
                     source,
@@ -569,16 +657,16 @@ impl NativeModelTaskManager {
                 )
             })
             .map_err(|error| format!("Cannot start native model worker: {error}"))?;
-        self.state = match task {
+        self.state = match &task {
             NativeModelTask::Discover => NativeModelTaskState::Discovering,
             NativeModelTask::Install(asset_id) => {
                 let (downloaded_bytes, total_bytes) = self
                     .download_progress
-                    .get(&asset_id)
+                    .get(asset_id)
                     .copied()
-                    .unwrap_or((0, model_download_bytes(asset_id)));
+                    .unwrap_or((0, asset_id.download_bytes(&self.plugin_models)));
                 NativeModelTaskState::Installing {
-                    asset_id,
+                    asset_id: asset_id.clone(),
                     relative_path: None,
                     downloaded_bytes,
                     total_bytes,
@@ -592,18 +680,40 @@ impl NativeModelTaskManager {
     }
 }
 
+fn resolve_model(
+    project_root: &std::path::Path,
+    id: &ResourceId,
+    plugins: &HashMap<ResourceId, RegisteredModel>,
+) -> Result<RegisteredModel, String> {
+    match id {
+        ResourceId::BuiltIn(id) => {
+            let assets = load_assets(project_root)?;
+            let asset = assets.asset(*id);
+            Ok(RegisteredModel {
+                package: asset.manifest().into(),
+                directory: asset.directory().to_path_buf(),
+            })
+        }
+        ResourceId::Plugin { .. } => plugins
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "The plugin model is no longer available.".into()),
+    }
+}
+
 fn run_task(
     project_root: PathBuf,
     task: NativeModelTask,
+    plugins: HashMap<ResourceId, RegisteredModel>,
     event_tx: crossbeam_channel::Sender<NativeModelTaskEvent>,
     proxy_url: Option<String>,
     source: DownloadSource,
     cancellation: Option<DownloadCancellation>,
 ) {
     let result = match task {
-        NativeModelTask::Discover => discover_models(project_root),
+        NativeModelTask::Discover => discover_models(project_root, &plugins),
         NativeModelTask::Install(asset_id) => install_model(
-            project_root,
+            resolve_model(&project_root, &asset_id, &plugins),
             asset_id,
             &event_tx,
             proxy_url.as_deref(),
@@ -614,16 +724,25 @@ fn run_task(
     let _ = event_tx.send(NativeModelTaskEvent::Finished(result));
 }
 
-fn discover_models(project_root: PathBuf) -> NativeModelTaskResult {
+fn discover_models(
+    project_root: PathBuf,
+    plugins: &HashMap<ResourceId, RegisteredModel>,
+) -> NativeModelTaskResult {
     match load_assets(&project_root) {
         Ok(assets) => {
             if let Err(error) = xrtranslate_assets::ensure_bundled_gtcrn(&assets) {
                 return NativeModelTaskResult::Failed(error.to_string());
             }
-            let ready = assets
+            let mut ready = assets
                 .installed_assets()
-                .map(|asset| asset.manifest().id)
+                .map(|asset| ResourceId::BuiltIn(asset.manifest().id))
                 .collect::<Vec<_>>();
+            ready.extend(
+                plugins
+                    .iter()
+                    .filter(|(_, model)| model.package.check(&model.directory).unwrap_or(false))
+                    .map(|(id, _)| id.clone()),
+            );
             NativeModelTaskResult::Detected(ready)
         }
         Err(error) => NativeModelTaskResult::Failed(error),
@@ -631,25 +750,24 @@ fn discover_models(project_root: PathBuf) -> NativeModelTaskResult {
 }
 
 fn install_model(
-    project_root: PathBuf,
-    asset_id: ModelAssetId,
+    model: Result<RegisteredModel, String>,
+    asset_id: ResourceId,
     event_tx: &crossbeam_channel::Sender<NativeModelTaskEvent>,
     proxy_url: Option<&str>,
     source: DownloadSource,
     cancellation: DownloadCancellation,
 ) -> NativeModelTaskResult {
-    let cancellation_observer = cancellation.clone();
-    let assets = match load_assets(&project_root) {
-        Ok(assets) => assets,
+    let model = match model {
+        Ok(model) => model,
         Err(error) => return NativeModelTaskResult::Failed(error),
     };
-    let installer = match NativeModelInstaller::with_download_source_and_cancellation(
-        assets,
+    let client = match DownloadClient::with_proxy_source_and_cancellation(
+        concat!("xrtranslate-assets/", env!("CARGO_PKG_VERSION")),
         proxy_url,
         source,
-        cancellation,
+        cancellation.clone(),
     ) {
-        Ok(installer) => installer,
+        Ok(client) => client,
         Err(error) => return NativeModelTaskResult::Failed(error.to_string()),
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -663,14 +781,21 @@ fn install_model(
             ));
         }
     };
-    let progress_tx = event_tx.clone();
-    let result = runtime.block_on(installer.install(asset_id, move |progress| {
-        let _ = progress_tx.send(NativeModelTaskEvent::Progress(progress));
-    }));
-
+    let result = runtime.block_on(model.package.install(
+        &client,
+        &model.directory,
+        |path, done, total| {
+            let _ = event_tx.send(NativeModelTaskEvent::Progress(ResourceProgress {
+                asset_id: asset_id.clone(),
+                relative_path: path.into(),
+                downloaded_bytes: done,
+                total_bytes: total,
+            }));
+        },
+    ));
     match result {
         Ok(_) => NativeModelTaskResult::Installed { asset_id },
-        Err(error) if error.is_cancelled() || cancellation_observer.is_cancelled() => {
+        Err(error) if error.is_cancelled() || cancellation.is_cancelled() => {
             NativeModelTaskResult::Cancelled
         }
         Err(error) if error.allows_source_fallback() => {
@@ -883,6 +1008,95 @@ mod tests {
         (manager, tx, root)
     }
 
+    fn plugin_model(root: &std::path::Path) -> (ResourceId, RegisteredModel) {
+        (
+            ResourceId::Plugin {
+                plugin: "test-plugin".into(),
+                model: "test-model".into(),
+            },
+            RegisteredModel {
+                package: ModelPackage {
+                    id: "test-model".into(),
+                    revision: "main".into(),
+                    archive: None,
+                    files: vec![xrtranslate_assets::PackageFile {
+                        path: "model.onnx".into(),
+                        url: "https://example.invalid/model.onnx".into(),
+                        bytes: 4,
+                    }],
+                },
+                directory: root.join("test-model"),
+            },
+        )
+    }
+
+    #[test]
+    fn plugin_and_builtin_models_share_queue_and_pause_state() {
+        let (mut manager, tx, root) = discovering();
+        let (plugin, model) = plugin_model(&root);
+        let builtin = ResourceId::BuiltIn(ModelAssetId::GtcrnOnnx);
+        manager.plugin_models.insert(plugin.clone(), model);
+        manager
+            .enqueue_many(
+                root.clone(),
+                [plugin.clone(), builtin.clone(), plugin.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            manager.batch_snapshot().unwrap().queued_packages,
+            [plugin.clone(), builtin.clone()]
+        );
+        manager.pause(&plugin).unwrap();
+        assert_eq!(
+            manager.batch_snapshot().unwrap().queued_packages,
+            [builtin.clone()]
+        );
+        manager.switch_download_source(root.clone(), true).unwrap();
+        assert!(manager.is_model_paused(&plugin));
+        manager.enqueue_many(root, [&plugin]).unwrap();
+        assert!(!manager.is_model_paused(&plugin));
+        assert!(manager.use_mirror());
+        assert_eq!(manager.batch_snapshot().unwrap().total_packages, 2);
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::Detected(vec![builtin, plugin.clone()]),
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(manager.is_model_ready(&plugin));
+        assert!(!manager.is_busy());
+        let batch = manager.batch_snapshot().unwrap();
+        assert_eq!(batch.completed_packages, 2);
+        assert_eq!(batch.downloaded_bytes, batch.total_bytes);
+    }
+
+    #[test]
+    fn plugin_install_reuses_staged_files_and_deletes_only_declared_files() {
+        let root = tempfile::tempdir().unwrap();
+        let (id, model) = plugin_model(root.path());
+        let staging = root.path().join(".xrtranslate-staging/test-model-main");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("model.onnx"), b"test").unwrap();
+        let mut manager = NativeModelTaskManager::default();
+        manager.set_plugin_models(HashMap::from([(id.clone(), model.clone())]));
+        manager.enqueue_many(root.path().into(), [&id]).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while manager.is_busy() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(5));
+            manager.poll();
+        }
+        assert!(manager.is_model_ready(&id), "{:?}", manager.state());
+        assert_eq!(manager.take_changed_resources(), [id.clone()]);
+        assert_eq!(
+            std::fs::read(model.directory.join("model.onnx")).unwrap(),
+            b"test"
+        );
+        std::fs::write(model.directory.join("keep.txt"), b"user data").unwrap();
+        manager.delete(root.path(), &id).unwrap();
+        assert!(!model.directory.join("model.onnx").exists());
+        assert!(model.directory.join("keep.txt").exists());
+        assert!(!manager.is_model_ready(&id));
+    }
+
     #[test]
     fn discovery_accepts_download_intent_and_skips_already_installed_models() {
         let (mut manager, tx, root) = discovering();
@@ -890,7 +1104,7 @@ mod tests {
         manager.enqueue_many(root, [id, id]).unwrap();
         assert!(manager.is_model_queued(id));
         tx.send(NativeModelTaskEvent::Finished(
-            NativeModelTaskResult::Detected(vec![id]),
+            NativeModelTaskResult::Detected(vec![id.into()]),
         ))
         .unwrap();
         manager.poll();
@@ -927,9 +1141,9 @@ mod tests {
         let id = ModelAssetId::UvrMdxnet9482Onnx;
         manager.enqueue_many(root.clone(), [id]).unwrap();
         manager.install_batch.as_mut().unwrap().queued.clear();
-        manager.active_task = Some((root, NativeModelTask::Install(id)));
+        manager.active_task = Some((root, NativeModelTask::Install(id.into())));
         manager.state = NativeModelTaskState::Installing {
-            asset_id: id,
+            asset_id: id.into(),
             relative_path: None,
             downloaded_bytes: 10,
             total_bytes: 100,
@@ -938,9 +1152,9 @@ mod tests {
         manager.cancellation = Some(cancellation.clone());
         manager.pause(id).unwrap();
         assert!(cancellation.is_cancelled());
-        tx.send(NativeModelTaskEvent::Progress(DownloadProgress {
-            asset_id: id,
-            relative_path: "model.onnx",
+        tx.send(NativeModelTaskEvent::Progress(ResourceProgress {
+            asset_id: id.into(),
+            relative_path: "model.onnx".into(),
             downloaded_bytes: 20,
             total_bytes: 100,
         }))
@@ -968,14 +1182,17 @@ mod tests {
         // exercises source selection without performing a network request.
         let root = tempfile::tempdir().unwrap();
         let id = ModelAssetId::UvrMdxnet9482Onnx;
-        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        manager.active_task = Some((
+            root.path().to_path_buf(),
+            NativeModelTask::Install(id.into()),
+        ));
         manager.state = NativeModelTaskState::Installing {
-            asset_id: id,
+            asset_id: id.into(),
             relative_path: None,
             downloaded_bytes: 10,
             total_bytes: 100,
         };
-        manager.download_progress.insert(id, (10, 100));
+        manager.download_progress.insert(id.into(), (10, 100));
         tx.send(NativeModelTaskEvent::Finished(
             NativeModelTaskResult::SourceFailed("official unavailable".into()),
         ))
@@ -991,7 +1208,10 @@ mod tests {
         assert!(!manager.is_busy());
         let (tx, rx) = unbounded();
         manager.events = Some(rx);
-        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        manager.active_task = Some((
+            root.path().to_path_buf(),
+            NativeModelTask::Install(id.into()),
+        ));
         tx.send(NativeModelTaskEvent::Finished(
             NativeModelTaskResult::SourceFailed("mirror unavailable".into()),
         ))
@@ -1001,7 +1221,7 @@ mod tests {
             matches!(manager.state(), NativeModelTaskState::Failed(error) if error == "mirror unavailable")
         );
         assert!(manager.use_mirror());
-        manager.paused.insert(id);
+        manager.paused.insert(id.into());
         manager
             .switch_download_source(root.path().to_path_buf(), false)
             .unwrap();
@@ -1014,8 +1234,8 @@ mod tests {
     fn a_failure_already_in_flight_cannot_restart_a_paused_download() {
         let (mut manager, tx, root) = discovering();
         let id = ModelAssetId::UvrMdxnet9482Onnx;
-        manager.active_task = Some((root, NativeModelTask::Install(id)));
-        manager.paused.insert(id);
+        manager.active_task = Some((root, NativeModelTask::Install(id.into())));
+        manager.paused.insert(id.into());
         tx.send(NativeModelTaskEvent::Finished(
             NativeModelTaskResult::SourceFailed("official unavailable".into()),
         ))
@@ -1032,9 +1252,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let id = ModelAssetId::UvrMdxnet9482Onnx;
         manager.use_mirror = true;
-        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        manager.active_task = Some((
+            root.path().to_path_buf(),
+            NativeModelTask::Install(id.into()),
+        ));
         manager.state = NativeModelTaskState::Installing {
-            asset_id: id,
+            asset_id: id.into(),
             relative_path: None,
             downloaded_bytes: 10,
             total_bytes: 100,

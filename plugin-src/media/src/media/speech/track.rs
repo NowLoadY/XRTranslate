@@ -16,23 +16,17 @@ impl SpeechTrack {
     }
 
     pub(crate) fn completed(&self, task: &super::MediaTask) -> usize {
-        if self.language != task.target_language {
-            return 0;
-        }
-        let completed: HashSet<_> = self
-            .clips
-            .iter()
-            .map(|clip| (clip.id.as_str(), clip.text.as_str()))
-            .collect();
         task.subtitles
             .cues()
             .iter()
-            .filter(|cue| {
-                cue.translated_text
-                    .as_ref()
-                    .is_some_and(|text| completed.contains(&(cue.id.as_str(), text.as_str())))
-            })
+            .filter(|cue| self.overlaps(cue.start_ms, cue.end_ms))
             .count()
+    }
+
+    pub(crate) fn overlaps(&self, start_ms: i64, end_ms: i64) -> bool {
+        self.clips
+            .iter()
+            .any(|clip| clip.start_ms < end_ms && clip.end_ms() > start_ms)
     }
 }
 

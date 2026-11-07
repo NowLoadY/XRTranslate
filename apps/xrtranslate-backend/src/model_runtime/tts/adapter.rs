@@ -44,6 +44,47 @@ impl TtsAdapter {
         })
     }
 
+    pub(crate) fn supports_reference_audio(&self) -> bool {
+        self.models.iter().any(|model| {
+            matches!(&model.backend,
+            TtsBackend::Remote(adapter) if adapter.capabilities().reference_audio)
+        })
+    }
+
+    pub(crate) async fn create_reference_voice(
+        &self,
+        wav: &[u8],
+        language: &str,
+    ) -> Result<String, InferenceError> {
+        if let Some(TtsModel {
+            backend: TtsBackend::Remote(adapter),
+            ..
+        }) = self
+            .models
+            .iter()
+            .find(|model| language_is_supported(&model.supported_languages, language))
+        {
+            return adapter.create_reference_voice(wav).await;
+        }
+        Err(InferenceError::InvalidConfiguration {
+            field: "tts.reference",
+            message: "The selected TTS model does not support reference audio.".into(),
+        })
+    }
+
+    pub(crate) async fn delete_reference_voice(&self, voice: &str, language: &str) {
+        if let Some(TtsModel {
+            backend: TtsBackend::Remote(adapter),
+            ..
+        }) = self
+            .models
+            .iter()
+            .find(|model| language_is_supported(&model.supported_languages, language))
+        {
+            adapter.delete_reference_voice(voice).await;
+        }
+    }
+
     pub(crate) fn is_local(&self) -> bool {
         self.models
             .iter()

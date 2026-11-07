@@ -22,7 +22,7 @@ struct State {
 
 pub struct Process {
     child: Child,
-    output: Option<mpsc::SyncSender<Message>>,
+    output: Option<crate::mailbox::Sender>,
     state: Arc<Mutex<State>>,
     threads: Vec<JoinHandle<()>>,
     next_id: u64,
@@ -55,8 +55,12 @@ impl Process {
             // Share the app-local CRT even when launched from another directory.
             if let Some(directory) = environment.host_executable.parent() {
                 let path = std::env::var_os("PATH").unwrap_or_default();
-                let paths = std::iter::once(directory.to_owned()).chain(std::env::split_paths(&path));
-                command.env("PATH", std::env::join_paths(paths).map_err(|e| e.to_string())?);
+                let paths =
+                    std::iter::once(directory.to_owned()).chain(std::env::split_paths(&path));
+                command.env(
+                    "PATH",
+                    std::env::join_paths(paths).map_err(|e| e.to_string())?,
+                );
             }
         }
         let mut child = command.spawn().map_err(|e| e.to_string())?;
@@ -64,10 +68,15 @@ impl Process {
         let output = child.stdout.take().unwrap();
         let errors = child.stderr.take().unwrap();
         let state = Arc::new(Mutex::new(State::default()));
-        let (tx, rx) = mpsc::sync_channel(64);
+        let (tx, rx) = crate::mailbox::channel();
         let write_state = state.clone();
         let writer = std::thread::spawn(move || {
-            for message in rx {
+            loop {
+                let message = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(message) => message,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 if let Err(error) = serde_json::to_writer(&mut input, &message)
                     .map_err(std::io::Error::other)
                     .and_then(|_| input.write_all(b"\n"))
@@ -179,16 +188,21 @@ impl Process {
         Ok(process)
     }
     pub fn send(&self, message: Message) -> std::result::Result<(), String> {
-        let result = self
+        match self
             .output
             .as_ref()
             .ok_or("Plugin is stopped")?
             .try_send(message)
-            .map_err(|e| format!("Plugin is busy or stopped: {e}"));
-        if let Err(error) = &result {
-            self.state.lock().unwrap().error = Some(error.clone());
+        {
+            Ok(()) => Ok(()),
+            // Backpressure is not a process failure. Calls may retry without losing the plugin.
+            Err(mpsc::TrySendError::Full(_)) => Err("Plugin is busy. Please try again.".into()),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                let error = "Plugin is stopped".to_owned();
+                self.state.lock().unwrap().error = Some(error.clone());
+                Err(error)
+            }
         }
-        result
     }
     pub fn request(&mut self, name: &str, arguments: Value) -> std::result::Result<u64, String> {
         let mut state = self.state.lock().unwrap();

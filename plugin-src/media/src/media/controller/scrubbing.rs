@@ -264,6 +264,7 @@ impl MediaController {
     }
 
     pub(in crate::media) fn cancel_subtitle_trim(&mut self) {
+        self.finish_vocal_preview();
         self.speech_edit = None;
         self.speech_preview_end = None;
         self.scrub_audio = None;
@@ -274,5 +275,183 @@ impl MediaController {
         {
             self.subtitle_edit = None;
         }
+    }
+
+    pub(in crate::media) fn set_vocal_reference(&mut self, range: Option<[i64; 2]>) {
+        if self.speech_job.is_some() {
+            return;
+        }
+        if range.is_some_and(|[start, end]| start < 0 || end - start < 5000 || end - start > 20_000)
+        {
+            self.error = Some("Select 5–20 seconds of clear speech from one speaker.".into());
+            return;
+        }
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        task.speech_reference_range = range;
+        if range.is_some() {
+            task.speech_use_source_voice = true;
+        }
+        self.save_active();
+    }
+
+    pub(in crate::media) fn audition_vocals(&mut self, start: i64, end: i64) {
+        if self.previewing_vocals && self.speech_preview_end == Some(end) {
+            self.finish_vocal_preview();
+            return;
+        }
+        self.finish_vocal_preview();
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+        else {
+            return;
+        };
+        let Some(stems) = task
+            .separated_audio
+            .as_ref()
+            .filter(|stems| stems.vocals.is_file())
+        else {
+            return;
+        };
+        let audio = super::super::backend::PlaybackAudio::External(stems.vocals.clone()).adjusted(
+            xrtranslate_client_core::playback::AudioMixSettings {
+                volume: task
+                    .audio_mix
+                    .volume(super::super::task::PlaybackTrack::Vocals),
+                ..Default::default()
+            },
+        );
+        if let Some(backend) = &mut self.backend {
+            backend.pause();
+            if let Err(error) = backend.select_audio(audio) {
+                self.error = Some(error);
+                return;
+            }
+            backend.set_channel_routing(&[]);
+            backend.seek(start.max(0));
+            backend.play();
+            self.previewing_vocals = true;
+            self.speech_preview_end = Some(end);
+        }
+    }
+
+    pub(super) fn finish_vocal_preview(&mut self) {
+        if !std::mem::take(&mut self.previewing_vocals) {
+            return;
+        }
+        self.speech_preview_end = None;
+        if let Some(backend) = &mut self.backend {
+            backend.pause();
+            if let Some(task) = self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+            {
+                backend.set_channel_routing(task.playback_channels());
+                if let Err(error) = backend.select_audio(task.playback_audio()) {
+                    self.error = Some(error);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "mpv", any(windows, target_os = "linux")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires the installed media playback runtime"]
+    fn vocal_audition_restores_the_mix_without_changing_recognition_channels() {
+        use crate::media::{
+            backend::{MediaBackend, mpv::MpvBackend},
+            task::SubtitleMode,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.wav");
+        let vocals = directory.path().join("vocals.wav");
+        for (path, channels) in [(&original, 2), (&vocals, 1)] {
+            let mut writer = hound::WavWriter::create(
+                path,
+                hound::WavSpec {
+                    channels,
+                    sample_rate: 24_000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for _ in 0..48_000 * usize::from(channels) {
+                writer.write_sample(0_i16).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        let mut backend = MpvBackend::new().unwrap();
+        backend.set_mute(true);
+        let mut controller =
+            MediaController::open(directory.path().into(), Some(Box::new(backend)));
+        let mut task = MediaTask::new(
+            "Audition".into(),
+            MediaSource::LocalFile(original),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.duration_ms = 2000;
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+            vocals,
+            background: directory.path().join("unused.wav"),
+        });
+        let id = task.id.clone();
+        controller.store.add_or_update(task);
+        controller.open_task(&id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while controller.store.get(&id).unwrap().audio_channels.len() != 2 {
+            assert!(
+                Instant::now() < deadline,
+                "original audio should load: {:?}",
+                controller.error
+            );
+            controller.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mix = controller.store.get(&id).unwrap().playback_audio();
+        controller.audition_vocals(0, 300);
+        assert!(controller.previewing_vocals);
+        while controller.previewing_vocals {
+            assert!(
+                Instant::now() < deadline,
+                "audition should end: {:?}",
+                controller.error
+            );
+            controller.tick();
+            assert_eq!(controller.store.get(&id).unwrap().audio_channels.len(), 2);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(controller.store.get(&id).unwrap().playback_audio(), mix);
+        while !controller
+            .backend
+            .as_ref()
+            .unwrap()
+            .audio_tracks()
+            .iter()
+            .any(|track| track.selected && track.external.is_none())
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the original playback mix should return"
+            );
+            controller.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(controller.get_status(), PlaybackStatus::Paused);
     }
 }

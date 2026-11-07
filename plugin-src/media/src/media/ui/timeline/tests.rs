@@ -5,6 +5,133 @@ use crate::media::{
 };
 
 #[test]
+fn vocals_are_visible_without_subtitles_and_select_an_independent_reference() {
+    let storage = tempfile::tempdir().unwrap();
+    let vocals = storage.path().join("vocals.wav");
+    std::fs::write(&vocals, b"waveform fixture").unwrap();
+    let mut controller = MediaController::open(storage.path().into(), None);
+    controller.backend = None;
+    controller.store.tasks.clear();
+    let mut task = MediaTask::new(
+        "Vocals".into(),
+        MediaSource::LocalFile("movie.mp4".into()),
+        "en".into(),
+        "zh".into(),
+        SubtitleMode::None,
+        Default::default(),
+    );
+    task.duration_ms = 60_000;
+    task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+        vocals,
+        background: storage.path().join("background.wav"),
+    });
+    let id = task.id.clone();
+    controller.active_task_id = Some(id.clone());
+    controller.store.add_or_update(task);
+    controller.vocal_waveform.waveform = Some(crate::media::waveform::Waveform {
+        duration_ms: 60_000,
+        peaks: vec![0.5; 100],
+    });
+    let ctx = egui::Context::default();
+    let mut clock = 0.0;
+    let mut frame = |controller: &mut MediaController, events| {
+        clock += 0.02;
+        let mut action = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(clock),
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640.0, 240.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                action = overview(
+                    controller,
+                    &controller.subtitles,
+                    true,
+                    crate::i18n::UiLanguage::English,
+                    ui,
+                );
+            },
+        );
+        let rect = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape)
+                    if shape.rect.height() == 28.0 && shape.rect.width() > 300.0 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("vocal row exists even before recognition");
+        let _ = ctx.tessellate(output.shapes.clone(), output.pixels_per_point);
+        output.textures_delta.clear();
+        if let Some(action) = action {
+            action.apply(controller);
+        }
+        rect
+    };
+    let rect = frame(&mut controller, vec![]);
+    let pos = |time: f32| {
+        egui::pos2(
+            rect.left() + rect.width() * time / 60_000.0,
+            rect.center().y,
+        )
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(
+        &mut controller,
+        vec![
+            egui::Event::PointerMoved(pos(10_000.0)),
+            button(pos(10_000.0), true),
+        ],
+    );
+    frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(pos(18_000.0))],
+    );
+    frame(&mut controller, vec![button(pos(18_000.0), false)]);
+    let task = controller.store.get(&id).unwrap();
+    assert_eq!(task.speech_reference_range, Some([10_000, 18_000]));
+    assert!(task.speech_use_source_voice);
+    assert_eq!(task.subtitles.count(), 0);
+    assert!(task.speech_track.is_none());
+    assert_eq!(
+        task.audio_track,
+        crate::media::task::AudioTrackSelection::Original
+    );
+    let restored = MediaTaskStore::load_from_dir(storage.path());
+    assert_eq!(
+        restored.get(&id).unwrap().speech_reference_range,
+        Some([10_000, 18_000])
+    );
+    controller.set_vocal_reference(Some([0, 1000]));
+    assert_eq!(
+        controller.store.get(&id).unwrap().speech_reference_range,
+        Some([10_000, 18_000])
+    );
+    controller.set_vocal_reference(None);
+    assert!(
+        controller
+            .store
+            .get(&id)
+            .unwrap()
+            .speech_reference_range
+            .is_none()
+    );
+}
+
+#[test]
 fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
     let storage = tempfile::tempdir().unwrap();
     let mut controller = MediaController::open(storage.path().into(), None);
@@ -43,7 +170,13 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                 ..Default::default()
             },
             |ui| {
-                action = overview(controller, &controller.subtitles, true, ui);
+                action = overview(
+                    controller,
+                    &controller.subtitles,
+                    true,
+                    crate::i18n::UiLanguage::English,
+                    ui,
+                );
                 view = ui.data(|data| {
                     data.get_temp::<View>(
                         ui.make_persistent_id(("subtitle_window", &controller.active_task_id)),

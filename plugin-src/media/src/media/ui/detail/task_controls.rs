@@ -105,6 +105,7 @@ pub(super) fn render_task_control_card(
         .map(|job| (job.progress(), job.is_waiting()));
     let mut generate_speech = None;
     let mut cancel_speech = false;
+    let mut preview_reference = None;
     let card_top = ui.next_widget_position();
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -294,6 +295,51 @@ pub(super) fn render_task_control_card(
                 }
             });
         }
+        if snapshot.can_synthesize
+            && (task.speech_use_source_voice
+                || task
+                    .separated_audio
+                    .as_ref()
+                    .is_some_and(|stems| stems.vocals.is_file()))
+        {
+            changed |= ui.add_enabled_ui(controller.speech_job.is_none(), |ui| {
+                components::checkbox(ui, &mut task.speech_use_source_voice, tr(language, "Use original voice"))
+                    .on_hover_text(tr(language, "Select a reference on the vocal timeline, or use each subtitle's original vocals. At least 5 seconds of clear speech is required."))
+                    .changed()
+            }).inner;
+            if let Some([start, end]) = task.speech_reference_range {
+                crate::ui::layout::flow_row(ui, |ui| {
+                    ui.weak(format!(
+                        "{} – {}",
+                        super::super::format_cue_time(start),
+                        super::super::format_cue_time(end)
+                    ));
+                    if components::icon_button(
+                        ui,
+                        tr(language, "Preview voice"),
+                        xrtranslate_client_core::ui::icon!("play.svg"),
+                    )
+                    .clicked()
+                    {
+                        preview_reference = Some([start, end]);
+                    }
+                    if ui
+                        .add_enabled_ui(controller.speech_job.is_none(), |ui| {
+                            components::icon_button(
+                                ui,
+                                tr(language, "Clear voice reference"),
+                                xrtranslate_client_core::ui::icon!("x.svg"),
+                            )
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        task.speech_reference_range = None;
+                        changed = true;
+                    }
+                });
+            }
+        }
         if subtitles && task.is_task_running {
             let progress = if count == 0 {
                 0.0
@@ -477,6 +523,9 @@ pub(super) fn render_task_control_card(
     }
     if cancel_speech {
         controller.cancel_speech();
+    }
+    if let Some([start, end]) = preview_reference {
+        controller.audition_vocals(start, end);
     }
     if pause {
         MediaAction::StopTranslation

@@ -40,7 +40,7 @@ impl XRTranslateApp {
                 total_bytes,
             };
         }
-        if matches!(manager.state(), NativeModelTaskState::Installing { asset_id, .. } if *asset_id == id)
+        if matches!(manager.state(), NativeModelTaskState::Installing { asset_id, .. } if *asset_id == id.into())
         {
             return State::Downloading {
                 downloaded_bytes,
@@ -54,7 +54,7 @@ impl XRTranslateApp {
             NativeModelTaskState::Failed(error)
                 if manager
                     .batch_snapshot()
-                    .is_some_and(|batch| batch.failed_asset_id == Some(id)) =>
+                    .is_some_and(|batch| batch.failed_asset_id == Some(id.into())) =>
             {
                 State::Failed(error.clone())
             }

@@ -8,19 +8,12 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExportSettings {
-    pub use_speech: bool,
-    pub keep_background: bool,
     pub burn_subtitles: bool,
 }
 
 impl ExportSettings {
     pub fn for_task(task: &super::task::MediaTask) -> Self {
         Self {
-            use_speech: task.speech_track.is_some(),
-            keep_background: task
-                .separated_audio
-                .as_ref()
-                .is_some_and(|stems| stems.background.is_file()),
             burn_subtitles: task.subtitles.count() > 0,
         }
     }
@@ -29,28 +22,29 @@ impl ExportSettings {
         if task.is_task_running {
             return Some("Finish the current task or edit first.");
         }
-        if self.use_speech {
+        if task.play_speech_track {
             let Some(track) = &task.speech_track else {
                 return Some("Generate a speech track first.");
             };
             if !track.rendered || !track.path.is_file() {
                 return Some("The speech track is not ready yet.");
             }
-            if track.language != task.target_language
-                || (track.clips.iter().any(|clip| !clip.text.is_empty())
-                    && track.completed(task) < task.subtitles.count())
-            {
-                return Some("Finish generating the speech track first.");
-            }
-            if self.keep_background
-                && task
+        }
+        for source in task.playback_sources() {
+            use super::task::PlaybackTrack;
+            let available = match source {
+                PlaybackTrack::Original(_) => true,
+                PlaybackTrack::Vocals => task
                     .separated_audio
                     .as_ref()
-                    .is_none_or(|stems| !stems.background.is_file())
-            {
-                return Some(
-                    "Use vocal separation during recognition to prepare background audio.",
-                );
+                    .is_some_and(|stems| stems.vocals.is_file()),
+                PlaybackTrack::Background => task
+                    .separated_audio
+                    .as_ref()
+                    .is_some_and(|stems| stems.background.is_file()),
+            };
+            if !available {
+                return Some("Selected audio is unavailable.");
             }
         }
         if self.burn_subtitles && task.subtitles.count() == 0 {
@@ -92,7 +86,7 @@ impl VideoExport {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let suffix = if settings.use_speech {
+        let suffix = if task.play_speech_track {
             "dubbed"
         } else if settings.burn_subtitles {
             "subtitled"
@@ -102,12 +96,7 @@ impl VideoExport {
         let input = input.clone();
         let subtitles = task.subtitles.export_playback_srt();
         let style = task.subtitle_style.clone();
-        let original_audio = task.original_audio_track;
-        let speech = settings
-            .use_speech
-            .then(|| task.speech_track.as_ref().unwrap().path.clone());
-        let background = (settings.use_speech && settings.keep_background)
-            .then(|| task.separated_audio.as_ref().unwrap().background.clone());
+        let audio = task.playback_audio();
         let progress = Arc::new(AtomicU32::new(0));
         let cancelled = Arc::new(AtomicBool::new(false));
         let (tx, result) = crossbeam_channel::bounded(1);
@@ -148,13 +137,7 @@ impl VideoExport {
                         super::backend::mpv::VideoEncoding {
                             subtitles: settings.burn_subtitles.then_some(subtitle_file.path()),
                             style: &style,
-                            audio: match speech.as_deref() {
-                                Some(path) => super::backend::mpv::VideoAudio::Speech {
-                                    path,
-                                    background: background.as_deref(),
-                                },
-                                None => super::backend::mpv::VideoAudio::Original(original_audio),
-                            },
+                            audio,
                         },
                         &worker_progress,
                         &worker_cancelled,
@@ -253,6 +236,171 @@ mod tests {
 
     #[test]
     #[ignore = "requires the installed video playback runtime and encoders"]
+    fn export_preserves_track_levels_and_smoothly_ducks_only_dubbed_regions() {
+        use super::super::{
+            backend::mpv::encode_audio,
+            task::{PlaybackTrack, SpeechClip, SpeechTrack},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        encode_video(
+            std::path::Path::new("av://lavfi:color=c=black:s=160x90:r=25:d=3"),
+            &source,
+            VideoEncoding {
+                subtitles: None,
+                style: &Default::default(),
+                audio: VideoAudio::Original(None),
+            },
+            &AtomicU32::new(0),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let vocals = dir.path().join("vocals.wav");
+        let background = dir.path().join("background.wav");
+        let speech = dir.path().join("speech.wav");
+        for (path, frequency, clip) in [
+            (&vocals, 440.0, false),
+            (&background, 1760.0, false),
+            (&speech, 880.0, true),
+        ] {
+            let mut writer = hound::WavWriter::create(
+                path,
+                hound::WavSpec {
+                    channels: 2,
+                    sample_rate: 48_000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for frame in 0..144_000 {
+                let audible = !clip || (38_400..57_600).contains(&frame); // 0.8..1.2 seconds
+                let value = if audible {
+                    (0.2 * (std::f64::consts::TAU * frequency * frame as f64 / 48_000.0).sin()
+                        * i16::MAX as f64) as i16
+                } else {
+                    0
+                };
+                writer.write_sample(value).unwrap();
+                writer.write_sample(value).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        let mut task = MediaTask::new(
+            "Mix".into(),
+            MediaSource::LocalFile(source),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio { vocals, background });
+        task.speech_track = Some(SpeechTrack {
+            path: speech.clone(),
+            language: "zh".into(),
+            rendered: true,
+            clips: vec![SpeechClip {
+                id: "dub".into(),
+                path: speech,
+                start_ms: 800,
+                duration_ms: 400,
+                text: "Hello".into(),
+                peaks: Vec::new(),
+            }],
+        });
+        task.playback_tracks = Some(vec![PlaybackTrack::Vocals, PlaybackTrack::Background]);
+        task.play_speech_track = true;
+        task.audio_mix.vocals = 50;
+        task.audio_mix.background = 25;
+        task.audio_mix.speech = 80;
+        task.audio_mix.duck_vocals = true;
+        let output = dir.path().join("mixed.mp4");
+        let job = VideoExport::start(
+            &task,
+            ExportSettings {
+                burn_subtitles: false,
+            },
+            Some(output.clone()),
+            Default::default(),
+        )
+        .unwrap();
+        job.result
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        let decoded = dir.path().join("mixed.wav");
+        encode_audio(&output, &decoded, 1.0, &AtomicBool::new(false)).unwrap();
+        let mut reader = hound::WavReader::open(decoded).unwrap();
+        let spec = reader.spec();
+        let samples: Vec<_> = reader.samples::<i16>().map(Result::unwrap).collect();
+        let amplitude = |time: f64, frequency: f64| {
+            let start = (time * spec.sample_rate as f64) as usize;
+            let frames: Vec<_> = samples
+                .chunks_exact(spec.channels as usize)
+                .skip(start)
+                .take(spec.sample_rate as usize / 20)
+                .map(|frame| frame[0] as f64 / i16::MAX as f64)
+                .collect();
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, value) in frames.iter().enumerate() {
+                let phase = std::f64::consts::TAU * frequency * i as f64 / spec.sample_rate as f64;
+                re += value * phase.cos();
+                im += value * phase.sin();
+            }
+            2.0 * re.hypot(im) / frames.len() as f64
+        };
+        for time in [0.3, 1.6, 2.5] {
+            assert!(
+                (0.08..0.12).contains(&amplitude(time, 440.0)),
+                "original vocals missing outside dub at {time}"
+            );
+        }
+        assert!(
+            amplitude(0.95, 440.0) < 0.008,
+            "original voice overlaps dubbing"
+        );
+        assert!(
+            (0.13..0.19).contains(&amplitude(0.95, 880.0)),
+            "speech volume was not applied"
+        );
+        for time in [0.3, 0.95, 1.6] {
+            assert!(
+                (0.035..0.065).contains(&amplitude(time, 1760.0)),
+                "background gain changed with ducking"
+            );
+        }
+        let attack = amplitude(0.70, 440.0);
+        let release = amplitude(1.30, 440.0);
+        assert!(
+            (0.015..0.085).contains(&attack),
+            "attack is not a fade: {attack}"
+        );
+        assert!(
+            (0.015..0.085).contains(&release),
+            "release is not a fade: {release}"
+        );
+        // Standalone speech exports use their track fader too, without changing
+        // the cached source that is used by later edits and playback.
+        let speech = &task.speech_track.as_ref().unwrap().path;
+        let original = std::fs::read(speech).unwrap();
+        let wav = dir.path().join("speech-half.wav");
+        super::super::backend::mpv::encode_audio_volume(speech, &wav, 50, &AtomicBool::new(false))
+            .unwrap();
+        let mut reader = hound::WavReader::open(wav).unwrap();
+        let peak = reader
+            .samples::<i16>()
+            .map(|sample| sample.unwrap().unsigned_abs())
+            .max()
+            .unwrap();
+        assert!(
+            (3000..3500).contains(&peak),
+            "speech export ignored volume: {peak}"
+        );
+        assert_eq!(std::fs::read(speech).unwrap(), original);
+    }
+
+    #[test]
+    #[ignore = "requires the installed video playback runtime and encoders"]
     fn dubbed_export_replaces_original_audio_and_optionally_keeps_stereo_background() {
         use super::super::backend::mpv::encode_audio;
         use super::super::task::SpeechTrack;
@@ -328,17 +476,19 @@ mod tests {
         });
         task.subtitles =
             SubtitleTimeline::parse("1\n00:00:00,000 --> 00:00:01,000\nHello.\n你好。").unwrap();
+        task.play_speech_track = true;
         for (keep_background, burn_subtitles) in [(false, false), (true, false), (true, true)] {
+            task.playback_tracks = Some(if keep_background {
+                vec![super::super::task::PlaybackTrack::Background]
+            } else {
+                Vec::new()
+            });
             let output = directory
                 .path()
                 .join(format!("dubbed-{keep_background}-{burn_subtitles}.mp4"));
             let job = VideoExport::start(
                 &task,
-                ExportSettings {
-                    use_speech: true,
-                    keep_background,
-                    burn_subtitles,
-                },
+                ExportSettings { burn_subtitles },
                 Some(output.clone()),
                 Default::default(),
             )
@@ -405,8 +555,6 @@ mod tests {
             VideoExport::start(
                 &task,
                 ExportSettings {
-                    use_speech: true,
-                    keep_background: true,
                     burn_subtitles: false
                 },
                 None,

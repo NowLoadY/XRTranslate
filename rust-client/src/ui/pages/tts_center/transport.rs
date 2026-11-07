@@ -7,6 +7,14 @@ pub(super) fn request<T: DeserializeOwned>(
     path: &str,
     build: impl FnOnce(reqwest::Client, reqwest::Url) -> reqwest::RequestBuilder,
 ) -> Result<T, String> {
+    serde_json::from_slice(&bytes(server_url, path, build)?).map_err(|e| e.to_string())
+}
+
+pub(super) fn bytes(
+    server_url: &str,
+    path: &str,
+    build: impl FnOnce(reqwest::Client, reqwest::Url) -> reqwest::RequestBuilder,
+) -> Result<Vec<u8>, String> {
     let mut url = reqwest::Url::parse(server_url).map_err(|e| e.to_string())?;
     let scheme = match url.scheme() {
         "ws" | "http" => "http",
@@ -30,6 +38,10 @@ pub(super) fn request<T: DeserializeOwned>(
             if !response.status().is_success() {
                 return Err(response.text().await.unwrap_or_else(|e| e.to_string()));
             }
-            response.json().await.map_err(|e| e.to_string())
+            response
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|e| e.to_string())
         })
 }

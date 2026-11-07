@@ -155,7 +155,7 @@ impl FileDialog {
         Ok(())
     }
     #[cfg(not(target_os = "android"))]
-    fn write(
+    pub(crate) fn write(
         self,
         write: impl FnOnce(PathBuf) -> std::io::Result<()> + Send + 'static,
     ) -> Result<(), String> {

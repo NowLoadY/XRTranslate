@@ -1,6 +1,7 @@
 //! Plugins own their work; the host supplies services and renders their controls.
 //! The wire contract is shared by native plugins and the host, without a Rust ABI.
 mod client;
+mod mailbox;
 mod protocol;
 mod server;
 const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;

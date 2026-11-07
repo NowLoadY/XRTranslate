@@ -25,6 +25,9 @@ impl VoiceLibrary {
         adapter: Option<TtsAdapter>,
     ) -> Self {
         let supports_cloning = adapter.as_ref().is_some_and(TtsAdapter::supports_cloning);
+        let supports_reference_audio = adapter
+            .as_ref()
+            .is_some_and(TtsAdapter::supports_reference_audio);
         let preset_voices = adapter
             .as_ref()
             .map(TtsAdapter::preset_voices)
@@ -64,6 +67,7 @@ impl VoiceLibrary {
                 provider,
                 selection: selection.clone(),
                 supports_cloning,
+                supports_reference_audio,
                 preset_voices,
                 ..Default::default()
             }),

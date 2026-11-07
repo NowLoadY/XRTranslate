@@ -260,7 +260,7 @@
             "workspace_id": "",
             "model": "qwen-audio-3.1-tts-plus"
           },
-          "models": ["qwen-audio-3.1-tts-plus"]
+          "models": ["qwen-audio-3.1-tts-plus", "qwen-audio-3.1-tts-flash"]
         },
         {
           "capability": "asr",
@@ -738,12 +738,527 @@
         "sample_rate": 48000,
         "max_input_chars": 1000,
         "voice_cloning": false,
+        "reference_audio": true,
         "voices": ["longanlingxin_v3.1", "xunanchuan_v3.1", "longanhuan_v3.1", "longanfengyue_v3.1"],
         "voice_labels": {
           "longanlingxin_v3.1": "Long Anlingxin",
           "xunanchuan_v3.1": "Xu Nanchuan",
           "longanhuan_v3.1": "Long Anhuan",
           "longanfengyue_v3.1": "Long Anfengyue"
+        }
+      }
+    },
+    {
+      "model": "qwen-audio-3.1-tts-flash",
+      "connector": "dashscope-speech",
+      "languages": [
+        "zh",
+        "en",
+        "ja",
+        "ko",
+        "fr",
+        "de",
+        "it",
+        "pt",
+        "es",
+        "ru",
+        "th",
+        "id",
+        "vi",
+        "ms",
+        "fil",
+        "ar"
+      ],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 48000,
+        "max_input_chars": 1000,
+        "voice_cloning": false,
+        "voices": [
+          "longanhuan_v3.1",
+          "longanlingxin_v3.1",
+          "longanfengyue_v3.1",
+          "xunanchuan_v3.1",
+          "yuxiaoyun_v3.1",
+          "qiaoxiaojiao_v3.1",
+          "xiaxiaochen_v3.1",
+          "anmingyuan_v3.1",
+          "wenhuaiqing_v3.1",
+          "anxiaolan_v3.1",
+          "xieshurou_v3.1",
+          "baiqinglan_v3.1",
+          "xuyuyuan_v3.1",
+          "anruorou_v3.1",
+          "wenhuaizhi_v3.1",
+          "xiaoxingzhi_v3.1",
+          "guyunshu_v3.1",
+          "huozhuoshi_v3.1",
+          "yeqinghe_v3.1",
+          "yunhuanhuan_v3.1",
+          "xuxiaoqiao_v3.1",
+          "baianran_v3.1",
+          "xuyanchu_v3.1",
+          "yezhiqing_v3.1",
+          "andi_v3.1",
+          "anyuqing_v3.1",
+          "linxiaoling_v3.1",
+          "longfeifei_v3.1",
+          "longjing_v3.1",
+          "longqiang_v3.1",
+          "longyan_v3.1",
+          "longxiaobai_v3.1",
+          "longyue_v3.1",
+          "longcheng_v3.1",
+          "longlaotie_v3.1",
+          "longshao_v3.1",
+          "longshu_v3.1",
+          "longze_v3.1",
+          "longhao_v3.1",
+          "longjin_v3.1",
+          "longnan_v3.1",
+          "longshuo_v3.1",
+          "longtian_v3.1",
+          "longxiaocheng_v3.1",
+          "longke_v3.1",
+          "loongbella_v3.1",
+          "Emily_v3.1",
+          "Luna_v3.1",
+          "Eric_v3.1",
+          "Luca_v3.1",
+          "Abby_v3.1",
+          "Annie_v3.1",
+          "Ava_v3.1",
+          "Beth_v3.1",
+          "Betty_v3.1",
+          "Cally_v3.1",
+          "Cindy_v3.1",
+          "Donna_v3.1",
+          "Andy_v3.1",
+          "Brian_v3.1",
+          "David_v3.1",
+          "longanyuanfei_v3.1",
+          "longjielidou_v3.1",
+          "longanlingxi_v3.1",
+          "longhuohuo_v3.1",
+          "longyingtao_v3.1",
+          "longanya_v3.1",
+          "longwan_v3.1",
+          "longxing_v3.1",
+          "longhua_v3.1",
+          "longhan_v3.1",
+          "longanzhi_v3.1",
+          "longzhe_v3.1",
+          "longanyang_v3.1",
+          "libai_v3.1",
+          "longling_v3.1",
+          "longniuniu_v3.1",
+          "longshanshan_v3.1",
+          "longpaopao_v3.1",
+          "loongstella_v3.1",
+          "longyuan_v3.1",
+          "longmiao_v3.1",
+          "longsanshu_v3.1",
+          "longanli_v3.1",
+          "longanwen_v3.1",
+          "longanlang_v3.1",
+          "longxiaoxia_v3.1",
+          "longanchong_v3.1"
+        ],
+        "voice_labels": {
+          "longanhuan_v3.1": "Long An Huan",
+          "longanlingxin_v3.1": "Long An Lingxin",
+          "longanfengyue_v3.1": "Long An Fengyue",
+          "xunanchuan_v3.1": "Xu Nanchuan",
+          "yuxiaoyun_v3.1": "Yu Xiaoyun",
+          "qiaoxiaojiao_v3.1": "Qiao Xiaojiao",
+          "xiaxiaochen_v3.1": "Xia Xiaochen",
+          "anmingyuan_v3.1": "An Mingyuan",
+          "wenhuaiqing_v3.1": "Wen Huaiqing",
+          "anxiaolan_v3.1": "An Xiaolan",
+          "xieshurou_v3.1": "Xie Shurou",
+          "baiqinglan_v3.1": "Bai Qinglan",
+          "xuyuyuan_v3.1": "Xu Yuyuan",
+          "anruorou_v3.1": "An Ruorou",
+          "wenhuaizhi_v3.1": "Wen Huaizhi",
+          "xiaoxingzhi_v3.1": "Xiao Xingzhi",
+          "guyunshu_v3.1": "Gu Yunshu",
+          "huozhuoshi_v3.1": "Huo Zhuoshi",
+          "yeqinghe_v3.1": "Ye Qinghe",
+          "yunhuanhuan_v3.1": "Yun Huanhuan",
+          "xuxiaoqiao_v3.1": "Xu Xiaoqiao",
+          "baianran_v3.1": "Bai Anran",
+          "xuyanchu_v3.1": "Xu Yanchu",
+          "yezhiqing_v3.1": "Ye Zhiqing",
+          "andi_v3.1": "An Di",
+          "anyuqing_v3.1": "An Yuqing",
+          "linxiaoling_v3.1": "Lin Xiaoling",
+          "longfeifei_v3.1": "Long Feifei",
+          "longjing_v3.1": "Long Jing",
+          "longqiang_v3.1": "Long Qiang",
+          "longyan_v3.1": "Long Yan",
+          "longxiaobai_v3.1": "Long Xiaobai",
+          "longyue_v3.1": "Long Yue",
+          "longcheng_v3.1": "Long Cheng",
+          "longlaotie_v3.1": "Long Laotie",
+          "longshao_v3.1": "Long Shao",
+          "longshu_v3.1": "Long Shu",
+          "longze_v3.1": "Long Ze",
+          "longhao_v3.1": "Long Hao",
+          "longjin_v3.1": "Long Jin",
+          "longnan_v3.1": "Long Nan",
+          "longshuo_v3.1": "Long Shuo",
+          "longtian_v3.1": "Long Tian",
+          "longxiaocheng_v3.1": "Long Xiaocheng",
+          "longke_v3.1": "Long Ke",
+          "loongbella_v3.1": "Bella",
+          "Emily_v3.1": "Emily",
+          "Luna_v3.1": "Luna",
+          "Eric_v3.1": "Eric",
+          "Luca_v3.1": "Luca",
+          "Abby_v3.1": "Abby",
+          "Annie_v3.1": "Annie",
+          "Ava_v3.1": "Ava",
+          "Beth_v3.1": "Beth",
+          "Betty_v3.1": "Betty",
+          "Cally_v3.1": "Cally",
+          "Cindy_v3.1": "Cindy",
+          "Donna_v3.1": "Donna",
+          "Andy_v3.1": "Andy",
+          "Brian_v3.1": "Brian",
+          "David_v3.1": "David",
+          "longanyuanfei_v3.1": "Long An Yuanfei",
+          "longjielidou_v3.1": "Long Jielidou",
+          "longanlingxi_v3.1": "Long An Lingxi",
+          "longhuohuo_v3.1": "Long Huohuo",
+          "longyingtao_v3.1": "Long Yingtao",
+          "longanya_v3.1": "Long An Ya",
+          "longwan_v3.1": "Long Wan",
+          "longxing_v3.1": "Long Xing",
+          "longhua_v3.1": "Long Hua",
+          "longhan_v3.1": "Long Han",
+          "longanzhi_v3.1": "Long An Zhi",
+          "longzhe_v3.1": "Long Zhe",
+          "longanyang_v3.1": "Long An Yang",
+          "libai_v3.1": "Li Bai",
+          "longling_v3.1": "Long Ling",
+          "longniuniu_v3.1": "Long Niuniu",
+          "longshanshan_v3.1": "Long Shanshan",
+          "longpaopao_v3.1": "Long Paopao",
+          "loongstella_v3.1": "loongstella",
+          "longyuan_v3.1": "Long Yuan",
+          "longmiao_v3.1": "Long Miao",
+          "longsanshu_v3.1": "Long Sanshu",
+          "longanli_v3.1": "Long An Li",
+          "longanwen_v3.1": "Long An Wen",
+          "longanlang_v3.1": "Long An Lang",
+          "longxiaoxia_v3.1": "Long Xiaoxia",
+          "longanchong_v3.1": "Long An Chong"
+        },
+        "reference_audio": true,
+        "voice_languages": {
+          "longanhuan_v3.1": [
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "fr",
+            "de",
+            "pt",
+            "it",
+            "vi",
+            "id"
+          ],
+          "longanlingxin_v3.1": [
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "fr",
+            "de",
+            "pt",
+            "it",
+            "vi",
+            "id"
+          ],
+          "longanfengyue_v3.1": [
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "fr",
+            "de",
+            "pt",
+            "it",
+            "vi",
+            "id"
+          ],
+          "xunanchuan_v3.1": [
+            "zh",
+            "en",
+            "ja",
+            "ko",
+            "fr",
+            "de",
+            "pt",
+            "it",
+            "vi",
+            "id"
+          ],
+          "yuxiaoyun_v3.1": [
+            "zh"
+          ],
+          "qiaoxiaojiao_v3.1": [
+            "zh"
+          ],
+          "xiaxiaochen_v3.1": [
+            "zh"
+          ],
+          "anmingyuan_v3.1": [
+            "zh"
+          ],
+          "wenhuaiqing_v3.1": [
+            "zh"
+          ],
+          "anxiaolan_v3.1": [
+            "zh"
+          ],
+          "xieshurou_v3.1": [
+            "zh"
+          ],
+          "baiqinglan_v3.1": [
+            "zh"
+          ],
+          "xuyuyuan_v3.1": [
+            "zh"
+          ],
+          "anruorou_v3.1": [
+            "zh"
+          ],
+          "wenhuaizhi_v3.1": [
+            "zh"
+          ],
+          "xiaoxingzhi_v3.1": [
+            "zh"
+          ],
+          "guyunshu_v3.1": [
+            "zh"
+          ],
+          "huozhuoshi_v3.1": [
+            "zh"
+          ],
+          "yeqinghe_v3.1": [
+            "zh"
+          ],
+          "yunhuanhuan_v3.1": [
+            "zh"
+          ],
+          "xuxiaoqiao_v3.1": [
+            "zh"
+          ],
+          "baianran_v3.1": [
+            "zh"
+          ],
+          "xuyanchu_v3.1": [
+            "zh"
+          ],
+          "yezhiqing_v3.1": [
+            "zh"
+          ],
+          "andi_v3.1": [
+            "zh"
+          ],
+          "anyuqing_v3.1": [
+            "zh"
+          ],
+          "linxiaoling_v3.1": [
+            "zh"
+          ],
+          "longfeifei_v3.1": [
+            "zh"
+          ],
+          "longjing_v3.1": [
+            "zh"
+          ],
+          "longqiang_v3.1": [
+            "zh"
+          ],
+          "longyan_v3.1": [
+            "zh"
+          ],
+          "longxiaobai_v3.1": [
+            "zh"
+          ],
+          "longyue_v3.1": [
+            "zh"
+          ],
+          "longcheng_v3.1": [
+            "zh"
+          ],
+          "longlaotie_v3.1": [
+            "zh"
+          ],
+          "longshao_v3.1": [
+            "zh"
+          ],
+          "longshu_v3.1": [
+            "zh"
+          ],
+          "longze_v3.1": [
+            "zh"
+          ],
+          "longhao_v3.1": [
+            "zh"
+          ],
+          "longjin_v3.1": [
+            "zh"
+          ],
+          "longnan_v3.1": [
+            "zh"
+          ],
+          "longshuo_v3.1": [
+            "zh"
+          ],
+          "longtian_v3.1": [
+            "zh"
+          ],
+          "longxiaocheng_v3.1": [
+            "zh"
+          ],
+          "longke_v3.1": [
+            "zh"
+          ],
+          "loongbella_v3.1": [
+            "zh",
+            "en"
+          ],
+          "Emily_v3.1": [
+            "en"
+          ],
+          "Luna_v3.1": [
+            "en"
+          ],
+          "Eric_v3.1": [
+            "en"
+          ],
+          "Luca_v3.1": [
+            "en"
+          ],
+          "Abby_v3.1": [
+            "en"
+          ],
+          "Annie_v3.1": [
+            "en"
+          ],
+          "Ava_v3.1": [
+            "en"
+          ],
+          "Beth_v3.1": [
+            "en"
+          ],
+          "Betty_v3.1": [
+            "en"
+          ],
+          "Cally_v3.1": [
+            "en"
+          ],
+          "Cindy_v3.1": [
+            "en"
+          ],
+          "Donna_v3.1": [
+            "en"
+          ],
+          "Andy_v3.1": [
+            "en"
+          ],
+          "Brian_v3.1": [
+            "en"
+          ],
+          "David_v3.1": [
+            "en"
+          ],
+          "longanyuanfei_v3.1": [
+            "zh"
+          ],
+          "longjielidou_v3.1": [
+            "zh"
+          ],
+          "longanlingxi_v3.1": [
+            "zh"
+          ],
+          "longhuohuo_v3.1": [
+            "zh"
+          ],
+          "longyingtao_v3.1": [
+            "zh"
+          ],
+          "longanya_v3.1": [
+            "zh"
+          ],
+          "longwan_v3.1": [
+            "zh"
+          ],
+          "longxing_v3.1": [
+            "zh"
+          ],
+          "longhua_v3.1": [
+            "zh"
+          ],
+          "longhan_v3.1": [
+            "zh"
+          ],
+          "longanzhi_v3.1": [
+            "zh"
+          ],
+          "longzhe_v3.1": [
+            "zh"
+          ],
+          "longanyang_v3.1": [
+            "zh"
+          ],
+          "libai_v3.1": [
+            "zh"
+          ],
+          "longling_v3.1": [
+            "zh"
+          ],
+          "longniuniu_v3.1": [
+            "zh"
+          ],
+          "longshanshan_v3.1": [
+            "zh"
+          ],
+          "longpaopao_v3.1": [
+            "zh"
+          ],
+          "loongstella_v3.1": [
+            "zh"
+          ],
+          "longyuan_v3.1": [
+            "zh"
+          ],
+          "longmiao_v3.1": [
+            "zh"
+          ],
+          "longsanshu_v3.1": [
+            "zh"
+          ],
+          "longanli_v3.1": [
+            "zh"
+          ],
+          "longanwen_v3.1": [
+            "zh"
+          ],
+          "longanlang_v3.1": [
+            "zh"
+          ],
+          "longxiaoxia_v3.1": [
+            "zh"
+          ],
+          "longanchong_v3.1": [
+            "zh"
+          ]
         }
       }
     },

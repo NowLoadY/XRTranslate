@@ -447,7 +447,7 @@ fn main() {
     if std::env::args().any(|arg| arg == "--manifest") {
         println!(
             "{}",
-            json!({"id":ID,"version":env!("CARGO_PKG_VERSION"),"min_host_version":"0.4.0","title":{"en":"Media","zh":"媒体"},"executable":"xrt-media","page":true,"icon":"assets/icon.svg","navigation_order":150,"requires":["translation.start","playback"],"subscriptions":["host.services","plugin.state"],"tools":media::workspace::tools()})
+            json!({"id":ID,"version":env!("CARGO_PKG_VERSION"),"min_host_version":"0.4.0","title":{"en":"Media","zh":"媒体"},"executable":"xrt-media","page":true,"icon":"assets/icon.svg","navigation_order":150,"requires":["translation.start","playback","playback.audio_mix"],"subscriptions":["host.services","plugin.state"],"tools":media::workspace::tools()})
         );
         return;
     }

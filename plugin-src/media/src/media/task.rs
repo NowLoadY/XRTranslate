@@ -120,10 +120,16 @@ pub struct MediaTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech_track: Option<SpeechTrack>,
     #[serde(default)]
+    pub speech_use_source_voice: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_reference_range: Option<[i64; 2]>,
+    #[serde(default)]
     pub play_speech_track: bool,
     /// None preserves the playback choice of tasks saved before multi-selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback_tracks: Option<Vec<PlaybackTrack>>,
+    #[serde(default)]
+    pub audio_mix: super::mixing::MixSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_export_settings: Option<super::video_export::ExportSettings>,
     #[serde(default)]
@@ -184,25 +190,63 @@ impl MediaTask {
         let mut sources = self
             .playback_sources()
             .into_iter()
-            .filter_map(|source| match source {
-                PlaybackTrack::Original(id) => Some(PlaybackAudio::Original(id)),
-                PlaybackTrack::Vocals => self
-                    .separated_audio
-                    .as_ref()
-                    .filter(|stems| stems.vocals.is_file())
-                    .map(|stems| PlaybackAudio::External(stems.vocals.clone())),
-                PlaybackTrack::Background => self
-                    .separated_audio
-                    .as_ref()
-                    .filter(|stems| stems.background.is_file())
-                    .map(|stems| PlaybackAudio::External(stems.background.clone())),
+            .filter_map(|source| {
+                let audio = match source {
+                    PlaybackTrack::Original(id) => Some(PlaybackAudio::Original(id)),
+                    PlaybackTrack::Vocals => self
+                        .separated_audio
+                        .as_ref()
+                        .filter(|stems| stems.vocals.is_file())
+                        .map(|stems| PlaybackAudio::External(stems.vocals.clone())),
+                    PlaybackTrack::Background => self
+                        .separated_audio
+                        .as_ref()
+                        .filter(|stems| stems.background.is_file())
+                        .map(|stems| PlaybackAudio::External(stems.background.clone())),
+                }?;
+                let duck_intervals = if source == PlaybackTrack::Vocals
+                    && self.audio_mix.duck_vocals
+                    && self.play_speech_track
+                    && self.audio_mix.speech > 0
+                {
+                    self.speech_track
+                        .as_ref()
+                        .filter(|track| track.rendered && track.path.is_file())
+                        .map(|track| {
+                            track
+                                .clips
+                                .iter()
+                                .filter(|clip| clip.duration_ms > 0)
+                                .map(|clip| {
+                                    [
+                                        clip.start_ms,
+                                        clip.start_ms.saturating_add(clip.duration_ms),
+                                    ]
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                Some(
+                    audio.adjusted(xrtranslate_client_core::playback::AudioMixSettings {
+                        volume: self.audio_mix.volume(source),
+                        duck_intervals,
+                    }),
+                )
             })
             .collect::<Vec<_>>();
         if self.play_speech_track
             && let Some(track) = &self.speech_track
             && track.path.is_file()
         {
-            sources.push(PlaybackAudio::External(track.path.clone()));
+            sources.push(PlaybackAudio::External(track.path.clone()).adjusted(
+                xrtranslate_client_core::playback::AudioMixSettings {
+                    volume: self.audio_mix.speech,
+                    ..Default::default()
+                },
+            ));
         }
         if sources.len() == 1 {
             sources.remove(0)
@@ -228,7 +272,12 @@ impl MediaTask {
     }
 
     pub(super) fn plays_recognition_source(&self) -> bool {
-        !self.play_speech_track && self.playback_audio() == self.source_audio()
+        let source = match self.audio_track {
+            AudioTrackSelection::Original => PlaybackTrack::Original(self.original_audio_track),
+            AudioTrackSelection::Vocals => PlaybackTrack::Vocals,
+            AudioTrackSelection::Background => PlaybackTrack::Background,
+        };
+        !self.play_speech_track && self.playback_sources() == [source]
     }
 
     pub(super) fn playback_channels(&self) -> &[AudioChannelItem] {
@@ -309,8 +358,11 @@ impl MediaTask {
             original_audio_track: None,
             separated_audio: None,
             speech_track: None,
+            speech_use_source_voice: false,
+            speech_reference_range: None,
             play_speech_track: false,
             playback_tracks: None,
+            audio_mix: Default::default(),
             video_export_settings: None,
             is_task_running: false,
             created_at_sec: now,
@@ -447,6 +499,82 @@ mod tests {
         restored.playback_tracks = Some(Vec::new());
         assert_eq!(restored.playback_audio(), PlaybackAudio::Mix(Vec::new()));
         assert_eq!(restored.translation_request(), request);
+    }
+
+    #[test]
+    fn vocal_ducking_follows_audible_clips_and_keeps_recognition_unchanged() {
+        use xrtranslate_client_core::playback::{AudioMixSettings, PlaybackAudio};
+        let dir = tempfile::tempdir().unwrap();
+        let vocals = dir.path().join("vocals.wav");
+        let speech = dir.path().join("speech.wav");
+        for path in [&vocals, &speech] {
+            std::fs::write(path, []).unwrap();
+        }
+        let mut task = MediaTask::new(
+            "Mix".into(),
+            MediaSource::LocalFile("video.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            default_video_recognition(),
+        );
+        let recognition = task.translation_request();
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+            vocals: vocals.clone(),
+            background: dir.path().join("background.wav"),
+        });
+        task.playback_tracks = Some(vec![PlaybackTrack::Vocals]);
+        task.play_speech_track = true;
+        task.audio_mix.vocals = 70;
+        task.audio_mix.speech = 80;
+        task.audio_mix.duck_vocals = true;
+        task.speech_track = Some(SpeechTrack {
+            path: speech.clone(),
+            language: "zh".into(),
+            rendered: true,
+            clips: vec![SpeechClip {
+                id: "one".into(),
+                path: speech,
+                start_ms: 400,
+                duration_ms: 600,
+                text: "Hello".into(),
+                peaks: Vec::new(),
+            }],
+        });
+        let vocal_settings = |task: &MediaTask| {
+            let PlaybackAudio::Mix(tracks) = task.playback_audio() else {
+                panic!("expected mix")
+            };
+            let PlaybackAudio::Adjusted { settings, .. } = &tracks[0] else {
+                panic!("expected vocal gain")
+            };
+            settings.clone()
+        };
+        assert_eq!(
+            vocal_settings(&task),
+            AudioMixSettings {
+                volume: 70,
+                duck_intervals: vec![[400, 1000]]
+            }
+        );
+        task.speech_track.as_mut().unwrap().clips[0].start_ms = 1000;
+        assert_eq!(vocal_settings(&task).duck_intervals, [[1000, 1600]]);
+        task.audio_mix.speech = 0;
+        assert!(vocal_settings(&task).duck_intervals.is_empty());
+        task.audio_mix.speech = 80;
+        task.speech_track.as_mut().unwrap().clips.clear();
+        assert!(vocal_settings(&task).duck_intervals.is_empty());
+        let restored: MediaTask =
+            serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
+        assert_eq!(restored.audio_mix, task.audio_mix);
+        assert_eq!(restored.translation_request(), recognition);
+        // Older projects preserve their sound without a migration step.
+        let mut old = serde_json::to_value(&task).unwrap();
+        old.as_object_mut().unwrap().remove("audio_mix");
+        assert_eq!(
+            serde_json::from_value::<MediaTask>(old).unwrap().audio_mix,
+            Default::default()
+        );
     }
 
     #[test]

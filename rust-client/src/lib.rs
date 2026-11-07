@@ -592,9 +592,9 @@ fn compile_audio_studio_asr(
     compile_audio_studio_route(&asr_graph).map(|execution| execution.asr)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum PendingResourceDeletion {
-    Model(xrtranslate_assets::ModelAssetId),
+    Model(model_install::ResourceId),
     Runtime,
 }
 
@@ -1154,6 +1154,8 @@ impl Default for XRTranslateApp {
                                     &output_subscribers,
                                     HostOutputEvent::Caption {
                                         stream_id,
+                                        turn_id: (&turn_id).into(),
+                                        segment_index: 0,
                                         audio_source,
                                         is_typing: false,
                                         source: (&text).into(),
@@ -1478,6 +1480,8 @@ impl Default for XRTranslateApp {
                                                 &output_subscribers,
                                                 HostOutputEvent::Caption {
                                                     stream_id,
+                                                    turn_id: (&entry.turn_id).into(),
+                                                    segment_index: entry.segment_index,
                                                     audio_source,
                                                     is_typing: scope.is_typing(),
                                                     source: (&entry.source).into(),
@@ -1498,6 +1502,8 @@ impl Default for XRTranslateApp {
                                                 &output_subscribers,
                                                 HostOutputEvent::Caption {
                                                     stream_id,
+                                                    turn_id: (&entry.turn_id).into(),
+                                                    segment_index: entry.segment_index,
                                                     audio_source,
                                                     is_typing: scope.is_typing(),
                                                     source: (&entry.source).into(),
@@ -1529,6 +1535,8 @@ impl Default for XRTranslateApp {
                                             &output_subscribers,
                                             HostOutputEvent::Caption {
                                                 stream_id,
+                                                turn_id: (&previous.turn_id).into(),
+                                                segment_index: previous.segment_index,
                                                 audio_source,
                                                 is_typing: scope.is_typing(),
                                                 source: (&previous.source).into(),
@@ -1546,6 +1554,8 @@ impl Default for XRTranslateApp {
                                         &output_subscribers,
                                         HostOutputEvent::Caption {
                                             stream_id,
+                                            turn_id: (&merged.entry.turn_id).into(),
+                                            segment_index: merged.entry.segment_index,
                                             audio_source,
                                             is_typing: scope.is_typing(),
                                             source: (&merged.entry.source).into(),
@@ -1564,6 +1574,8 @@ impl Default for XRTranslateApp {
                                         &output_subscribers,
                                         HostOutputEvent::Caption {
                                             stream_id,
+                                            turn_id: (&merged.entry.turn_id).into(),
+                                            segment_index: merged.entry.segment_index,
                                             audio_source,
                                             is_typing: scope.is_typing(),
                                             source: (&merged.entry.source).into(),
@@ -1583,6 +1595,8 @@ impl Default for XRTranslateApp {
                                     &output_subscribers,
                                     HostOutputEvent::Caption {
                                         stream_id,
+                                        turn_id: (&fragment.turn_id).into(),
+                                        segment_index: fragment.segment_index,
                                         audio_source,
                                         is_typing: scope.is_typing(),
                                         source: (&fragment.source).into(),
@@ -1859,7 +1873,11 @@ impl XRTranslateApp {
 
     fn request_model_resource_deletion(&mut self, asset_id: xrtranslate_assets::ModelAssetId) {
         let label = xrtranslate_assets::manifest_for(asset_id).label;
-        self.pending_resource_deletion = Some(PendingResourceDeletion::Model(asset_id));
+        self.request_resource_deletion(asset_id.into(), label);
+    }
+
+    fn request_resource_deletion(&mut self, id: model_install::ResourceId, label: &str) {
+        self.pending_resource_deletion = Some(PendingResourceDeletion::Model(id));
         self.modal_dialog =
             ui::modal::ModalDialog::confirm_resource_deletion(label, self.ui_language);
     }
@@ -1900,8 +1918,9 @@ impl XRTranslateApp {
         let project_root = self.project_root();
         self.cancel_text_tasks(None);
         self.backend_manager.invalidate_runtime();
-        let result = match resource {
+        let result = match &resource {
             PendingResourceDeletion::Model(asset_id) => {
+                self.plugin_host.model_resource_changed(asset_id);
                 self.model_task_manager.delete(&project_root, asset_id)
             }
             PendingResourceDeletion::Runtime => self
@@ -1910,7 +1929,9 @@ impl XRTranslateApp {
         };
         match result {
             Ok(()) => {
-                if let PendingResourceDeletion::Model(id) = resource {
+                if let PendingResourceDeletion::Model(model_install::ResourceId::BuiltIn(id)) =
+                    resource
+                {
                     self.forget_audio_preprocessing_resource(id);
                 }
                 self.last_error = None;
@@ -5213,7 +5234,17 @@ impl eframe::App for XRTranslateApp {
         let gtcrn_ready = self
             .model_task_manager
             .is_model_ready(xrtranslate_assets::ModelAssetId::GtcrnOnnx);
+        self.model_task_manager.set_plugin_models(
+            self.plugin_host
+                .model_resources(self.ui_language)
+                .into_iter()
+                .map(|model| (model.id, model.resource))
+                .collect(),
+        );
         self.model_task_manager.poll();
+        for id in self.model_task_manager.take_changed_resources() {
+            self.plugin_host.model_resource_changed(&id);
+        }
         if self.model_task_manager.needs_discovery()
             && let Err(error) = self
                 .model_task_manager
@@ -5274,14 +5305,18 @@ impl eframe::App for XRTranslateApp {
             ui.ctx(),
             !self.first_run && self.navigation.page == Page::TtsCenter,
         );
-        if let Some((id, pcm)) = self.tts_center.catalog.preview.take()
+        let preview = self.tts_center.generated_preview.take().or_else(|| {
+            self.tts_center
+                .catalog
+                .preview
+                .take()
+                .map(|(id, pcm)| (id, pcm, xrtranslate_assets::voices::SAMPLE_RATE))
+        });
+        if let Some((id, pcm, sample_rate)) = preview
             && !self.first_run
             && self.navigation.page == Page::TtsCenter
         {
-            match self
-                .audio_system
-                .preview_voice(&pcm, xrtranslate_assets::voices::SAMPLE_RATE)
-            {
+            match self.audio_system.preview_voice(&pcm, sample_rate) {
                 Ok(()) => self.tts_center.previewing = Some(id),
                 Err(error) => self.notify_error("Could not play the voice preview.", error),
             }
@@ -5544,6 +5579,15 @@ impl eframe::App for XRTranslateApp {
                                         self.tts_center.catalog.preview(id, ui.ctx());
                                     }
                                 }
+                                Some(Action::PreviewPreset(voice)) => {
+                                    let playing = self.tts_center.previewing.as_deref()
+                                        == Some(format!("preset:{voice}").as_str());
+                                    self.audio_system.stop_voice_preview();
+                                    self.tts_center.previewing = None;
+                                    if !playing {
+                                        self.tts_center.preview_preset(voice);
+                                    }
+                                }
                                 None => {}
                             }
                         },
@@ -5668,6 +5712,10 @@ pub fn run() -> eframe::Result<()> {
     }
 
     let window_backdrop = window_backdrop::WindowBackdrop::from_environment();
+    let app_icon = eframe::icon_data::from_png_bytes(include_bytes!(
+        "../resources/branding/xrtranslate-logo.png"
+    ))
+    .expect("embedded application icon must be valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 720.0])
@@ -5677,12 +5725,7 @@ pub fn run() -> eframe::Result<()> {
             // can leave a stale DWM frame behind on Windows.
             .with_decorations(true)
             .with_transparent(window_backdrop.uses_transparent_surface())
-            .with_icon(
-                eframe::icon_data::from_png_bytes(include_bytes!(
-                    "../resources/branding/xrtranslate-logo.png"
-                ))
-                .expect("embedded application icon must be valid PNG"),
-            ),
+            .with_icon(app_icon.clone()),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -5704,6 +5747,15 @@ pub fn run() -> eframe::Result<()> {
         "XRTranslate",
         options,
         Box::new(move |cc| {
+            #[cfg(windows)]
+            if let Some(window) = cc.winit_window() {
+                use winit::platform::windows::WindowExtWindows;
+                // egui sets ICON_SMALL; Windows uses ICON_BIG for the taskbar and Alt+Tab.
+                window.set_taskbar_icon(Some(
+                    winit::window::Icon::from_rgba(app_icon.rgba, app_icon.width, app_icon.height)
+                        .expect("embedded application icon must be valid RGBA"),
+                ));
+            }
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "android")]
             android::install_clipboard(&cc.egui_ctx);

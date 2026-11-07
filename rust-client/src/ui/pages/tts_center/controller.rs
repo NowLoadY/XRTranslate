@@ -12,6 +12,12 @@ enum Request {
     Read,
     Select(VoiceSelection),
     Import(VoiceDraft),
+    Preview(String),
+}
+
+enum Response {
+    Status(VoiceStatus),
+    Preview(String, Vec<u8>, u32),
 }
 
 #[derive(Default)]
@@ -23,10 +29,11 @@ pub struct TtsCenterController {
     pub requested_voice: Option<String>,
     pub catalog: CatalogController,
     pub draft: Option<VoiceDraft>,
+    pub generated_preview: Option<(String, Vec<u8>, u32)>,
     pending: Option<Request>,
     deadline: Option<Instant>,
     next_poll: Option<Instant>,
-    response: Option<mpsc::Receiver<Result<VoiceStatus, String>>>,
+    response: Option<mpsc::Receiver<Result<Response, String>>>,
 }
 
 impl TtsCenterController {
@@ -55,6 +62,10 @@ impl TtsCenterController {
         }));
     }
 
+    pub fn preview_preset(&mut self, preset: String) {
+        self.enqueue(Request::Preview(preset));
+    }
+
     pub fn import(&mut self, draft: VoiceDraft, ctx: &egui::Context) {
         self.error = None;
         self.requested_voice = None;
@@ -70,6 +81,7 @@ impl TtsCenterController {
             return;
         }
         self.requested_voice = match &request {
+            Request::Preview(preset) => Some(preset.clone()),
             Request::Select(selection) => selection
                 .voice_id
                 .clone()
@@ -113,7 +125,10 @@ impl TtsCenterController {
                 Ok(result) => {
                     self.response = None;
                     match result {
-                        Ok(status) => self.status = status,
+                        Ok(Response::Status(status)) => self.status = status,
+                        Ok(Response::Preview(id, pcm, rate)) => {
+                            self.generated_preview = Some((id, pcm, rate))
+                        }
                         Err(error) => self.error = Some(error),
                     }
                 }
@@ -155,14 +170,11 @@ impl TtsCenterController {
                 self.error = Some(error);
             }
             Ok(true) => {
-                let selection = match self.pending.take().unwrap() {
-                    Request::Read => None,
-                    Request::Select(selection) => Some(selection),
-                    Request::Import(draft) => {
-                        self.catalog.import(draft, Some(server_url.to_owned()), ctx);
-                        return;
-                    }
-                };
+                let request = self.pending.take().unwrap();
+                if let Request::Import(draft) = request {
+                    self.catalog.import(draft, Some(server_url.to_owned()), ctx);
+                    return;
+                }
                 let server_url = server_url.to_owned();
                 let ctx = ctx.clone();
                 let (send, receive) = mpsc::channel();
@@ -170,13 +182,19 @@ impl TtsCenterController {
                 let spawn = std::thread::Builder::new()
                     .name("tts-voice-selection".into())
                     .spawn(move || {
-                        let result =
+                        let result = if let Request::Preview(preset) = request {
+                            super::preview::generate(&server_url, &preset).map(|(pcm, rate)| {
+                                Response::Preview(format!("preset:{preset}"), pcm, rate)
+                            })
+                        } else {
                             super::transport::request(&server_url, "/tts/voice", |client, url| {
-                                match selection {
-                                    Some(selection) => client.post(url).json(&selection),
-                                    None => client.get(url),
+                                match request {
+                                    Request::Select(selection) => client.post(url).json(&selection),
+                                    _ => client.get(url),
                                 }
-                            });
+                            })
+                            .map(Response::Status)
+                        };
                         let _ = send.send(result);
                         ctx.request_repaint();
                     });

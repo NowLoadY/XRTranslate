@@ -165,6 +165,7 @@ impl HostOutputSubscriber for DisplayOutput {
                 asr_only,
                 speaker,
                 update,
+                ..
             } => {
                 if !state
                     .settings
@@ -316,6 +317,8 @@ mod tests {
             |stream, source: &'static str, target: &'static str, asr_only, audio_source| {
                 HostOutputEvent::Caption {
                     stream_id: stream,
+                    turn_id: "test".into(),
+                    segment_index: 1,
                     source: source.into(),
                     translated: (target).into(),
                     asr_only,

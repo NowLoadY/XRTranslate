@@ -1,4 +1,5 @@
 //! Synthesize translated clips independently; keep completed work as it arrives.
+mod reference;
 pub(super) mod track;
 use super::{
     controller::MediaController,
@@ -37,6 +38,7 @@ pub(super) struct SpeechJob {
     total: usize,
     input_key: u64,
     replace_track: bool,
+    cue_id: Option<String>,
 }
 
 enum SpeechEvent {
@@ -94,6 +96,7 @@ impl SpeechJob {
         };
         self.preparing = None;
         let task = self.pending.take()?;
+        let cue_id = self.cue_id.clone();
         let (send, receive) = crossbeam_channel::unbounded();
         let (server, directory, ctx) = (server.to_owned(), directory.to_owned(), ctx.clone());
         let (cancelled, progress) = (self.cancelled.clone(), self.progress.clone());
@@ -108,7 +111,7 @@ impl SpeechJob {
                                     tokio::time::sleep(Duration::from_millis(50)).await;
                                 }
                             } => Ok(()),
-                            output = generate(&task, &server, &directory, &cancelled, &progress, &ctx, &send) => output,
+                            output = generate(&task, cue_id.as_deref(), &server, &directory, &cancelled, &progress, &ctx, &send) => output,
                         }
                     })
             })();
@@ -134,13 +137,19 @@ impl Drop for SpeechJob {
     }
 }
 
-fn validate(task: &MediaTask) -> Result<(), String> {
+fn validate(task: &MediaTask, cue_id: Option<&str>) -> Result<(), String> {
     let target = xrtranslate_engine::language::SupportedLanguage::parse(&task.target_language)
         .ok_or("Choose a target language first.")?;
     if task.is_task_running || task.subtitles.count() == 0 {
         return Err("Finish translating the subtitles first.".into());
     }
+    if cue_id.is_some_and(|id| !task.subtitles.cues().iter().any(|cue| cue.id == id)) {
+        return Err("Subtitle no longer exists.".into());
+    }
     for (index, cue) in task.subtitles.cues().iter().enumerate() {
+        if cue_id.is_some_and(|id| cue.id != id) {
+            continue;
+        }
         if cue
             .translated_text
             .as_ref()
@@ -179,6 +188,8 @@ fn input_key(task: &MediaTask) -> u64 {
     let mut key = DefaultHasher::new();
     task.target_language.hash(&mut key);
     task.duration_ms.hash(&mut key);
+    task.speech_use_source_voice.hash(&mut key);
+    task.speech_reference_range.hash(&mut key);
     for cue in task.subtitles.cues() {
         (
             cue.start_ms,
@@ -193,6 +204,7 @@ fn input_key(task: &MediaTask) -> u64 {
 
 async fn generate(
     task: &MediaTask,
+    cue_id: Option<&str>,
     server: &str,
     directory: &Path,
     cancelled: &AtomicBool,
@@ -200,7 +212,7 @@ async fn generate(
     ctx: &egui::Context,
     send: &crossbeam_channel::Sender<SpeechEvent>,
 ) -> Result<(), String> {
-    validate(task)?;
+    validate(task, cue_id)?;
     let mut url = reqwest::Url::parse(server).map_err(|e| e.to_string())?;
     url.set_scheme(if matches!(url.scheme(), "wss" | "https") {
         "https"
@@ -220,41 +232,59 @@ async fn generate(
         .json()
         .await
         .map_err(|e| e.to_string())?;
-    if !status.ready {
+    if task.speech_use_source_voice && !status.supports_reference_audio {
+        return Err("The selected TTS model does not support reference audio.".into());
+    }
+    if !task.speech_use_source_voice && !status.ready {
         return Err("Choose an available voice in the TTS Center first.".into());
     }
     url.set_path("/tts/synthesize");
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let existing = task
-        .speech_track
-        .as_ref()
-        .filter(|track| track.language == task.target_language);
-    for (index, cue) in task.subtitles.cues().iter().enumerate() {
-        if existing.is_some_and(|track| {
-            track.clips.iter().any(|clip| {
-                clip.id == cue.id
-                    && Some(&clip.text) == cue.translated_text.as_ref()
-                    && clip.path.is_file()
-            })
-        }) {
-            progress.completed.store(index + 1, Ordering::Relaxed);
+    let existing = task.speech_track.as_ref();
+    for (completed, (index, cue)) in task
+        .subtitles
+        .cues()
+        .iter()
+        .enumerate()
+        .filter(|(_, cue)| cue_id.is_none_or(|id| cue.id == id))
+        .enumerate()
+    {
+        if existing.is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms)) {
+            progress.completed.store(completed + 1, Ordering::Relaxed);
             continue;
         }
         let start = cue.start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
         // Natural speech may use the following pause, but must not displace the next cue.
-        let end_ms = task
+        let mut end_ms = task
             .subtitles
             .cues()
             .get(index + 1)
             .map_or(task.duration_ms.max(cue.end_ms), |next| next.start_ms);
+        if cue_id.is_some() {
+            end_ms = end_ms.min(cue.end_ms);
+        }
+        if let Some(next) = existing
+            .into_iter()
+            .flat_map(|track| &track.clips)
+            .filter(|clip| clip.start_ms > cue.start_ms)
+            .map(|clip| clip.start_ms)
+            .min()
+        {
+            end_ms = end_ms.min(next);
+        }
         let end = end_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
         let available = usize::try_from(end - start).map_err(|e| e.to_string())?;
         let audio = async {
+            let reference_audio = task
+                .speech_use_source_voice
+                .then(|| reference::audio(task, cue.start_ms, cue.end_ms))
+                .transpose()?;
             let body = response(
                 client.post(url.clone()).json(&SpeechRequest {
                     text: cue.translated_text.clone().unwrap(),
                     language: task.target_language.clone(),
                     voice: Some(status.selection.clone()),
+                    reference_audio,
                 }),
                 progress,
             )
@@ -305,7 +335,7 @@ async fn generate(
         }
         writer.finalize().map_err(|e| e.to_string())?;
         let clip = SpeechClip {
-            id: cue.id.clone(),
+            id: uuid::Uuid::new_v4().to_string(),
             path: directory.join(format!("{}.wav", uuid::Uuid::new_v4())),
             start_ms: cue.start_ms,
             duration_ms,
@@ -314,7 +344,7 @@ async fn generate(
         };
         send.send(SpeechEvent::Clip(clip, output.into_temp_path()))
             .map_err(|_| "Speech generation cancelled")?;
-        progress.completed.store(index + 1, Ordering::Relaxed);
+        progress.completed.store(completed + 1, Ordering::Relaxed);
         ctx.request_repaint();
     }
     Ok(())
@@ -447,7 +477,15 @@ fn fit(samples: Vec<i16>, available: usize, cancelled: &AtomicBool) -> Result<Ve
 
 impl MediaController {
     pub(crate) fn start_speech(&mut self, restart: bool) {
-        if self.speech_job.is_some() || self.subtitle_edit.is_some() {
+        self.start_speech_selection(restart, None);
+    }
+
+    pub(crate) fn start_cue_speech(&mut self, cue_id: String) {
+        self.start_speech_selection(false, Some(cue_id));
+    }
+
+    fn start_speech_selection(&mut self, restart: bool, cue_id: Option<String>) {
+        if self.speech_job.is_some() || self.subtitle_edit.is_some() || self.speech_edit.is_some() {
             return;
         }
         self.save_active();
@@ -458,8 +496,21 @@ impl MediaController {
         else {
             return;
         };
-        if let Err(error) = validate(task) {
+        if let Err(error) = validate(task, cue_id.as_deref()) {
             self.error = Some(error);
+            return;
+        }
+        if let Some(cue) = task
+            .subtitles
+            .cues()
+            .iter()
+            .find(|cue| Some(&cue.id) == cue_id.as_ref())
+            && task
+                .speech_track
+                .as_ref()
+                .is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms))
+        {
+            self.error = Some("This time range already contains speech.".into());
             return;
         }
         self.error = None;
@@ -467,17 +518,22 @@ impl MediaController {
         // Keep the old track until the first new clip is saved. A fresh run must
         // not mix the previously selected voice with its replacement.
         let replace_track = restart
-            || pending
-                .speech_track
-                .as_ref()
-                .is_some_and(|track| track.completed(task) == task.subtitles.count());
+            || (cue_id.is_none()
+                && pending
+                    .speech_track
+                    .as_ref()
+                    .is_some_and(|track| track.completed(task) == task.subtitles.count()));
         if replace_track {
             pending.speech_track = None;
         }
         self.speech_job = Some(SpeechJob {
             task_id: task.id.clone(),
             language: task.target_language.clone(),
-            total: task.subtitles.count(),
+            total: if cue_id.is_some() {
+                1
+            } else {
+                task.subtitles.count()
+            },
             input_key: input_key(task),
             replace_track,
             pending: Some(pending),
@@ -485,6 +541,7 @@ impl MediaController {
             result: None,
             cancelled: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(SpeechProgress::default()),
+            cue_id,
         });
     }
 
@@ -550,7 +607,7 @@ impl MediaController {
                         self.error = Some(error);
                     }
                 }
-                SpeechEvent::Clip(mut clip, temporary) => {
+                SpeechEvent::Clip(clip, temporary) => {
                     let job = self.speech_job.as_ref().unwrap();
                     let (task_id, language, key, replace_track) = (
                         job.task_id.clone(),
@@ -579,23 +636,15 @@ impl MediaController {
                             clips: Vec::new(),
                             rendered: false,
                         });
-                        if replace_track
-                            || track.language != language
-                            || track.clips.iter().all(|clip| clip.text.is_empty())
-                        {
+                        if replace_track {
                             track.language = language;
                             track.clips.clear();
                         }
-                        if let Some(previous) = track
-                            .clips
-                            .iter_mut()
-                            .find(|previous| previous.id == clip.id)
-                        {
-                            clip.start_ms = previous.start_ms;
-                            *previous = clip.clone();
-                        } else {
-                            track.clips.push(clip.clone());
+                        if track.overlaps(clip.start_ms, clip.end_ms()) {
+                            self.remove_speech_file(&clip.path);
+                            return Err("This time range already contains speech.".into());
                         }
+                        track.clips.push(clip.clone());
                         track.clips.sort_by_key(|clip| clip.start_ms);
                         track.rendered = false;
                         task.play_speech_track = was_selected || old.is_none();
@@ -726,7 +775,10 @@ impl MediaController {
                     if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
                         self.error = Some(error.to_string());
                     }
-                    if selected && self.active_task_id.as_deref() == Some(&result.task_id) {
+                    if selected
+                        && !self.previewing_vocals
+                        && self.active_task_id.as_deref() == Some(&result.task_id)
+                    {
                         self.apply_audio_selection(false);
                         if let Some(backend) = &mut self.backend
                             && let Err(error) = backend.refresh_audio()
@@ -765,6 +817,142 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::time::Instant;
+
+    #[test]
+    fn a_single_cue_creates_an_independent_clip_and_respects_occupied_time() {
+        use crate::media::{backend::MediaSource, subtitles::SubtitleTimeline, task::SubtitleMode};
+        use std::io::BufRead;
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = MediaTask::new(
+            "single".into(),
+            MediaSource::LocalFile("source.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::TranslateExisting,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse("1\n00:00:01,000 --> 00:00:03,000\nHello\n\n2\n00:00:04,000 --> 00:00:06,000\nUntranslated\n").unwrap();
+        let cue = task.subtitles.cues()[0].clone();
+        task.subtitles
+            .set_translation(&cue.id, "你好".into(), "en", "zh");
+        assert!(validate(&task, None).is_err());
+        validate(&task, Some(&cue.id)).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            for synthesis in [false, true] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut socket);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(if synthesis {
+                    "POST /tts/synthesize "
+                } else {
+                    "GET /tts/voice "
+                }));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let response = if synthesis {
+                    let request: SpeechRequest = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(request.text, "你好");
+                    assert!(request.reference_audio.is_none());
+                    let mut output = Cursor::new(Vec::new());
+                    let mut writer = hound::WavWriter::new(&mut output, SPEC).unwrap();
+                    for _ in 0..SAMPLE_RATE {
+                        writer.write_sample(100_i16).unwrap();
+                    }
+                    writer.finalize().unwrap();
+                    output.into_inner()
+                } else {
+                    serde_json::to_vec(&VoiceStatus {
+                        ready: true,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .unwrap();
+                socket.write_all(&response).unwrap();
+            }
+        });
+        let (send, receive) = crossbeam_channel::unbounded();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(generate(
+                &task,
+                Some(&cue.id),
+                &server,
+                directory.path(),
+                &AtomicBool::new(false),
+                &SpeechProgress::default(),
+                &Default::default(),
+                &send,
+            ))
+            .unwrap();
+        worker.join().unwrap();
+        let SpeechEvent::Clip(clip, temporary) = receive.try_recv().unwrap() else {
+            panic!("missing clip")
+        };
+        temporary.persist(&clip.path).unwrap();
+        assert_ne!(clip.id, cue.id);
+        assert_eq!(clip.start_ms, cue.start_ms);
+        assert!(clip.end_ms() <= cue.end_ms);
+        task.speech_track = Some(SpeechTrack {
+            path: directory.path().join("mix.wav"),
+            language: "zh".into(),
+            clips: vec![clip.clone()],
+            rendered: true,
+        });
+        let mut controller = MediaController::open(directory.path().into(), None);
+        controller.backend = None;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.tasks = vec![task];
+        controller.start_cue_speech(cue.id.clone());
+        assert!(controller.speech_job.is_none());
+        assert_eq!(
+            controller.error.as_deref(),
+            Some("This time range already contains speech.")
+        );
+        controller.store.tasks[0]
+            .speech_track
+            .as_mut()
+            .unwrap()
+            .clips[0]
+            .start_ms = 7000;
+        controller.start_cue_speech(cue.id);
+        assert_eq!(controller.speech_job.as_ref().unwrap().total, 1);
+        assert!(!controller.speech_job.as_ref().unwrap().replace_track);
+        assert_eq!(
+            controller.store.tasks[0]
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips[0]
+                .start_ms,
+            7000
+        );
+    }
 
     #[test]
     fn restarting_partial_speech_keeps_old_audio_until_a_replacement_arrives() {
@@ -867,7 +1055,7 @@ mod tests {
                 Default::default(),
             );
         }
-        validate(&task).unwrap();
+        validate(&task, None).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
         let progress = Arc::new(SpeechProgress::default());
@@ -979,6 +1167,7 @@ mod tests {
         runtime
             .block_on(generate(
                 &task,
+                None,
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1032,6 +1221,7 @@ mod tests {
         let error = runtime
             .block_on(generate(
                 &task,
+                None,
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1068,6 +1258,7 @@ mod tests {
         runtime
             .block_on(generate(
                 &task,
+                None,
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1090,7 +1281,7 @@ mod tests {
             let progress = SpeechProgress::default();
             let cancelled = AtomicBool::new(false);
             let ctx = egui::Context::default();
-            let generation = generate(&task, &server, directory.path(), &cancelled, &progress, &ctx, &send);
+            let generation = generate(&task, None, &server, directory.path(), &cancelled, &progress, &ctx, &send);
             tokio::pin!(generation);
             tokio::select! {
                 result = &mut generation => panic!("should still be waiting: {result:?}"),

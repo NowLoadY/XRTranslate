@@ -128,7 +128,6 @@ pub(crate) struct Host {
     surface_requests: Vec<(String, u64, ui_director::egui::driver::Request)>,
     context_updated: std::time::Instant,
     pub error: Option<String>,
-    models: models::Downloads,
 }
 impl Host {
     pub fn send_event(&self, plugin: &str, name: &str, value: Value) {
@@ -184,7 +183,6 @@ impl Host {
             surface_requests: Vec::new(),
             context_updated: std::time::Instant::now(),
             error: None,
-            models: models::Downloads::default(),
         };
         host.refresh();
         host
@@ -240,7 +238,6 @@ impl Host {
             .collect::<Vec<_>>()
         {
             self.stop(&id);
-            self.models.cancel(&id);
             self.installed.remove(&id);
         }
         let error = (!errors.is_empty()).then(|| errors.join("\n"));
@@ -423,9 +420,6 @@ impl Host {
             self.capabilities = capabilities;
         }
         let capabilities = self.capabilities.clone();
-        if let Some(id) = self.models.poll() {
-            self.stop(&id);
-        }
         let resources = (locale(language).to_owned(), runtimes.clone());
         let resources_changed = self
             .resources
@@ -568,7 +562,7 @@ impl Host {
                 icon: p.icon.clone(),
             })
             .collect();
-        if self.models.busy() || !self.inference.is_empty() {
+        if !self.inference.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let mut ready = Vec::new();

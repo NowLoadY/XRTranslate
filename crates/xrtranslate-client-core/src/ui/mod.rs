@@ -39,6 +39,7 @@ pub fn icon_source(name: &str) -> eframe::egui::ImageSource<'static> {
         "check.svg" => include_bytes!("../../resources/icons/check.svg"),
         "x.svg" => include_bytes!("../../resources/icons/x.svg"),
         "play.svg" => include_bytes!("../../resources/icons/play.svg"),
+        "music.svg" => include_bytes!("../../resources/icons/music.svg"),
         "media-collapse.svg" => include_bytes!("../../resources/icons/media-collapse.svg"),
         "media-expand.svg" => include_bytes!("../../resources/icons/media-expand.svg"),
         "media-subtitles.svg" => include_bytes!("../../resources/icons/media-subtitles.svg"),

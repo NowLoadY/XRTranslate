@@ -11,12 +11,13 @@ use crate::{
 };
 use eframe::egui;
 
-const SINGLE_LINE_HEADER_WIDTH: f32 = 360.0;
+const SINGLE_LINE_HEADER_WIDTH: f32 = 400.0;
 
 pub(super) fn render_subtitles_card(
     controller: &mut MediaController,
     language: crate::i18n::UiLanguage,
     optimizing: bool,
+    can_synthesize: bool,
     ui: &mut egui::Ui,
 ) {
     let can_play = controller.can_play();
@@ -92,7 +93,7 @@ pub(super) fn render_subtitles_card(
             .subtitle_edit
             .as_ref()
             .is_none_or(|edit| edit.dragging_time);
-    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, ui);
+    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, language, ui);
     if subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
         egui::scroll_area::State::default().store(
@@ -160,6 +161,11 @@ pub(super) fn render_subtitles_card(
     );
     let mut edit = None;
     let mut delete = None;
+    let mut generate_speech = None;
+    let can_generate = can_synthesize
+        && can_edit
+        && controller.speech_edit.is_none()
+        && controller.speech_job.is_none();
     let mut edit_action = super::subtitle_edit::EditAction::None;
     let task_id = controller.active_task_id.as_deref();
     let draft = &mut controller.subtitle_edit;
@@ -298,6 +304,36 @@ pub(super) fn render_subtitles_card(
                                 .clone(),
                         );
                     }
+                    let occupied = task
+                        .and_then(|task| task.speech_track.as_ref())
+                        .is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms));
+                    let has_translation = cue
+                        .translated_text
+                        .as_ref()
+                        .is_some_and(|text| !text.trim().is_empty());
+                    if ui
+                        .add_enabled_ui(can_generate && !occupied && has_translation, |ui| {
+                            components::icon_button(
+                                ui,
+                                tr(language, "Generate speech for this range"),
+                                xrtranslate_client_core::ui::icon!("music.svg"),
+                            )
+                        })
+                        .inner
+                        .on_disabled_hover_text(tr(
+                            language,
+                            if occupied {
+                                "This time range already contains speech."
+                            } else if !has_translation {
+                                "Translate this subtitle first."
+                            } else {
+                                "Finish the current task or edit first."
+                            },
+                        ))
+                        .clicked()
+                    {
+                        generate_speech = Some(cue.id.clone());
+                    }
                     let button = ui
                         .add_enabled_ui(can_edit, |ui| {
                             components::edit_button(ui, tr(language, "Edit subtitle"))
@@ -358,6 +394,9 @@ pub(super) fn render_subtitles_card(
     if let Some(id) = delete {
         controller.delete_subtitle(&id);
         return;
+    }
+    if let Some(id) = generate_speech {
+        controller.start_cue_speech(id);
     }
     if let Some(action) = timeline_action {
         action.apply(controller);
@@ -478,6 +517,7 @@ mod tests {
                         controller,
                         crate::i18n::UiLanguage::English,
                         optimizing,
+                        true,
                         ui,
                     )
                 },

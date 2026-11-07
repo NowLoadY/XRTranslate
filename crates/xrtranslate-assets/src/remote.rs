@@ -192,7 +192,12 @@ pub struct TtsCapabilities {
     pub max_input_chars: usize,
     #[serde(default)]
     pub voice_cloning: bool,
+    /// Clone a reference for one synthesis request without selecting a saved voice.
+    #[serde(default)]
+    pub reference_audio: bool,
     pub voices: Vec<String>,
+    #[serde(default)]
+    pub voice_languages: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub voice_labels: std::collections::BTreeMap<String, String>,
 }
@@ -274,6 +279,25 @@ pub fn preset_voice_label(voice: &str) -> &str {
         .filter_map(|model| model.tts.as_ref())
         .find_map(|tts| tts.voice_labels.get(voice))
         .map_or(voice, String::as_str)
+}
+
+pub fn preset_voice_language(voice: &str) -> &str {
+    catalog()
+        .models
+        .iter()
+        .find_map(|model| {
+            let tts = model.tts.as_ref()?;
+            if !tts.voices.iter().any(|preset| preset == voice) {
+                return None;
+            }
+            let languages = tts.voice_languages.get(voice).unwrap_or(&model.languages);
+            Some(if languages.iter().any(|language| language == "zh") {
+                "zh"
+            } else {
+                languages.first().map_or("en", String::as_str)
+            })
+        })
+        .unwrap_or("zh")
 }
 
 pub fn account_model_capabilities(

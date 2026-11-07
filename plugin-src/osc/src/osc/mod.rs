@@ -33,6 +33,7 @@ impl HostOutputSubscriber for OscHandle {
                 asr_only,
                 speaker,
                 update,
+                ..
             } => self.add_message_for_stream(
                 stream_id,
                 audio_source,

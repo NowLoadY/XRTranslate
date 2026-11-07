@@ -429,42 +429,10 @@ pub fn remove_model_asset(
     id: ModelAssetId,
 ) -> Result<(), ModelDownloadError> {
     let target = assets.asset(id);
-    let staging = staging_directory(target);
-    let staging_parent = staging.parent().expect("staging directory has parent");
-    fs::create_dir_all(staging_parent).map_err(|source| ModelDownloadError::StagingDirectory {
-        path: staging_parent.to_path_buf(),
-        source,
-    })?;
-    let _lock = InstallLock::acquire(staging_parent, id)?;
-
-    clear_model_staging(assets, id)?;
-    for file in target.manifest().required_files {
-        let path = target.directory().join(file.relative_path);
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => return Err(ModelDownloadError::Removal { path, source }),
-        }
-        remove_empty_parents(path.parent(), target.directory())?;
-    }
-    match fs::remove_dir(target.directory()) {
-        Ok(()) => Ok(()),
-        Err(source)
-            if matches!(
-                source.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-            ) =>
-        {
-            Ok(())
-        }
-        Err(source) => Err(ModelDownloadError::Removal {
-            path: target.directory().to_path_buf(),
-            source,
-        }),
-    }
+    crate::ModelPackage::from(target.manifest()).remove(target.directory())
 }
 
-fn remove_empty_parents(
+pub(crate) fn remove_empty_parents(
     mut directory: Option<&Path>,
     boundary: &Path,
 ) -> Result<(), ModelDownloadError> {
@@ -539,9 +507,6 @@ pub(crate) struct InstallLock {
 }
 
 impl InstallLock {
-    fn acquire(staging_parent: &Path, id: ModelAssetId) -> Result<Self, ModelDownloadError> {
-        Self::acquire_named(staging_parent, id.as_str())
-    }
     pub(crate) fn acquire_named(
         staging_parent: &Path,
         id: &str,

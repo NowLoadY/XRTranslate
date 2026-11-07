@@ -1,4 +1,4 @@
-mod audio_tracks;
+pub(super) mod audio_tracks;
 pub(super) mod files;
 mod media;
 mod screen;

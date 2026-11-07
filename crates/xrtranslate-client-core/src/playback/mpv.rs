@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 mod encoding;
 mod tracks;
-pub use encoding::{VideoAudio, VideoEncoding, encode_audio, encode_video};
+pub use encoding::{VideoAudio, VideoEncoding, encode_audio, encode_audio_volume, encode_video};
 #[cfg(test)]
 pub mod tests;
 
@@ -350,7 +350,7 @@ pub struct MpvBackend {
     active_channels: Vec<super::AudioChannelItem>,
     audio_selection: super::PlaybackAudio,
     audio_loading: std::collections::HashSet<PathBuf>,
-    applied_audio: Option<Vec<i64>>,
+    applied_audio: Option<Vec<(i64, super::AudioMixSettings)>>,
     audio_reloads: usize,
     audio_resume: Option<(i64, PlaybackStatus)>,
     loading: bool,
@@ -432,22 +432,16 @@ impl MpvBackend {
         }
         let mut ids = Vec::new();
         let mut ready = true;
-        for source in self.audio_selection.sources() {
-            let track = match source {
-                PlaybackAudio::Original(id) => {
-                    self.snapshot.audio_tracks.iter().find(|track| {
-                        track.external.is_none() && id.is_none_or(|id| id == track.id)
-                    })
-                }
-                PlaybackAudio::External(path) => self
-                    .snapshot
-                    .audio_tracks
-                    .iter()
-                    .find(|track| track.external.as_ref() == Some(path)),
-                PlaybackAudio::Mix(_) => unreachable!(),
-            };
+        for (source, settings) in self.audio_selection.inputs() {
+            if matches!(
+                source,
+                PlaybackAudio::Mix(_) | PlaybackAudio::Adjusted { .. }
+            ) {
+                return Err("Audio adjustments must refer to an individual source".into());
+            }
+            let track = tracks::resolve(source, &self.snapshot.audio_tracks);
             if let Some(track) = track {
-                ids.push(track.id);
+                ids.push((track.id, settings.cloned().unwrap_or_default()));
             } else if let PlaybackAudio::External(path) = source {
                 ready = false;
                 if self.audio_loading.insert(path.clone()) {
@@ -458,20 +452,12 @@ impl MpvBackend {
                 ready = false;
             }
         }
-        ids.sort_unstable();
-        ids.dedup();
+        ids.sort_by_key(|(id, _)| *id);
+        ids.dedup_by_key(|(id, _)| *id);
         if !ready || self.applied_audio.as_ref() == Some(&ids) {
             return Ok(());
         }
-        if ids.len() > 1 {
-            self.mpv.set_property_string("aid", "no")?;
-            self.mpv
-                .set_property_string("lavfi-complex", &tracks::mix_graph(&ids))?;
-        } else {
-            self.mpv.set_property_string("lavfi-complex", "")?;
-            self.mpv
-                .set_property_string("aid", &ids.first().map_or("no".into(), i64::to_string))?;
-        }
+        tracks::apply(&self.mpv, &ids)?;
         self.applied_audio = Some(ids);
         if let Some((position, status)) = self.audio_resume.take() {
             self.seek(position);

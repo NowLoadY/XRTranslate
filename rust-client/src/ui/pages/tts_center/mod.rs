@@ -2,6 +2,7 @@
 mod catalog;
 mod controller;
 mod editor;
+mod preview;
 mod transport;
 pub use controller::TtsCenterController;
 
@@ -17,6 +18,7 @@ use xrtranslate_assets::voices::builtin;
 
 pub enum Action {
     Preview(String),
+    PreviewPreset(String),
     Configure,
 }
 
@@ -89,8 +91,29 @@ pub fn render(
     }
     if !controller.status.supports_cloning {
         ui.add_space(8.0);
+        components::input_field(
+            ui,
+            &mut controller.catalog.query,
+            tr(language, "Search voices"),
+        );
         let mut selected = None;
-        let voices = controller.status.preset_voices.clone();
+        let query = controller.catalog.query.trim().to_lowercase();
+        let voices: Vec<_> = controller
+            .status
+            .preset_voices
+            .iter()
+            .filter(|voice| {
+                query.is_empty()
+                    || voice.to_lowercase().contains(&query)
+                    || tr_dynamic(
+                        language,
+                        xrtranslate_assets::remote::preset_voice_label(voice),
+                    )
+                    .to_lowercase()
+                    .contains(&query)
+            })
+            .cloned()
+            .collect();
         selection_card::grid(
             ui,
             "tts_presets",
@@ -112,15 +135,38 @@ pub fn render(
                         .as_ref(),
                         avatar: voice,
                         width,
-                        height: 180.0,
+                        height: 200.0,
                         selected: active,
                         enabled: configured && !controller.busy(),
                         action: tr(language, if active { "In use" } else { "Use voice" }),
                     },
                     |ui| {
-                        if controller.requested_voice.as_ref() == Some(voice) && controller.busy() {
-                            ui.spinner();
-                        }
+                        ui.horizontal(|ui| {
+                            let playing = controller.previewing.as_deref()
+                                == Some(format!("preset:{voice}").as_str());
+                            if ui
+                                .add_enabled_ui(configured && !controller.busy(), |ui| {
+                                    components::icon_button(
+                                        ui,
+                                        tr(
+                                            language,
+                                            if playing { "Stop" } else { "Preview voice" },
+                                        ),
+                                        xrtranslate_client_core::ui::icon!("music.svg"),
+                                    )
+                                    .on_hover_text(preview::phrase(voice).1)
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                action = Some(Action::PreviewPreset(voice.clone()));
+                            }
+                            if controller.requested_voice.as_ref() == Some(voice)
+                                && controller.busy()
+                            {
+                                ui.spinner();
+                            }
+                        });
                     },
                 ) && !active
                 {
@@ -198,20 +244,14 @@ pub fn render(
                             let label =
                                 tr(language, if playing { "Stop" } else { "Preview voice" });
                             let preview = ui
-                                .add_enabled(
-                                    !controller.catalog.busy(),
-                                    egui::Button::new(if playing { "■" } else { "▶" })
-                                        .min_size(egui::Vec2::splat(32.0))
-                                        .corner_radius(16),
-                                )
-                                .on_hover_text(label);
-                            preview.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::Role::Button,
-                                    preview.enabled(),
-                                    label,
-                                )
-                            });
+                                .add_enabled_ui(!controller.catalog.busy(), |ui| {
+                                    components::icon_button(
+                                        ui,
+                                        label,
+                                        xrtranslate_client_core::ui::icon!("music.svg"),
+                                    )
+                                })
+                                .inner;
                             if preview.clicked() {
                                 action = Some(Action::Preview(card.id.clone()));
                             }

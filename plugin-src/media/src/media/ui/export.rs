@@ -26,10 +26,12 @@ pub(super) fn settings(
             .speech_job
             .as_ref()
             .is_some_and(|job| job.task_id == id);
-    let has_background = task
-        .separated_audio
+    let tracks = controller
+        .backend
         .as_ref()
-        .is_some_and(|stems| stems.background.is_file());
+        .map(|backend| backend.audio_tracks())
+        .unwrap_or_default();
+    let mut mix_changed = false;
     let mut export = false;
     let mut cancel = false;
     let response = egui::Modal::new(egui::Id::unique("media_video_export")).show(ctx, |ui| {
@@ -37,51 +39,10 @@ pub(super) fn settings(
         ui.heading(tr(language, "Export video"));
         ui.add(egui::Label::new(egui::RichText::new(&task.title).weak()).truncate());
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.label(tr(language, "Audio track"));
-            let speech_label = format!(
-                "{} · {}",
-                tr(language, "Speech track"),
-                crate::language_label(language, &task.target_language)
-            );
-            components::combobox_ui(
-                ui,
-                "export_audio",
-                if settings.use_speech {
-                    &speech_label
-                } else {
-                    tr(language, "Original audio")
-                },
-                |ui| {
-                    components::selectable_value(
-                        ui,
-                        &mut settings.use_speech,
-                        false,
-                        tr(language, "Original audio"),
-                    );
-                    components::selectable_value(ui, &mut settings.use_speech, true, &speech_label);
-                },
-            );
+        ui.add_enabled_ui(!busy, |ui| {
+            mix_changed = super::detail::audio_tracks::controls(task, tracks, language, ui, false);
         });
-        if settings.use_speech {
-            ui.add_enabled_ui(has_background || settings.keep_background, |ui| {
-                components::checkbox(
-                    ui,
-                    &mut settings.keep_background,
-                    tr(language, "Keep background audio"),
-                );
-            });
-            if !has_background {
-                ui.label(
-                    egui::RichText::new(tr(
-                        language,
-                        "Use vocal separation during recognition to prepare background audio.",
-                    ))
-                    .small()
-                    .weak(),
-                );
-            }
-        }
+        ui.add_space(8.0);
         ui.add_enabled_ui(
             task.subtitles.count() > 0 || settings.burn_subtitles,
             |ui| {
@@ -110,6 +71,9 @@ pub(super) fn settings(
     });
     // Keep the same choices when returning to this task, just like its languages/style.
     task.video_export_settings = Some(settings);
+    if mix_changed {
+        controller.apply_audio_selection(false);
+    }
     if export || cancel || response.should_close() {
         controller.pending_video_export = None;
         controller.save_active();

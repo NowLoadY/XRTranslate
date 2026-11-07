@@ -494,6 +494,8 @@ mod tests {
         output.bind(sender.clone(), "session".into(), true);
         let caption = |stream| HostOutputEvent::Caption {
             stream_id: stream,
+            turn_id: "test".into(),
+            segment_index: 1,
             audio_source: crate::recognition::CaptureSource::Microphone,
             is_typing: false,
             source: ("Hello").into(),

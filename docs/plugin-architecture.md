@@ -3,7 +3,7 @@
 Optional plugins are native child processes discovered under the application’s
 `plugins/` directory. Each directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
-while running and checks only the declared minimum host version. Motion, Media,
+while running and checks only the declared minimum host version. Media,
 Meeting, Agent, Vocabulary, SteamVR, OSC, Avatar, screen translation, Lyrics,
 Big Walk and automatic input use this boundary.
 Their source is absent from the desktop client's dependency graph;
@@ -17,9 +17,10 @@ Cooperation belongs to consumers: Lyrics reads output requests from plugin state
 and OSC consumes lyric events. Missing required capabilities produce a local error;
 optional consumers report unavailability when used.
 
-Motion source is maintained in a separate private repository in the ignored
-`private-plugins/` directory. Public releases do not compile or package it.
-Other plugin source lives in the independent workspace under `plugin-src/`.
+Separately distributed plugins can keep their source in private repositories;
+the public SDK does not include their implementations. Release inclusion comes
+from each manifest, independently of installation in a developer's environment.
+Bundled plugin source lives in the independent workspace under `plugin-src/`.
 It can move to a separate repository unchanged. The exported SDK supplies its
 dependencies and build tool; the host build accepts finished plugin packages.
 Plugins keep working across compatible host upgrades without being rebuilt.
@@ -67,6 +68,20 @@ and ends its renderer without stopping core translation.
 Shared infrastructure stays independent of concrete plugins. Shared requests and
 events carry neutral data and opaque owners; adding a plugin does not introduce
 plugin-named protocol variants or branches in the translation pipeline.
+
+The SDK is a reusable dependency, not a requirement to execute every operation
+in the host. Its base package owns process communication and lifecycle contracts;
+UI integration and specialized platform adapters remain optional dependencies.
+Plugins can reuse those libraries inside their own processes without requiring
+the application to load a domain-specific runtime. A shared adapter is justified
+by actual consumers and a stable responsibility, not by a possible future use.
+
+The host owns shared application services and arbitration. A plugin owns its
+domain decisions and dedicated workers, including optional external-device
+connections. Shared adapters expose observed capabilities and resource lifetime;
+they do not decide feature behavior, infer user intent, or assume a particular
+plugin is installed. Resource acquisition and cleanup have one owner, including
+when a plugin exits unexpectedly.
 
 Plugins receive focused snapshots or capability handles and return typed actions
 for host effects. They do not receive the root application object or access

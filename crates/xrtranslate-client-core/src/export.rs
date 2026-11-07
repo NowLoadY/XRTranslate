@@ -54,6 +54,20 @@ pub fn copy_file(name: &str, format: Format, source: std::path::PathBuf) -> Resu
         .copy_file(source)
 }
 
+/// Generate a large export on the existing dialog worker rather than the UI thread.
+#[cfg(not(target_os = "android"))]
+pub fn write_file(
+    name: &str,
+    format: Format,
+    write: impl FnOnce(std::path::PathBuf) -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let extension = format.extension();
+    crate::file_dialog::FileDialog::new()
+        .set_file_name(file_name(name, extension))
+        .add_filter(extension, &[extension])
+        .write(move |path| write(path).map_err(std::io::Error::other))
+}
+
 fn file_name(name: &str, extension: &str) -> String {
     let mut clean: String = name
         .chars()

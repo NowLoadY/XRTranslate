@@ -79,7 +79,7 @@ fn send(output: &Mutex<io::BufWriter<io::Stdout>>, message: &Message) {
 }
 
 pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
-    let (tx, rx) = mpsc::sync_channel(64);
+    let (tx, rx) = crate::mailbox::channel();
     let (client, outbox) = crate::Client::channel();
     let replies = client.clone();
     std::thread::spawn(move || {

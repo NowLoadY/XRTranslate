@@ -8,7 +8,26 @@ use std::{
 pub fn encode_audio(
     input: &Path,
     output: &Path,
+    tempo: f64,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    encode_audio_filtered(input, output, tempo, None, cancelled)
+}
+
+pub fn encode_audio_volume(
+    input: &Path,
+    output: &Path,
+    volume: u16,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    encode_audio_filtered(input, output, 1.0, Some(volume), cancelled)
+}
+
+fn encode_audio_filtered(
+    input: &Path,
+    output: &Path,
     mut tempo: f64,
+    volume: Option<u16>,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
     if !super::is_mpv_dll_available() {
@@ -21,6 +40,10 @@ pub fn encode_audio(
         tempo /= 2.0;
     }
     filters.push(format!("atempo={tempo:.8}"));
+    if let Some(volume) = volume.filter(|volume| *volume != 100) {
+        filters.push(format!("volume={:.4}", volume.min(200) as f64 / 100.0));
+        filters.push(super::tracks::LIMITER.to_owned());
+    }
     for (name, value) in [
         ("config", "no"),
         ("load-scripts", "no"),
@@ -45,18 +68,12 @@ pub fn encode_audio(
     wait_for_encoding(mpv, output, None, cancelled, None)
 }
 
-pub enum VideoAudio<'a> {
-    Original(Option<i64>),
-    Speech {
-        path: &'a Path,
-        background: Option<&'a Path>,
-    },
-}
+pub type VideoAudio = super::super::PlaybackAudio;
 
 pub struct VideoEncoding<'a> {
     pub subtitles: Option<&'a Path>,
     pub style: &'a crate::playback::SubtitleStyle,
-    pub audio: VideoAudio<'a>,
+    pub audio: VideoAudio,
 }
 
 /// Uses the installed playback engine's encoder and subtitle renderer.
@@ -133,21 +150,32 @@ pub fn encode_video(
                 mpv.set_option_string("aid", &track.to_string())?;
             }
         }
-        VideoAudio::Speech { path, background } => {
-            let mut files = vec![*path];
-            files.extend(*background);
+        selection => {
+            let files: Vec<_> = selection
+                .sources()
+                .into_iter()
+                .filter_map(|source| {
+                    if let VideoAudio::External(path) = source {
+                        Some(path.as_path())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             for file in &files {
                 if !file.is_file() {
                     return Err(format!("Audio file is missing: {}", file.display()));
                 }
             }
-            set_files(&mpv, c"audio-files", &files)?;
+            if !files.is_empty() {
+                set_files(&mpv, c"audio-files", &files)?;
+            }
             // Never fall back to the source voices if an external track fails.
             mpv.set_option_string("aid", "no")?;
         }
     }
     mpv.initialize()?;
-    if matches!(options.audio, VideoAudio::Speech { .. }) {
+    if !matches!(options.audio, VideoAudio::Original(_)) {
         let error = unsafe { libmpv_sys::mpv_hook_add(mpv.handle, 0, c"on_preloaded".as_ptr(), 0) };
         if error < 0 {
             return Err(format!("Cannot prepare export audio: {error}"));
@@ -198,10 +226,10 @@ fn set_files(mpv: &MpvHandle, name: &std::ffi::CStr, paths: &[&Path]) -> Result<
     Ok(())
 }
 
-fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio<'_>) -> Result<(), String> {
-    let VideoAudio::Speech { path, background } = audio else {
+fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio) -> Result<(), String> {
+    if matches!(audio, VideoAudio::Original(_)) {
         return Ok(());
-    };
+    }
     let mut node: libmpv_sys::mpv_node = unsafe { std::mem::zeroed() };
     let error = unsafe {
         libmpv_sys::mpv_get_property(
@@ -216,28 +244,15 @@ fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio<'_>) -> Result<(), St
     }
     let tracks = unsafe { super::tracks::read(&node) };
     unsafe { libmpv_sys::mpv_free_node_contents(&mut node) };
-    let track_id = |path: &Path| -> Result<i64, String> {
-        let path = path.canonicalize().map_err(|e| e.to_string())?;
-        tracks
-            .iter()
-            .find(|track| {
-                track
-                    .external
-                    .as_ref()
-                    .and_then(|file| file.canonicalize().ok())
-                    .as_ref()
-                    == Some(&path)
-            })
-            .map(|track| track.id)
-            .ok_or_else(|| "Could not load the selected export audio".into())
-    };
-    let speech = track_id(path)?;
-    let mut ids = vec![speech];
-    if let Some(background) = background {
-        ids.push(track_id(background)?);
+    let mut inputs = Vec::new();
+    for (source, settings) in audio.inputs() {
+        let track = super::tracks::resolve(source, &tracks)
+            .ok_or("Could not load the selected export audio")?;
+        inputs.push((track.id, settings.cloned().unwrap_or_default()));
     }
-    let graph = super::tracks::mix_graph(&ids);
-    mpv.command(&["set", "lavfi-complex", &graph])?;
+    inputs.sort_by_key(|(id, _)| *id);
+    inputs.dedup_by_key(|(id, _)| *id);
+    super::tracks::apply(mpv, &inputs)?;
     // A moved speech clip must not extend the original video's duration.
     if let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0) {
         mpv.command(&["set", "end", &duration.to_string()])?;
@@ -250,7 +265,7 @@ fn wait_for_encoding(
     output: &Path,
     progress: Option<&AtomicU32>,
     cancelled: &AtomicBool,
-    audio: Option<&VideoAudio<'_>>,
+    audio: Option<&VideoAudio>,
 ) -> Result<(), String> {
     loop {
         if cancelled.load(Ordering::Relaxed) {

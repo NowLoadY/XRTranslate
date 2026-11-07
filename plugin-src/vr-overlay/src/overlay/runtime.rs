@@ -199,6 +199,7 @@ pub enum VrCommand {
         Vec<crate::session_coordinator::TranslationPreview>,
     ),
     Caption {
+        card_id: Option<u64>,
         stream_id: u64,
         audio_source: CaptureSource,
         is_typing: bool,
@@ -209,6 +210,7 @@ pub enum VrCommand {
         live: bool,
     },
     RollStream {
+        card_id: Option<u64>,
         stream_id: u64,
         audio_source: CaptureSource,
         is_typing: bool,
@@ -246,6 +248,11 @@ struct StreamEntry {
 fn next_card_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(super) fn caption_id(stream: u64, turn: &str, segment: u32) -> Option<u64> {
+    (!turn.is_empty())
+        .then(|| eframe::egui::Id::unique(("vr-caption", stream, turn, segment)).value())
 }
 
 pub struct VrOverlayManager {
@@ -404,6 +411,7 @@ impl VrOverlayHandle {
 
     pub fn add_caption(
         &self,
+        card_id: Option<u64>,
         stream_id: u64,
         audio_source: CaptureSource,
         is_typing: bool,
@@ -414,6 +422,7 @@ impl VrOverlayHandle {
         live: bool,
     ) {
         let _ = self.command_tx.send(VrCommand::Caption {
+            card_id,
             stream_id,
             audio_source,
             is_typing,
@@ -427,6 +436,7 @@ impl VrOverlayHandle {
 
     pub fn roll_stream(
         &self,
+        card_id: Option<u64>,
         stream_id: u64,
         audio_source: CaptureSource,
         is_typing: bool,
@@ -436,6 +446,7 @@ impl VrOverlayHandle {
         speaker: &str,
     ) {
         let _ = self.command_tx.send(VrCommand::RollStream {
+            card_id,
             stream_id,
             audio_source,
             is_typing,
@@ -598,6 +609,10 @@ fn run_vr_worker(
                                                     Some(error)
                                                 }
                                             };
+                                            // A new GPU image needs a fresh font atlas, including after reconnect.
+                                            renderer =
+                                                VrOverlayRenderer::new(RENDER_WIDTH, RENDER_HEIGHT)
+                                                    .expect("Valid overlay dimensions");
                                             is_overlay_visible = false;
                                             avatar_initialized = false;
                                             voice_initialized = false;
@@ -668,9 +683,8 @@ fn run_vr_worker(
                             })
                             .enumerate()
                             .map(|(index, entry)| StreamEntry {
-                                card_id: previous_ids
-                                    .get(index)
-                                    .copied()
+                                card_id: caption_id(stream_id, &entry.turn_id, entry.segment_index)
+                                    .or_else(|| previous_ids.get(index).copied())
                                     .unwrap_or_else(next_card_id),
                                 stream_id,
                                 audio_source: entry.audio_source,
@@ -687,6 +701,7 @@ fn run_vr_worker(
                     needs_redraw = true;
                 }
                 Ok(VrCommand::Caption {
+                    card_id,
                     stream_id,
                     audio_source,
                     is_typing,
@@ -706,6 +721,7 @@ fn run_vr_worker(
                     }
                     upsert_caption(
                         &mut entries,
+                        card_id,
                         stream_id,
                         audio_source,
                         is_typing,
@@ -720,6 +736,7 @@ fn run_vr_worker(
                     needs_redraw = true;
                 }
                 Ok(VrCommand::RollStream {
+                    card_id,
                     stream_id,
                     audio_source,
                     is_typing,
@@ -738,6 +755,7 @@ fn run_vr_worker(
                     }
                     upsert_caption(
                         &mut entries,
+                        card_id,
                         stream_id,
                         audio_source,
                         is_typing,
@@ -883,7 +901,10 @@ fn run_vr_worker(
                 &entries
             })
             .iter()
-            .chain(previews.iter().filter(|_| settings.max_items != 1))
+            .chain(previews.iter().filter(|preview| {
+                settings.max_items != 1
+                    && !entries.iter().any(|entry| entry.card_id == preview.card_id)
+            }))
             .filter(|entry| {
                 settings
                     .audio_source_filter
@@ -918,17 +939,13 @@ fn run_vr_worker(
             }
 
             if let Some(overlay) = vr_overlay.as_mut() {
-                let (width, height) = renderer.dimensions();
                 match redraw_overlay(
                     overlay,
                     &mut renderer,
                     &cards,
                     &settings,
                     &mut is_overlay_visible,
-                    |overlay, pixels| match graphics.as_mut() {
-                        Some((_, texture)) => texture.upload(overlay, &pixels),
-                        None => overlay.set_raw_rgba(pixels, width, height),
-                    },
+                    graphics.as_mut().map(|(_, texture)| texture),
                 ) {
                     Ok(()) => status.lock().last_error = None,
                     Err(error) => {
@@ -1076,7 +1093,7 @@ fn redraw_overlay(
     cards: &[VrSubtitleCard],
     settings: &VrOverlaySettings,
     visible: &mut bool,
-    upload: impl FnOnce(&mut OpenVrOverlay, Vec<u8>) -> Result<(), OverlayError>,
+    texture: Option<&mut graphics::RgbaTexture>,
 ) -> Result<(), OverlayError> {
     if !settings.captions_enabled || cards.is_empty() {
         if *visible {
@@ -1084,17 +1101,23 @@ fn redraw_overlay(
             *visible = false;
         }
     } else {
-        let buffer = renderer
-            .render(
-                cards,
-                settings.bilingual,
-                settings.max_items == 1,
-                settings.font_size,
-                [settings.background_color, settings.border_color],
-            )
-            .map_err(OverlayError::InvalidFrame)?;
         configure_overlay(overlay, settings)?;
-        upload(overlay, buffer)?;
+        if let Some(texture) = texture {
+            renderer.render_gpu(texture, overlay, cards, settings)?;
+        } else {
+            let buffer = renderer
+                .render(
+                    cards,
+                    settings.bilingual,
+                    settings.max_items == 1,
+                    settings.font_size,
+                    [settings.background_color, settings.border_color],
+                )
+                .map_err(OverlayError::InvalidFrame)?;
+            let (width, height) = renderer.dimensions();
+            overlay.set_premultiplied_alpha(false)?;
+            overlay.set_raw_rgba(buffer, width, height)?;
+        }
         if !*visible {
             overlay.show()?;
             *visible = true;
@@ -1105,6 +1128,7 @@ fn redraw_overlay(
 
 fn upsert_caption(
     entries: &mut Vec<StreamEntry>,
+    card_id: Option<u64>,
     stream_id: u64,
     audio_source: CaptureSource,
     is_typing: bool,
@@ -1122,7 +1146,7 @@ fn upsert_caption(
         return;
     }
     let mut entry = StreamEntry {
-        card_id: next_card_id(),
+        card_id: card_id.unwrap_or_else(next_card_id),
         stream_id,
         audio_source,
         is_typing,
@@ -1136,7 +1160,7 @@ fn upsert_caption(
     };
     if let Some(current) = entries
         .iter_mut()
-        .find(|e| e.stream_id == stream_id && e.live)
+        .find(|e| card_id.map_or(e.stream_id == stream_id && e.live, |id| e.card_id == id))
     {
         entry.card_id = current.card_id;
         if !current.source.trim().is_empty() && !current.translated.trim().is_empty() {
@@ -1183,7 +1207,7 @@ fn single_caption_entries(
                     .allows(entry.audio_source, entry.is_typing)
         })
         .collect();
-    ready.sort_by_key(|entry| entry.card_id);
+    // Entries retain arrival order; stable sentence IDs are not chronological.
     let Some(latest) = ready.pop() else {
         return Vec::new();
     };
@@ -1234,6 +1258,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn revisions_update_one_sentence_but_repeated_words_in_a_new_sentence_remain() {
+        let mut entries = Vec::new();
+        let start = Instant::now();
+        for (segment, translation, ms) in [(1, "你好", 0), (1, "您好", 100), (2, "你好", 5000)]
+        {
+            upsert_caption(
+                &mut entries,
+                caption_id(42, "turn", segment),
+                42,
+                CaptureSource::Microphone,
+                false,
+                "Hello".into(),
+                translation.into(),
+                vec![],
+                "1".into(),
+                false,
+                start + Duration::from_millis(ms),
+            );
+        }
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].translated, "您好");
+        assert_eq!(entries[0].created_at, start);
+        assert_eq!(entries[1].translated, "你好");
+        assert_ne!(entries[0].card_id, entries[1].card_id);
+        // Stable IDs need not increase with time. Late corrections keep their place.
+        entries[0].card_id = 90;
+        entries[1].card_id = 10;
+        assert_eq!(
+            single_caption_entries(&entries, &VrOverlaySettings::default())[0].card_id,
+            10
+        );
+    }
+
+    #[test]
     fn single_caption_waits_for_pairs_and_merges_only_nearby_phrases() {
         let settings = VrOverlaySettings::default();
         assert_eq!(settings.max_items, 1);
@@ -1242,6 +1300,7 @@ mod tests {
         let append = |entries: &mut Vec<StreamEntry>, source: &str, translated: &str, live, ms| {
             upsert_caption(
                 entries,
+                None,
                 42,
                 CaptureSource::Microphone,
                 false,
@@ -1305,6 +1364,7 @@ mod tests {
         let append = |entries: &mut Vec<StreamEntry>, text: &str, live| {
             upsert_caption(
                 entries,
+                None,
                 42,
                 CaptureSource::Microphone,
                 false,

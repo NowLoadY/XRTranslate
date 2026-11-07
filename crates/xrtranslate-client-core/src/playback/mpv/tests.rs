@@ -185,6 +185,27 @@ fn mixed_tracks_share_playback_seek_and_reload() {
     player.seek(1_000);
     player.play();
     wait_until(&mut player, |p| (1_100..2_000).contains(&p.get_time_ms()));
+    let mut adjusted = mix.clone();
+    if let PlaybackAudio::Mix(inputs) = &mut adjusted {
+        inputs[0] = inputs[0]
+            .clone()
+            .adjusted(crate::playback::AudioMixSettings {
+                volume: 35,
+                duck_intervals: vec![[1200, 1800]],
+            });
+    }
+    player.select_audio(adjusted).unwrap();
+    assert!(
+        player
+            .applied_audio
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|(_, settings)| settings.volume == 35)
+    );
+    assert_eq!(player.get_status(), PlaybackStatus::Playing);
+    // Mixer edits must neither reload the file nor reset its playhead.
+    wait_until(&mut player, |p| (1_200..2_500).contains(&p.get_time_ms()));
     player.pause();
     player.refresh_audio().unwrap();
     // Allow asynchronous reloads, including the track-list changes they generate.

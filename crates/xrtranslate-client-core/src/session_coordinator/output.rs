@@ -38,6 +38,11 @@ pub enum HostOutputEvent<'a> {
     },
     Caption {
         stream_id: u64,
+        /// Stable sentence identity shared with previews; absent on older hosts.
+        #[serde(default)]
+        turn_id: Cow<'a, str>,
+        #[serde(default)]
+        segment_index: u32,
         audio_source: CaptureSource,
         is_typing: bool,
         source: Cow<'a, str>,

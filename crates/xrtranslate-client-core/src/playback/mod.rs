@@ -65,13 +65,54 @@ pub enum PlaybackAudio {
     Original(Option<i64>),
     External(PathBuf),
     Mix(Vec<PlaybackAudio>),
+    Adjusted {
+        source: Box<PlaybackAudio>,
+        settings: AudioMixSettings,
+    },
+}
+
+/// Per-source levels, independent of the player's listening volume. Intervals
+/// use the media timeline, so the same envelope also works after seeking.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioMixSettings {
+    pub volume: u16,
+    pub duck_intervals: Vec<[i64; 2]>,
+}
+
+impl Default for AudioMixSettings {
+    fn default() -> Self {
+        Self {
+            volume: 100,
+            duck_intervals: Vec::new(),
+        }
+    }
 }
 
 impl PlaybackAudio {
     pub(crate) fn sources(&self) -> Vec<&Self> {
+        self.inputs()
+            .into_iter()
+            .map(|(source, _)| source)
+            .collect()
+    }
+
+    pub(crate) fn inputs(&self) -> Vec<(&Self, Option<&AudioMixSettings>)> {
         match self {
-            Self::Mix(sources) => sources.iter().flat_map(Self::sources).collect(),
-            source => vec![source],
+            Self::Mix(sources) => sources.iter().flat_map(Self::inputs).collect(),
+            Self::Adjusted { source, settings } => vec![(source, Some(settings))],
+            source => vec![(source, None)],
+        }
+    }
+
+    pub fn adjusted(self, settings: AudioMixSettings) -> Self {
+        if settings == AudioMixSettings::default() {
+            self
+        } else {
+            Self::Adjusted {
+                source: Box::new(self),
+                settings,
+            }
         }
     }
 }

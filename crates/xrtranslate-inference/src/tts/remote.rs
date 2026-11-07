@@ -1,4 +1,5 @@
 //! Online synthesis wire formats; callers receive only mono PCM16 chunks.
+mod reference;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::ops::ControlFlow;
@@ -57,6 +58,8 @@ impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
             .voices
             .iter()
             .any(|preset| preset == voice)
+            && !(self.capabilities().reference_audio
+                && voice.starts_with(&format!("{}-", self.model.model)))
         {
             return Err(InferenceError::InvalidConfiguration {
                 field: "tts.voice",
@@ -66,6 +69,17 @@ impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
         let language = SupportedLanguage::parse(target_language)
             .map(|language| language.base_code())
             .unwrap_or(target_language);
+        if self
+            .capabilities()
+            .voice_languages
+            .get(voice)
+            .is_some_and(|languages| !languages.iter().any(|supported| supported == language))
+        {
+            return Err(InferenceError::InvalidConfiguration {
+                field: "tts.voice",
+                message: format!("The selected voice does not support {language}."),
+            });
+        }
         let language_hint = self
             .model
             .language_aliases
