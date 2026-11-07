@@ -52,6 +52,12 @@ impl Process {
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
+            // Share the app-local CRT even when launched from another directory.
+            if let Some(directory) = environment.host_executable.parent() {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let paths = std::iter::once(directory.to_owned()).chain(std::env::split_paths(&path));
+                command.env("PATH", std::env::join_paths(paths).map_err(|e| e.to_string())?);
+            }
         }
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         let mut input = BufWriter::new(child.stdin.take().unwrap());
