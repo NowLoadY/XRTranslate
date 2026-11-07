@@ -276,7 +276,7 @@ impl Host {
                 )
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|value| value["plugins"]["enabled"][&manifest.id].as_bool())
+                .and_then(|value| legacy_enablement(&value, &manifest.id))
                 .unwrap_or(true);
                 Settings {
                     enabled,
@@ -685,6 +685,38 @@ impl Host {
             reply,
             cancel,
         });
+    }
+}
+
+fn legacy_enablement(settings: &Value, id: &str) -> Option<bool> {
+    let enabled = settings
+        .pointer("/plugin_preferences/enabled")
+        .or_else(|| settings.pointer("/plugins/enabled"))?
+        .as_object()?;
+    enabled.get(id).and_then(Value::as_bool).or_else(|| {
+        enabled.iter().find_map(|(name, enabled)| {
+            (PluginId::parse(name) == PluginId::parse(id))
+                .then(|| enabled.as_bool())
+                .flatten()
+        })
+    })
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_legacy_enablement_including_renamed_plugins() {
+        let settings = json!({"plugin_preferences":{"enabled":{"video_player":false,"osc":false,"external_plugin":true}}});
+        assert_eq!(legacy_enablement(&settings, "media"), Some(false));
+        assert_eq!(legacy_enablement(&settings, "osc"), Some(false));
+        assert_eq!(legacy_enablement(&settings, "external_plugin"), Some(true));
+        assert_eq!(legacy_enablement(&settings, "new_plugin"), None);
+        assert_eq!(
+            legacy_enablement(&json!({"plugins":{"enabled":{"media":false}}}), "media"),
+            Some(false)
+        );
     }
 }
 impl Drop for Host {

@@ -137,6 +137,29 @@ fn infer(
     stereo: &[f32],
 ) -> Result<Vec<f32>, SeparationError> {
     let spectrum = model_input(transform, stereo);
+    // UVR's polarity ensemble cancels model-generated noise without filtering
+    // speech or music. Keep the two passes sequential to bound peak memory.
+    let reversed = predict(
+        session,
+        transform,
+        spectrum.iter().map(|value| -value).collect(),
+    )?;
+    let mut estimate = predict(session, transform, spectrum)?;
+    for (value, reversed) in estimate.iter_mut().zip(reversed) {
+        *value = (*value - reversed) * 0.5;
+    }
+    Ok(transform
+        .synthesize(&estimate)
+        .into_iter()
+        .map(|sample| sample * VOCAL_GAIN)
+        .collect())
+}
+
+fn predict(
+    session: &mut Session,
+    transform: &Transform,
+    spectrum: Vec<f32>,
+) -> Result<Vec<f32>, SeparationError> {
     let input = Tensor::from_array(([1, 4, transform.bins(), transform.frames()], spectrum))?;
     let outputs = session.run(ort::inputs![input])?;
     let (shape, spectrum) = outputs[0].try_extract_tensor::<f32>()?;
@@ -147,11 +170,7 @@ fn infer(
             "unexpected vocal spectrum output",
         ));
     }
-    Ok(transform
-        .synthesize(spectrum)
-        .into_iter()
-        .map(|sample| sample * VOCAL_GAIN)
-        .collect())
+    Ok(spectrum.to_vec())
 }
 
 fn model_input(transform: &Transform, stereo: &[f32]) -> Vec<f32> {
@@ -397,5 +416,15 @@ mod tests {
         output.extend(separator.finish().unwrap());
         assert_eq!(input.len(), output.len());
         assert!(output.iter().all(|sample| sample.is_finite()));
+
+        // The model must not add a continuous tone to a silent recording.
+        // It would otherwise appear in both vocals and the residual background.
+        separator.reset();
+        let silence = vec![0.0; input.len()];
+        let mut output = separator.push(&silence).unwrap();
+        output.extend(separator.finish().unwrap());
+        assert_eq!(output.len(), silence.len());
+        let peak = output.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
+        assert!(peak < 1e-7, "model introduced noise into silence: {peak}");
     }
 }

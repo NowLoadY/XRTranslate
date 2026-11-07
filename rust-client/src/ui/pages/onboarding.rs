@@ -785,8 +785,12 @@ fn render_onboarding_model_cards(
         }
     }
     if let Some((category, fields)) = remote_fields {
-        app.service_config
-            .set_onboarding_remote_fields(category, fields.model, fields.api_key);
+        app.service_config.set_onboarding_remote_fields(
+            category,
+            fields.model,
+            fields.api_key,
+            fields.workspace_id,
+        );
         let result = app.service_config.save_onboarding_configuration();
         handle_onboarding_save(app, result);
     }
@@ -835,6 +839,7 @@ struct ModelConfigCardResult {
 struct RemoteProviderFields {
     model: String,
     api_key: String,
+    workspace_id: Option<String>,
 }
 
 fn local_model_warning_icon(
@@ -1447,6 +1452,7 @@ fn account_model_fields(
     (provider.model != previous).then(|| RemoteProviderFields {
         model: provider.model.clone(),
         api_key: provider.api_key.clone(),
+        workspace_id: provider.workspace_id.clone(),
     })
 }
 
@@ -1473,9 +1479,23 @@ fn remote_provider_fields(
         (ui.available_width() - 16.0).max(0.0),
         true,
     );
-    (key.changed() || provider.model != previous_model).then(|| RemoteProviderFields {
+    let mut changed = key.changed() || provider.model != previous_model;
+    if let Some(workspace) = &mut provider.workspace_id {
+        ui.add_space(8.0);
+        ui.label(i18n::tr(language, "Workspace ID"));
+        changed |= components::singleline_input(
+            ui,
+            workspace,
+            i18n::tr(language, "Workspace ID"),
+            (ui.available_width() - 16.0).max(0.0),
+            false,
+        )
+        .changed();
+    }
+    changed.then(|| RemoteProviderFields {
         model: provider.model.clone(),
         api_key: provider.api_key.clone(),
+        workspace_id: provider.workspace_id.clone(),
     })
 }
 
@@ -1728,8 +1748,12 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         }
     }
     if let Some(fields) = remote_fields {
-        app.service_config
-            .set_onboarding_remote_fields("tts", fields.model, fields.api_key);
+        app.service_config.set_onboarding_remote_fields(
+            "tts",
+            fields.model,
+            fields.api_key,
+            fields.workspace_id,
+        );
         let result = app.service_config.save_onboarding_configuration();
         handle_onboarding_save(app, result);
     }

@@ -62,6 +62,7 @@ pub(crate) struct OnboardingProviderState {
     pub model: String,
     pub models: Vec<String>,
     pub api_key: String,
+    pub workspace_id: Option<String>,
     pub account: Option<AccountProvider>,
     pub server_managed: bool,
 }
@@ -525,6 +526,9 @@ impl ServiceConfigEditor {
                 }
             }),
             api_key: field("api_key"),
+            workspace_id: field("url")
+                .contains("{workspace_id}")
+                .then(|| field("workspace_id")),
         })
     }
 
@@ -609,6 +613,7 @@ impl ServiceConfigEditor {
         category_key: &str,
         model: String,
         api_key: String,
+        workspace_id: Option<String>,
     ) {
         let is_agent = category_key == "agent";
         let selection = self.agent_selection();
@@ -634,7 +639,10 @@ impl ServiceConfigEditor {
         }) else {
             return;
         };
-        for (name, value) in [("model", model), ("api_key", api_key)] {
+        for (name, value) in [("model", model), ("api_key", api_key)]
+            .into_iter()
+            .chain(workspace_id.map(|value| ("workspace_id", value)))
+        {
             if is_agent && name == "model" {
                 continue;
             }
@@ -739,10 +747,15 @@ impl ServiceConfigEditor {
                 })
                 .any(|provider| {
                     provider_is_remote(provider)
-                        && ["model", "api_key"]
+                        && ["model", "api_key", "workspace_id"]
                             .iter()
                             .filter(|key| {
-                                **key != "api_key" || provider_account(provider).is_none()
+                                (**key != "api_key" || provider_account(provider).is_none())
+                                    && (**key != "workspace_id"
+                                        || provider.fields.iter().any(|field| {
+                                            field.name == "url"
+                                                && field.value.contains("{workspace_id}")
+                                        }))
                             })
                             .any(|required| {
                                 provider
@@ -1223,7 +1236,7 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         .is_some_and(|field| {
             matches!(
                 field.value.trim().to_ascii_lowercase().as_str(),
-                "openai" | "dashscope" | "websocket" | "gemini"
+                "openai" | "dashscope" | "websocket" | "gemini" | "minimax"
             )
         })
 }
@@ -1350,6 +1363,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn domestic_tts_presets_are_available_without_changing_translation_settings() {
+        let document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        let base = xrtranslate_config::AppConfig::from_value(document)
+            .unwrap()
+            .raw;
+        let category = ServiceConfigEditor::make_category(&base, "tts");
+        for (provider, model) in [
+            ("minimax", "speech-2.8-hd"),
+            ("siliconflow", "FunAudioLLM/CosyVoice2-0.5B"),
+            ("qwen", "qwen-audio-3.1-tts-plus"),
+        ] {
+            let card = category
+                .providers
+                .iter()
+                .find(|card| card.name == provider)
+                .unwrap();
+            assert!(provider_is_remote(card), "{provider}");
+            assert_eq!(provider_channel(card), ConnectionChannel::Api);
+            assert_eq!(provider_remote_model(card).unwrap().model, model);
+            let mut document = base.clone();
+            document["tts"]["provider"] = json!(provider);
+            document["tts"]["providers"][provider]["api_key"] = json!("test-only");
+            if provider == "qwen" {
+                let missing = xrtranslate_config::AppConfig::from_value(document.clone()).unwrap();
+                assert!(missing.remote_tts().is_err());
+                document["tts"]["providers"][provider]["workspace_id"] = json!("test-workspace");
+            }
+            let configured = xrtranslate_config::AppConfig::from_value(document).unwrap();
+            assert_eq!(configured.remote_tts().unwrap().unwrap().model.model, model);
+            if provider == "qwen" {
+                assert_eq!(
+                    configured.remote_tts().unwrap().unwrap().endpoint,
+                    "https://test-workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+                );
+            }
+            assert_eq!(configured.raw["asr"], base["asr"]);
+            assert_eq!(configured.raw["translation"], base["translation"]);
+        }
+    }
+
+    #[test]
     fn agent_card_filters_models_and_edits_only_its_role_and_shared_credentials() {
         let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
         document["translation"]["provider"] = json!("qwen");
@@ -1382,7 +1436,7 @@ mod tests {
         assert!(!state.choices.iter().any(|choice| choice.name == "hunyuan"));
         editor.set_agent_follows_translation(false);
         editor.select_onboarding_provider("agent", "qwen");
-        editor.set_onboarding_remote_fields("agent", "qwen-plus".into(), "shared-key".into());
+        editor.set_onboarding_remote_fields("agent", "qwen-plus".into(), "shared-key".into(), None);
         ServiceConfigEditor::sync_categories(&mut editor.document, &editor.categories).unwrap();
         let mut expected = original;
         expected["providers"]["qwen"]["api_key"] = json!("shared-key");

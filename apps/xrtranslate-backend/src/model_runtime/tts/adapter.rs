@@ -212,7 +212,9 @@ impl TtsAdapter {
                 message: format!("no active TTS model supports {target_lang:?}"),
             })?;
         let audio = match &model.backend {
-            TtsBackend::Remote(adapter) => return adapter.synthesize(text, voice, on_audio).await,
+            TtsBackend::Remote(adapter) => {
+                return adapter.synthesize(text, voice, target_lang, on_audio).await;
+            }
             TtsBackend::OpenVoice(adapter) => adapter.synthesize(text, voice, target_lang).await?,
             TtsBackend::Audio8(adapter) => adapter.synthesize(text, voice).await?,
         };

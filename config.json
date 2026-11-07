@@ -500,6 +500,9 @@
   "tts": {
     "provider": "none",
     "providers": {
+      "minimax": {},
+      "siliconflow": {},
+      "qwen": {},
       "groq": {},
       "google": {},
       "none": {},

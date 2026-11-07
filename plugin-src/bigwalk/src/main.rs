@@ -39,10 +39,23 @@ impl Plugin for BigWalk {
     fn initialize(
         &mut self,
         environment: Environment,
-        _: &mut Context,
+        context: &mut Context,
     ) -> std::result::Result<(), String> {
-        self.settings = serde_json::from_value(environment.config).unwrap_or_default();
+        let config = if environment.config.is_null() {
+            environment
+                .data_directory
+                .ancestors()
+                .nth(3)
+                .and_then(|root| std::fs::read(root.join("rust-client-settings.json")).ok())
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|settings| settings.get("bigwalk_settings").cloned())
+                .unwrap_or(Value::Null)
+        } else {
+            environment.config
+        };
+        self.settings = serde_json::from_value(config).unwrap_or_default();
         self.runtime = Some(runtime::Runtime::new(&self.settings, true));
+        context.event("config", json!(self.settings));
         Ok(())
     }
     fn call(&mut self, name: &str, _: Value, _: &mut Context) -> Result {

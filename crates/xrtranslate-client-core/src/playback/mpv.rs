@@ -378,6 +378,8 @@ fn reconcile_playback_status(
 fn is_mpv_dll_available() -> bool {
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
     use windows::core::w;
+    // Encoding can be the first local MPV use in an independently started plugin.
+    super::configure_dll_search_paths();
     unsafe {
         if let Ok(handle) = LoadLibraryW(w!("mpv-2.dll")) {
             let _ = windows::Win32::Foundation::FreeLibrary(handle);

@@ -233,8 +233,8 @@ impl AsyncHttpClient for ReqwestClient {
         let mut response = self.send(&request).await?;
         let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
+        let retry_after = retry_after_header(response.headers());
         if !(200..300).contains(&status) {
-            let retry_after = retry_after_header(response.headers());
             let body = response.text().await.map_err(transport_error)?;
             let retry_after = retry_after.or_else(|| retry_after_body(&body));
             log_timing(&request, started, headers_ms, None, status);
@@ -278,7 +278,7 @@ impl AsyncHttpClient for ReqwestClient {
         Ok(HttpResponse {
             status,
             body: String::new(),
-            retry_after: None,
+            retry_after,
         })
     }
 }

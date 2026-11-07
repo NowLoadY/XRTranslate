@@ -45,6 +45,7 @@
     },
     {
       "id": "siliconflow",
+      "label": "SiliconFlow",
       "guide_url": "https://docs.siliconflow.cn/docs/userguide/quickstart",
       "services": [
         {
@@ -59,6 +60,16 @@
           "models": ["FunAudioLLM/SenseVoiceSmall"]
         },
         {
+          "capability": "tts",
+          "defaults": {
+            "api_key": "",
+            "connector": "openai-speech",
+            "url": "https://api.siliconflow.cn/v1/audio/speech",
+            "model": "FunAudioLLM/CosyVoice2-0.5B"
+          },
+          "models": ["FunAudioLLM/CosyVoice2-0.5B"]
+        },
+        {
           "capability": "translation",
           "defaults": {
             "api_key": "",
@@ -70,6 +81,23 @@
             "url": "https://api.siliconflow.cn/v1/chat/completions"
           },
           "models": ["tencent/Hunyuan-MT-7B"]
+        }
+      ]
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax",
+      "guide_url": "https://platform.minimax.cn/docs/quickstart",
+      "services": [
+        {
+          "capability": "tts",
+          "defaults": {
+            "api_key": "",
+            "connector": "minimax-speech",
+            "url": "https://api.minimax.cn/v1/t2a_v2",
+            "model": "speech-2.8-hd"
+          },
+          "models": ["speech-2.8-hd", "speech-2.8-turbo"]
         }
       ]
     },
@@ -208,6 +236,7 @@
     },
     {
       "id": "qwen",
+      "label": "Alibaba Cloud Bailian",
       "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
       "services": [
         {
@@ -221,6 +250,17 @@
             "vocabulary_weight": 4
           },
           "models": ["qwen-audio-3.0-asr-flash", "qwen-audio-3.1-asr-flash"]
+        },
+        {
+          "capability": "tts",
+          "defaults": {
+            "api_key": "",
+            "connector": "dashscope-speech",
+            "url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+            "workspace_id": "",
+            "model": "qwen-audio-3.1-tts-plus"
+          },
+          "models": ["qwen-audio-3.1-tts-plus"]
         },
         {
           "capability": "asr",
@@ -529,6 +569,182 @@
         "supports_chat": false,
         "streaming": "cumulative",
         "supports_context": true
+      }
+    },
+    {
+      "model": "speech-2.8-hd",
+      "connector": "minimax-speech",
+      "languages": ["zh", "en", "ja", "ko", "fr", "de", "it", "pt", "es", "ru", "yue", "ar", "tr", "nl", "uk", "vi", "id", "th", "pl", "ro", "el", "cs", "fi", "hi", "bg", "da", "he", "ms", "fa", "sk", "sv", "hr", "fil", "hu", "no", "sl", "ca", "nn", "ta", "af"],
+      "language_aliases": [
+        ["zh", "Chinese"],
+        ["en", "English"],
+        ["ja", "Japanese"],
+        ["ko", "Korean"],
+        ["fr", "French"],
+        ["de", "German"],
+        ["it", "Italian"],
+        ["pt", "Portuguese"],
+        ["es", "Spanish"],
+        ["ru", "Russian"],
+        ["yue", "Chinese,Yue"],
+        ["ar", "Arabic"],
+        ["tr", "Turkish"],
+        ["nl", "Dutch"],
+        ["uk", "Ukrainian"],
+        ["vi", "Vietnamese"],
+        ["id", "Indonesian"],
+        ["th", "Thai"],
+        ["pl", "Polish"],
+        ["ro", "Romanian"],
+        ["el", "Greek"],
+        ["cs", "Czech"],
+        ["fi", "Finnish"],
+        ["hi", "Hindi"],
+        ["bg", "Bulgarian"],
+        ["da", "Danish"],
+        ["he", "Hebrew"],
+        ["ms", "Malay"],
+        ["fa", "Persian"],
+        ["sk", "Slovak"],
+        ["sv", "Swedish"],
+        ["hr", "Croatian"],
+        ["fil", "Filipino"],
+        ["hu", "Hungarian"],
+        ["no", "Norwegian"],
+        ["sl", "Slovenian"],
+        ["ca", "Catalan"],
+        ["nn", "Nynorsk"],
+        ["ta", "Tamil"],
+        ["af", "Afrikaans"]
+      ],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 1000,
+        "voice_cloning": false,
+        "voices": ["Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_News_Anchor", "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Radio_Host", "male-qn-qingse", "female-shaonv", "female-chengshu"],
+        "voice_labels": {
+          "Chinese (Mandarin)_Gentleman": "Gentle male voice",
+          "Chinese (Mandarin)_Warm_Bestie": "Warm female voice",
+          "Chinese (Mandarin)_News_Anchor": "News anchor",
+          "Chinese (Mandarin)_Sweet_Lady": "Sweet female voice",
+          "Chinese (Mandarin)_Radio_Host": "Radio host",
+          "male-qn-qingse": "Youthful male voice",
+          "female-shaonv": "Young female voice",
+          "female-chengshu": "Mature female voice"
+        }
+      }
+    },
+    {
+      "model": "speech-2.8-turbo",
+      "connector": "minimax-speech",
+      "languages": ["zh", "en", "ja", "ko", "fr", "de", "it", "pt", "es", "ru", "yue", "ar", "tr", "nl", "uk", "vi", "id", "th", "pl", "ro", "el", "cs", "fi", "hi", "bg", "da", "he", "ms", "fa", "sk", "sv", "hr", "fil", "hu", "no", "sl", "ca", "nn", "ta", "af"],
+      "language_aliases": [
+        ["zh", "Chinese"],
+        ["en", "English"],
+        ["ja", "Japanese"],
+        ["ko", "Korean"],
+        ["fr", "French"],
+        ["de", "German"],
+        ["it", "Italian"],
+        ["pt", "Portuguese"],
+        ["es", "Spanish"],
+        ["ru", "Russian"],
+        ["yue", "Chinese,Yue"],
+        ["ar", "Arabic"],
+        ["tr", "Turkish"],
+        ["nl", "Dutch"],
+        ["uk", "Ukrainian"],
+        ["vi", "Vietnamese"],
+        ["id", "Indonesian"],
+        ["th", "Thai"],
+        ["pl", "Polish"],
+        ["ro", "Romanian"],
+        ["el", "Greek"],
+        ["cs", "Czech"],
+        ["fi", "Finnish"],
+        ["hi", "Hindi"],
+        ["bg", "Bulgarian"],
+        ["da", "Danish"],
+        ["he", "Hebrew"],
+        ["ms", "Malay"],
+        ["fa", "Persian"],
+        ["sk", "Slovak"],
+        ["sv", "Swedish"],
+        ["hr", "Croatian"],
+        ["fil", "Filipino"],
+        ["hu", "Hungarian"],
+        ["no", "Norwegian"],
+        ["sl", "Slovenian"],
+        ["ca", "Catalan"],
+        ["nn", "Nynorsk"],
+        ["ta", "Tamil"],
+        ["af", "Afrikaans"]
+      ],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 1000,
+        "voice_cloning": false,
+        "voices": ["Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_News_Anchor", "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Radio_Host", "male-qn-qingse", "female-shaonv", "female-chengshu"],
+        "voice_labels": {
+          "Chinese (Mandarin)_Gentleman": "Gentle male voice",
+          "Chinese (Mandarin)_Warm_Bestie": "Warm female voice",
+          "Chinese (Mandarin)_News_Anchor": "News anchor",
+          "Chinese (Mandarin)_Sweet_Lady": "Sweet female voice",
+          "Chinese (Mandarin)_Radio_Host": "Radio host",
+          "male-qn-qingse": "Youthful male voice",
+          "female-shaonv": "Young female voice",
+          "female-chengshu": "Mature female voice"
+        }
+      }
+    },
+    {
+      "model": "FunAudioLLM/CosyVoice2-0.5B",
+      "connector": "openai-speech",
+      "languages": ["zh", "en", "ja", "ko", "yue"],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 1000,
+        "voice_cloning": false,
+        "voices": ["FunAudioLLM/CosyVoice2-0.5B:alex", "FunAudioLLM/CosyVoice2-0.5B:benjamin", "FunAudioLLM/CosyVoice2-0.5B:charles", "FunAudioLLM/CosyVoice2-0.5B:david", "FunAudioLLM/CosyVoice2-0.5B:anna", "FunAudioLLM/CosyVoice2-0.5B:bella", "FunAudioLLM/CosyVoice2-0.5B:claire", "FunAudioLLM/CosyVoice2-0.5B:diana"],
+        "voice_labels": {
+          "FunAudioLLM/CosyVoice2-0.5B:alex": "Alex",
+          "FunAudioLLM/CosyVoice2-0.5B:benjamin": "Benjamin",
+          "FunAudioLLM/CosyVoice2-0.5B:charles": "Charles",
+          "FunAudioLLM/CosyVoice2-0.5B:david": "David",
+          "FunAudioLLM/CosyVoice2-0.5B:anna": "Anna",
+          "FunAudioLLM/CosyVoice2-0.5B:bella": "Bella",
+          "FunAudioLLM/CosyVoice2-0.5B:claire": "Claire",
+          "FunAudioLLM/CosyVoice2-0.5B:diana": "Diana"
+        }
+      }
+    },
+    {
+      "model": "qwen-audio-3.1-tts-plus",
+      "connector": "dashscope-speech",
+      "languages": ["zh", "en", "ja", "ko", "fr", "de", "it", "pt", "es", "ru", "th", "id", "vi", "ms", "fil", "ar"],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 48000,
+        "max_input_chars": 1000,
+        "voice_cloning": false,
+        "voices": ["longanlingxin_v3.1", "xunanchuan_v3.1", "longanhuan_v3.1", "longanfengyue_v3.1"],
+        "voice_labels": {
+          "longanlingxin_v3.1": "Long Anlingxin",
+          "xunanchuan_v3.1": "Xu Nanchuan",
+          "longanhuan_v3.1": "Long Anhuan",
+          "longanfengyue_v3.1": "Long Anfengyue"
+        }
       }
     },
     {

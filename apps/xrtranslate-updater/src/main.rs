@@ -170,6 +170,10 @@ fn replace_entries(
                 replace_resources_directory(&entry.path(), &target.join(&name), target, backup)?;
                 continue;
             }
+            if name.eq_ignore_ascii_case(OsStr::new("plugins")) {
+                replace_plugins_directory(&entry.path(), &target.join(&name), target, backup)?;
+                continue;
+            }
             if is_protected(&name) {
                 continue;
             }
@@ -274,6 +278,31 @@ fn replace_resources_directory(
         &source_resources.join("bin"),
         &target_resources.join("bin"),
     )
+}
+
+/// Replace bundled packages as units, retaining independently installed packages.
+fn replace_plugins_directory(
+    source: &Path,
+    destination: &Path,
+    target: &Path,
+    backup: &Path,
+) -> Result<(), String> {
+    backup_existing(destination, target, backup)?;
+    copy_path(source, destination)?;
+    let previous = backup.join(
+        destination
+            .strip_prefix(target)
+            .map_err(|e| e.to_string())?,
+    );
+    if previous.is_dir() {
+        for entry in fs::read_dir(previous).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !source.join(entry.file_name()).exists() {
+                copy_path(&entry.path(), &destination.join(entry.file_name()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn restore_local_runtime_libraries(
@@ -483,5 +512,83 @@ fn require_directory(path: &Path, label: &str) -> Result<(), Box<dyn Error>> {
         Ok(())
     } else {
         Err(format!("{label} directory does not exist: {}", path.display()).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(root: &Path, name: &str, contents: &str) {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn update_preserves_user_data_and_independent_plugins() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("release");
+        let target = directory.path().join("installed");
+        write(&source, "plugins/media/plugin.json", "new package");
+        write(&source, "plugins/media/player", "new executable");
+        write(&source, "config.json", "new defaults");
+        write(&source, "resources/icons/play.svg", "new icon");
+        write(&target, "plugins/media/plugin.json", "old package");
+        write(&target, "plugins/media/obsolete", "old executable");
+        write(
+            &target,
+            "plugins/independent/plugin.json",
+            "private package",
+        );
+        write(&target, "plugins/independent/plugin", "private executable");
+        for name in [
+            "runtime/user-config.json",
+            "runtime/video_tasks.json",
+            "runtime/meetings.sqlite3",
+            "runtime/plugins/data/independent/settings.json",
+            "models/custom/model.bin",
+            "resources/bin/mpv-2.dll",
+        ] {
+            write(&target, name, "keep exactly");
+        }
+        write(
+            &target,
+            "runtime/rust-client-settings.json",
+            r#"{"first_run":false,"plugin_preferences":{"enabled":{"video_player":false}}}"#,
+        );
+        apply_update(&source, &target).unwrap();
+        apply_update(&source, &target).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("plugins/media/player")).unwrap(),
+            "new executable"
+        );
+        assert!(!target.join("plugins/media/obsolete").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("plugins/independent/plugin")).unwrap(),
+            "private executable"
+        );
+        for name in [
+            "runtime/user-config.json",
+            "runtime/video_tasks.json",
+            "runtime/meetings.sqlite3",
+            "runtime/plugins/data/independent/settings.json",
+            "models/custom/model.bin",
+            "resources/bin/mpv-2.dll",
+        ] {
+            assert_eq!(
+                fs::read_to_string(target.join(name)).unwrap(),
+                "keep exactly",
+                "{name}"
+            );
+        }
+        let settings: serde_json::Value = serde_json::from_slice(
+            &fs::read(target.join("runtime/rust-client-settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["plugin_preferences"]["enabled"]["video_player"],
+            false
+        );
     }
 }

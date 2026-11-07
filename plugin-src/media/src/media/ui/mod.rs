@@ -34,16 +34,20 @@ pub(super) fn render(
     let language = snapshot.language;
     if let Some(job) = &plugin.controller.video_export {
         ui.horizontal(|ui| {
-            ui.add(
-                egui::ProgressBar::new(job.progress())
-                    .desired_width(180.0)
-                    .show_percentage(),
-            );
-            ui.label(tr(language, "Exporting video"));
+            ui.add(egui::Spinner::new().size(48.0));
+            ui.vertical(|ui| {
+                ui.label(tr(language, "Exporting video"));
+                ui.add(
+                    egui::ProgressBar::new(job.progress())
+                        .desired_width(180.0)
+                        .show_percentage(),
+                );
+            });
             if components::button(ui, tr(language, "Cancel")).clicked() {
                 job.cancel();
             }
         });
+        ui.add_space(8.0);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     } else if let Some(path) = &plugin.controller.exported_video {

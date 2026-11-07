@@ -154,11 +154,26 @@ pub trait MediaBackend: Send {
 
 pub mod installer;
 #[cfg(windows)]
+static HOST_RUNTIME_DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Independent plugins share the host's installed playback runtime.
+#[cfg(windows)]
+pub fn configure_host_runtime(host_executable: &std::path::Path) {
+    if let Some(directory) = host_executable.parent() {
+        let _ = HOST_RUNTIME_DIRECTORY.set(directory.to_owned());
+        configure_dll_search_paths();
+    }
+}
+
+#[cfg(windows)]
 pub fn configure_dll_search_paths() {
     use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
     use windows::core::HSTRING;
     for directory in runtime_bin_directories() {
-        if directory.is_dir() {
+        if ["mpv-2.dll", "libmpv-2.dll"]
+            .iter()
+            .any(|name| directory.join(name).is_file())
+        {
             let directory = directory.canonicalize().unwrap_or(directory);
             let _ = unsafe { SetDllDirectoryW(&HSTRING::from(directory.as_os_str())) };
             return;
@@ -168,6 +183,11 @@ pub fn configure_dll_search_paths() {
 
 pub fn runtime_bin_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    #[cfg(windows)]
+    if let Some(directory) = HOST_RUNTIME_DIRECTORY.get() {
+        dirs.push(directory.join("resources/bin"));
+        dirs.push(directory.clone());
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             dirs.push(parent.join("resources/bin"));

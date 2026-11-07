@@ -3,21 +3,22 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::ops::ControlFlow;
 use xrtranslate_assets::remote::{RemoteConnector, RemoteModelManifest, TtsCapabilities};
+use xrtranslate_engine::language::SupportedLanguage;
 
 use super::{SynthesizedPcm, decode_pcm16_wav};
 use crate::{AsyncHttpClient, HttpRequest, InferenceError, ReqwestClient, TransportError};
 
 #[derive(Clone)]
-pub struct RemoteTtsAdapter {
-    http: ReqwestClient,
+pub struct RemoteTtsAdapter<C = ReqwestClient> {
+    http: C,
     endpoint: String,
     api_key: String,
     model: &'static RemoteModelManifest,
 }
 
-impl RemoteTtsAdapter {
+impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
     pub fn new(
-        http: ReqwestClient,
+        http: C,
         endpoint: String,
         api_key: String,
         model: &'static RemoteModelManifest,
@@ -38,6 +39,7 @@ impl RemoteTtsAdapter {
         &self,
         text: &str,
         voice: &str,
+        target_language: &str,
         mut on_audio: F,
     ) -> Result<(), InferenceError>
     where
@@ -61,6 +63,15 @@ impl RemoteTtsAdapter {
                 message: format!("unknown preset voice {voice:?}"),
             });
         }
+        let language = SupportedLanguage::parse(target_language)
+            .map(|language| language.base_code())
+            .unwrap_or(target_language);
+        let language_hint = self
+            .model
+            .language_aliases
+            .iter()
+            .find(|(code, _)| code == language)
+            .map(|(_, name)| name.as_str());
         let mut request = match self.model.connector {
             RemoteConnector::OpenaiSpeech => HttpRequest::post_json(
                 &self.endpoint,
@@ -76,6 +87,24 @@ impl RemoteTtsAdapter {
                     "response_format": {"type": "audio", "mime_type": "audio/l16", "sample_rate": self.capabilities().sample_rate},
                     "generation_config": {"speech_config": [{"voice": voice}]},
                     "stream": true, "store": false
+                }),
+            ),
+            RemoteConnector::MinimaxSpeech => HttpRequest::post_json(
+                &self.endpoint,
+                json!({
+                    "model": self.model.model, "text": text, "stream": false,
+                    "voice_setting": {"voice_id": voice},
+                    "audio_setting": {"format": "wav", "sample_rate": self.capabilities().sample_rate, "channel": 1},
+                    "output_format": "hex", "language_boost": language_hint.unwrap_or("auto"),
+                    "text_normalization_mode": "quality"
+                }),
+            ),
+            RemoteConnector::DashscopeSpeech => HttpRequest::post_json(
+                &self.endpoint,
+                json!({
+                    "model": self.model.model,
+                    "input": {"text": text, "voice": voice, "format": "pcm",
+                        "sample_rate": self.capabilities().sample_rate, "language_hints": [language]}
                 }),
             ),
             _ => {
@@ -146,7 +175,17 @@ impl RemoteTtsAdapter {
                 });
             }
         } else {
-            let mut audio = decode_pcm16_wav(&wav)?;
+            let mut audio = match self.model.connector {
+                RemoteConnector::MinimaxSpeech => {
+                    decode_pcm16_wav(&self.minimax_audio(&wav, response.retry_after)?)?
+                }
+                // Request raw PCM: this service's WAV headers can contain placeholder lengths.
+                RemoteConnector::DashscopeSpeech => SynthesizedPcm {
+                    bytes: self.dashscope_audio(&wav).await?,
+                    sample_rate: self.capabilities().sample_rate,
+                },
+                _ => decode_pcm16_wav(&wav)?,
+            };
             if audio.bytes.is_empty() || audio.bytes.len() % 2 != 0 || audio.sample_rate == 0 {
                 return Err(InferenceError::InvalidAudio {
                     message: "TTS returned empty or incomplete PCM16 audio".into(),
@@ -167,6 +206,111 @@ impl RemoteTtsAdapter {
         Ok(())
     }
 
+    fn response_json(&self, bytes: &[u8]) -> Result<Value, InferenceError> {
+        serde_json::from_slice(bytes)
+            .map_err(|_| self.invalid_response("expected a speech response object"))
+    }
+
+    fn invalid_response(&self, message: &str) -> InferenceError {
+        InferenceError::InvalidResponse {
+            endpoint: self.endpoint.clone(),
+            message: message.into(),
+            body_preview: String::new(),
+        }
+    }
+
+    fn minimax_audio(
+        &self,
+        bytes: &[u8],
+        retry_after: Option<std::time::Duration>,
+    ) -> Result<Vec<u8>, InferenceError> {
+        let body = self.response_json(bytes)?;
+        let code = body["base_resp"]["status_code"]
+            .as_u64()
+            .ok_or_else(|| self.invalid_response("missing speech response status"))?;
+        if code != 0 {
+            // This API reports service errors inside a successful HTTP response.
+            let status = match code {
+                1002 | 1045 | 2045 | 2046 | 2047 | 2056 | 2062 => 429,
+                1004 | 2049 => 401,
+                1008 | 2053 | 2067 => 402,
+                1000 | 1024 | 1033 | 2064 => 503,
+                1001 | 2066 => 504,
+                _ => 400,
+            };
+            return Err(InferenceError::HttpStatus {
+                endpoint: self.endpoint.clone(),
+                status,
+                body_preview: crate::error::preview(&body["base_resp"].to_string()),
+                retry_after,
+            });
+        }
+        if body["data"]["status"].as_u64() != Some(2) {
+            return Err(self.invalid_response("speech generation did not finish"));
+        }
+        let hex = body["data"]["audio"]
+            .as_str()
+            .filter(|hex| !hex.is_empty() && hex.len() % 2 == 0)
+            .ok_or_else(|| self.invalid_response("missing or incomplete speech audio"))?;
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let high = (pair[0] as char).to_digit(16);
+                let low = (pair[1] as char).to_digit(16);
+                high.zip(low)
+                    .map(|(high, low)| (high * 16 + low) as u8)
+                    .ok_or_else(|| self.invalid_response("invalid hexadecimal speech audio"))
+            })
+            .collect()
+    }
+
+    async fn dashscope_audio(&self, bytes: &[u8]) -> Result<Vec<u8>, InferenceError> {
+        let body = self.response_json(bytes)?;
+        if body["output"]["finish_reason"] != "stop" {
+            return Err(self.invalid_response("speech generation did not finish"));
+        }
+        let url = body["output"]["audio"]["url"]
+            .as_str()
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .filter(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            })
+            .ok_or_else(|| self.invalid_response("missing or invalid speech audio URL"))?;
+        // The signed audio URL does not receive the synthesis service's credentials.
+        let request = HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: Value::Null,
+            multipart: None,
+        };
+        let mut audio = Vec::new();
+        let response = self
+            .http
+            .execute_streaming(request, |chunk| {
+                let result = if audio.len() + chunk.len() <= 32 * 1024 * 1024 {
+                    audio.extend_from_slice(&chunk);
+                    Ok(ControlFlow::Continue(()))
+                } else {
+                    Err(TransportError::new("tts", "speech response exceeds 32 MiB"))
+                };
+                std::future::ready(result)
+            })
+            .await
+            .map_err(|source| self.transport_error(source))?;
+        if !(200..300).contains(&response.status) {
+            return Err(InferenceError::HttpStatus {
+                endpoint: self.endpoint.clone(),
+                status: response.status,
+                body_preview: crate::error::preview(&response.body),
+                retry_after: response.retry_after,
+            });
+        }
+        Ok(audio)
+    }
+
     fn transport_error(&self, source: TransportError) -> InferenceError {
         InferenceError::Transport {
             endpoint: self.endpoint.clone(),
@@ -174,6 +318,9 @@ impl RemoteTtsAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Default)]
 struct GeminiAudioStream {

@@ -231,6 +231,8 @@ impl Plugin for App {
         environment: Environment,
         context: &mut Context,
     ) -> Result<(), String> {
+        #[cfg(windows)]
+        xrtranslate_client_core::playback::configure_host_runtime(&environment.host_executable);
         let client = context.client();
         if self.media.is_none() {
             std::fs::create_dir_all(&environment.data_directory).map_err(|e| e.to_string())?;

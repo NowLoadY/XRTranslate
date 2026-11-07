@@ -5,6 +5,12 @@ task. The speech uses the task's target language and the voice selected in
 TTS Center. You can follow its progress, cancel it, or continue unfinished work.
 The live speech-playback switch does not need to be enabled.
 
+For online voices, choose a service under **Voice Playback** on the Welcome
+page and enter its API key. MiniMax, SiliconFlow and Alibaba Cloud Bailian are
+available alongside Google and Groq. Select the voice in **TTS Center** before
+generating the track. For a long video, check the provider's available credit
+and usage limits first.
+
 The generated speech follows the subtitle timeline. You can listen to it from
 the player's audio-track menu and adjust the speech clips on the timeline.
 If you change the translated text or target language, finish generating the

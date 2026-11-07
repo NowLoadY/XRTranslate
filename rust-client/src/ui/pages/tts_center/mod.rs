@@ -105,7 +105,11 @@ pub fn render(
                     ui,
                     SelectionCard {
                         id: egui::Id::unique(("tts_preset", voice)),
-                        title: voice,
+                        title: tr_dynamic(
+                            language,
+                            xrtranslate_assets::remote::preset_voice_label(voice),
+                        )
+                        .as_ref(),
                         avatar: voice,
                         width,
                         height: 180.0,

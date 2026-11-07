@@ -89,19 +89,24 @@ the same way as text chat. There are no provider-name dispatch branches.
 
 ## TTS
 
-TTS uses the same catalogue, Welcome configuration and runtime credentials.
-Model cards declare language coverage, delivery, preset voices and cloning
-support. Connectors normalize output to PCM16; one bounded worker owns playback
-ordering and cancellation. Online synthesis does not load a local GPU runtime.
-Preset selection does not create a clone or upload a local reference recording.
+Choose a provider and model under **Voice Playback** on the Welcome page,
+enter that provider's API key, then select a voice in **TTS Center**.
+The same voice is used for translated speech and media speech tracks.
 
-The built-in options are [Groq Orpheus](https://console.groq.com/docs/rate-limits)
-(English and Arabic) and [Gemini TTS](https://ai.google.dev/gemini-api/docs/pricing)
-(multilingual Flash-Lite and Flash). Both offer account-dependent free tiers,
-checked on 2026-10-12. The OpenAI speech connector returns complete WAV audio;
-the Gemini speech connector streams PCM. Their current connectors expose
-preset voices; local models retain reference-based cloning. Provider errors
-use the existing error notice without automatic service fallback.
+| Provider | Models |
+| --- | --- |
+| [MiniMax](https://platform.minimax.cn/docs/api-reference/speech-t2a-http) | Speech 2.8 HD, Speech 2.8 Turbo |
+| [SiliconFlow](https://docs.siliconflow.cn/docs/userguide/capabilities/text-to-speech) | CosyVoice2 |
+| [Alibaba Cloud Bailian](https://help.aliyun.com/zh/model-studio/qwen-audio-3-1-tts-plus) | Qwen Audio 3.1 TTS Plus |
+| [Google](https://ai.google.dev/gemini-api/docs/pricing) | Gemini TTS Flash-Lite, Flash |
+| [Groq](https://console.groq.com/docs/rate-limits) | Orpheus English, Arabic |
+
+For Alibaba Cloud, enter the API key and Workspace ID from the Beijing region.
+Online services have their own pricing, available credit and rate limits; a free allowance may
+not be enough for a long video. Media speech generation waits when a service
+temporarily rate-limits requests. An invalid key or insufficient balance needs
+your attention before continuing. Switching providers does not switch your
+recognition or translation model.
 
 ## Runtime credentials and releases
 

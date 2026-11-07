@@ -1,5 +1,20 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Workspace ID", "业务空间 ID", "ワークスペース ID", "워크스페이스 ID", "ID рабочего пространства"),
+    ("Long Anlingxin", "龙安灵心", "Long Anlingxin", "Long Anlingxin", "Лун Аньлинсинь"),
+    ("Xu Nanchuan", "许南川", "Xu Nanchuan", "Xu Nanchuan", "Сюй Наньчуань"),
+    ("Long Anhuan", "龙安欢", "Long Anhuan", "Long Anhuan", "Лун Аньхуань"),
+    ("Long Anfengyue", "龙安风悦", "Long Anfengyue", "Long Anfengyue", "Лун Аньфэнъюэ"),
+    ("SiliconFlow", "硅基流动", "SiliconFlow", "SiliconFlow", "SiliconFlow"),
+    ("Alibaba Cloud Bailian", "阿里云百炼", "Alibaba Cloud Bailian", "Alibaba Cloud Bailian", "Alibaba Cloud Bailian"),
+    ("Gentle male voice", "温润男声", "穏やかな男性", "부드러운 남성", "Мягкий мужской голос"),
+    ("Warm female voice", "温暖闺蜜", "温かな女性", "따뜻한 여성", "Тёплый женский голос"),
+    ("News anchor", "新闻女声", "ニュースキャスター", "뉴스 앵커", "Ведущая новостей"),
+    ("Sweet female voice", "甜美女声", "甘い女性", "다정한 여성", "Нежный женский голос"),
+    ("Radio host", "电台男主播", "ラジオパーソナリティ", "라디오 진행자", "Радиоведущий"),
+    ("Youthful male voice", "青涩青年", "若い男性", "젊은 남성", "Молодой мужской голос"),
+    ("Young female voice", "少女", "若い女性", "젊은 여성", "Молодой женский голос"),
+    ("Mature female voice", "成熟女性", "大人の女性", "성숙한 여성", "Зрелый женский голос"),
     (
         "Install and enable the Lyrics plugin.",
         "请安装并启用歌词插件。",

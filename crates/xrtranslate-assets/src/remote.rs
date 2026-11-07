@@ -14,6 +14,8 @@ pub enum RemoteConnector {
     ChatgptResponses,
     OpenaiSpeech,
     GeminiSpeech,
+    MinimaxSpeech,
+    DashscopeSpeech,
     OpenaiTranscription,
     OpenaiAudioChat,
     DashscopeAsr,
@@ -37,7 +39,10 @@ impl RemoteConnector {
             Self::OpenaiChat | Self::DashscopeTranslation | Self::ChatgptResponses => {
                 ModelCapability::Translation
             }
-            Self::OpenaiSpeech | Self::GeminiSpeech => ModelCapability::Tts,
+            Self::OpenaiSpeech
+            | Self::GeminiSpeech
+            | Self::MinimaxSpeech
+            | Self::DashscopeSpeech => ModelCapability::Tts,
             _ => ModelCapability::Asr,
         }
     }
@@ -51,7 +56,8 @@ impl RemoteConnector {
             | Self::OpenaiAudioChat
             | Self::OpenaiSpeech => "openai",
             Self::GeminiSpeech => "gemini",
-            Self::DashscopeAsr => "dashscope",
+            Self::MinimaxSpeech => "minimax",
+            Self::DashscopeAsr | Self::DashscopeSpeech => "dashscope",
             Self::DashscopeAsrWebsocket | Self::DoubaoWebAsr => "websocket",
         }
     }
@@ -78,6 +84,8 @@ impl RemoteConnector {
             ("translation", "openai") => Some(Self::OpenaiChat),
             ("tts", "openai") => Some(Self::OpenaiSpeech),
             ("tts", "gemini") => Some(Self::GeminiSpeech),
+            ("tts", "minimax") => Some(Self::MinimaxSpeech),
+            ("tts", "dashscope") => Some(Self::DashscopeSpeech),
             ("asr", "openai") => Some(
                 if url
                     .split('?')
@@ -185,6 +193,8 @@ pub struct TtsCapabilities {
     #[serde(default)]
     pub voice_cloning: bool,
     pub voices: Vec<String>,
+    #[serde(default)]
+    pub voice_labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,6 +265,15 @@ pub fn remote_model(
         .models
         .iter()
         .find(|card| card.connector == connector && card.model == model)
+}
+
+pub fn preset_voice_label(voice: &str) -> &str {
+    catalog()
+        .models
+        .iter()
+        .filter_map(|model| model.tts.as_ref())
+        .find_map(|tts| tts.voice_labels.get(voice))
+        .map_or(voice, String::as_str)
 }
 
 pub fn account_model_capabilities(

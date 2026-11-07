@@ -835,6 +835,10 @@ mod tests {
     #[test]
     #[ignore = "requires the installed media playback runtime for pitch-preserving alignment"]
     fn translated_speech_is_aligned_without_changing_recognition_input() {
+        #[cfg(windows)]
+        if let Some(host) = std::env::var_os("XRT_TEST_HOST_EXECUTABLE") {
+            xrtranslate_client_core::playback::configure_host_runtime(Path::new(&host));
+        }
         let directory = tempfile::tempdir().unwrap();
         let mut task = MediaTask::new(
             "speech-test".into(),

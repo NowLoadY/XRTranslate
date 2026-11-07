@@ -54,8 +54,21 @@ impl crate::AppConfig {
                 return Err(format!("tts.providers.{provider}.{key} is required"));
             }
         }
+        let mut endpoint = field("url").to_owned();
+        if endpoint.contains("{workspace_id}") {
+            let workspace = field("workspace_id");
+            if workspace.is_empty()
+                || workspace.len() > 63
+                || !workspace
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            {
+                return Err("Enter a valid workspace ID for the selected TTS provider.".into());
+            }
+            endpoint = endpoint.replace("{workspace_id}", workspace);
+        }
         Ok(Some(RemoteTtsConfig {
-            endpoint: field("url").to_owned(),
+            endpoint,
             api_key: field("api_key").to_owned(),
             model,
         }))
