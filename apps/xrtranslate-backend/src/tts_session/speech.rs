@@ -10,6 +10,7 @@ use std::{io::Cursor, time::Duration};
 use xrtranslate_inference::InferenceError;
 use xrtranslate_protocol::tts::SpeechRequest;
 
+#[derive(Debug)]
 pub(crate) struct SpeechError {
     status: StatusCode,
     message: String,
@@ -72,7 +73,7 @@ pub(crate) async fn synthesize(
 ) -> Result<impl IntoResponse, SpeechError> {
     let started = std::time::Instant::now();
     // Finish cleanup of a temporary cloud voice even if the caller disconnects.
-    let output = if request.reference_audio.is_some() {
+    let output = if request.reference_audio.is_some() || request.reference_context.is_some() {
         let (state, request) = (state.clone(), request.clone());
         tokio::spawn(async move { synthesize_wav(&state, &request).await })
             .await
@@ -101,13 +102,25 @@ async fn synthesize_wav(
     if !adapter.supports_language(&request.language) {
         return Err(format!("The TTS model does not support {}", request.language).into());
     }
-    let name = if let Some(reference) = &request.reference_audio {
-        if reference.len() > 14 * 1024 * 1024 {
-            return Err("Voice reference is too large".into());
-        }
-        let wav = STANDARD
-            .decode(reference)
-            .map_err(|_| "Invalid voice reference")?;
+    // Keep job cleanup behind any in-flight enrollment or synthesis.
+    let mut references = if request.reference_context.is_some() {
+        Some(speech.reference_voices.lock().await)
+    } else {
+        None
+    };
+    let name = if let Some(context) = &request.reference_context {
+        references
+            .as_mut()
+            .unwrap()
+            .resolve(
+                context,
+                request.reference_audio.as_deref(),
+                &request.language,
+                adapter,
+            )
+            .await?
+    } else if let Some(reference) = &request.reference_audio {
+        let wav = decode_reference(reference)?;
         adapter
             .create_reference_voice(&wav, &request.language)
             .await?
@@ -125,12 +138,21 @@ async fn synthesize_wav(
         super::max_input_chars(&state.config),
     )
     .await;
-    if request.reference_audio.is_some() {
+    if request.reference_audio.is_some() && request.reference_context.is_none() {
         adapter
             .delete_reference_voice(&name, &request.language)
             .await;
     }
     output
+}
+
+pub(super) fn decode_reference(reference: &str) -> Result<Vec<u8>, SpeechError> {
+    if reference.len() > 14 * 1024 * 1024 {
+        return Err("Voice reference is too large".into());
+    }
+    STANDARD
+        .decode(reference)
+        .map_err(|_| "Invalid voice reference".into())
 }
 
 async fn synthesize_voice_wav(

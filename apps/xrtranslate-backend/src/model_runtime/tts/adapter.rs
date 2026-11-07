@@ -53,7 +53,7 @@ impl TtsAdapter {
 
     pub(crate) fn voice_scope(&self) -> Option<String> {
         self.models.iter().find_map(|model| match &model.backend {
-            TtsBackend::Remote(adapter) => Some(adapter.voice_scope()),
+            TtsBackend::Remote(adapter) => Some(adapter.voice_scope().to_owned()),
             _ => None,
         })
     }

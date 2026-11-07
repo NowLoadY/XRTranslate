@@ -1,7 +1,152 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-/// Read only this cue's separated voice; never borrow an unknown neighboring speaker.
+use crate::media::subtitles::SubtitleCue;
+use std::collections::BTreeMap;
+
+#[derive(Clone)]
+pub(super) struct Prepared {
+    pub id: String,
+    pub audio: String,
+}
+
+#[derive(Default)]
+pub(super) struct References {
+    successful: BTreeMap<String, Prepared>,
+}
+
+impl References {
+    pub fn previous(&self, task: &MediaTask, index: usize) -> Option<Prepared> {
+        self.successful
+            .get(&speaker_key(task.subtitles.cues(), index))
+            .cloned()
+    }
+
+    pub fn remember(&mut self, task: &MediaTask, index: usize, reference: Prepared) {
+        self.successful
+            .insert(speaker_key(task.subtitles.cues(), index), reference);
+    }
+
+    pub fn choose(&self, task: &MediaTask, index: usize) -> Result<Prepared, String> {
+        let cue = &task.subtitles.cues()[index];
+        if let Some([start, end]) = task.speech_reference_range {
+            let id = format!("selected:{start}:{end}");
+            if let Some(previous) = self
+                .successful
+                .values()
+                .find(|reference| reference.id == id)
+            {
+                return Ok(previous.clone());
+            }
+            return Ok(Prepared {
+                id,
+                audio: audio(task, start, end)?,
+            });
+        }
+        // A known speaker keeps one voice. With no speaker labels, a fresh long
+        // passage can update the voice, while short replies retain the last success.
+        if (cue.speaker_name.is_some() || cue.end_ms - cue.start_ms < 5000)
+            && let Some(previous) = self.previous(task, index)
+        {
+            return Ok(previous);
+        }
+        if cue.end_ms - cue.start_ms >= 5000
+            && let Ok(audio) = audio(task, cue.start_ms, cue.end_ms)
+        {
+            return Ok(Prepared {
+                id: cue.speaker_name.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "passage:{}:{}",
+                            cue.start_ms,
+                            cue.end_ms.min(cue.start_ms + 20_000)
+                        )
+                    },
+                    |speaker| format!("speaker:{speaker}"),
+                ),
+                audio,
+            });
+        }
+        for [start, end] in candidates(task.subtitles.cues(), index) {
+            if let Ok(audio) = audio(task, start, end) {
+                let id = cue.speaker_name.as_ref().map_or_else(
+                    || format!("passage:{start}:{end}"),
+                    |speaker| format!("speaker:{speaker}"),
+                );
+                return Ok(Prepared { id, audio });
+            }
+        }
+        self.previous(task, index).ok_or_else(|| "No suitable original voice reference was found. Select at least 5 seconds of clear speech on the vocal timeline.".into())
+    }
+}
+
+fn unlabeled_start(cues: &[SubtitleCue], index: usize) -> usize {
+    cues[..index]
+        .iter()
+        .rposition(|cue| cue.speaker_name.is_some())
+        .map_or(0, |previous| previous + 1)
+}
+
+fn speaker_key(cues: &[SubtitleCue], index: usize) -> String {
+    cues[index].speaker_name.as_ref().map_or_else(
+        || format!("unlabeled:{}", unlabeled_start(cues, index)),
+        |speaker| format!("speaker:{speaker}"),
+    )
+}
+
+fn candidates(cues: &[SubtitleCue], index: usize) -> Vec<[i64; 2]> {
+    let cue = &cues[index];
+    let same = |other: &SubtitleCue| other.speaker_name == cue.speaker_name;
+    let mut spans = Vec::new();
+    let (lower, upper) = if cue.speaker_name.is_none() {
+        (
+            unlabeled_start(cues, index),
+            cues[index..]
+                .iter()
+                .position(|cue| cue.speaker_name.is_some())
+                .map_or(cues.len(), |next| index + next),
+        )
+    } else {
+        (0, cues.len())
+    };
+    for (first, start) in cues
+        .iter()
+        .enumerate()
+        .take(upper)
+        .skip(lower)
+        .filter(|(_, other)| same(other))
+    {
+        let mut spoken = 0;
+        let mut previous_end = start.start_ms;
+        for other in &cues[first..] {
+            if !same(other)
+                || other.start_ms - previous_end > 2000
+                || (other.end_ms - start.start_ms > 20_000 && other != start)
+            {
+                break;
+            }
+            spoken += other.end_ms - other.start_ms;
+            previous_end = other.end_ms;
+            if spoken >= 5000 {
+                spans.push([start.start_ms, other.end_ms.min(start.start_ms + 20_000)]);
+                break;
+            }
+        }
+    }
+    spans.sort_by_key(|[start, end]| {
+        let distance = (cue.start_ms - end).max(start - cue.end_ms).max(0);
+        (
+            *start != cue.start_ms,
+            distance,
+            *start > cue.start_ms,
+            (*start - cue.start_ms).abs(),
+        )
+    });
+    spans.dedup();
+    spans
+}
+
+/// Read a bounded passage from the separated vocal track.
 pub(super) fn audio(task: &MediaTask, start_ms: i64, end_ms: i64) -> Result<String, String> {
     let [start_ms, end_ms] = task.speech_reference_range.unwrap_or([start_ms, end_ms]);
     if end_ms - start_ms < 5000 {
@@ -74,6 +219,57 @@ pub(super) fn audio(task: &MediaTask, start_ms: i64, end_ms: i64) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cue(start: i64, end: i64, speaker: Option<&str>) -> SubtitleCue {
+        SubtitleCue {
+            id: start.to_string(),
+            start_ms: start,
+            end_ms: end,
+            speaker_name: speaker.map(str::to_owned),
+            original_text: "Speech".into(),
+            translated_text: Some("Translation".into()),
+            source_language: "en".into(),
+            target_language: "zh".into(),
+        }
+    }
+
+    #[test]
+    fn automatic_references_cover_short_openings_without_crossing_known_speakers() {
+        let cues = vec![
+            cue(0, 1000, Some("A")),
+            cue(1000, 8000, Some("B")),
+            cue(9000, 16000, Some("A")),
+        ];
+        assert_eq!(candidates(&cues, 0), [[9000, 16000]]);
+        assert_eq!(candidates(&cues, 1), [[1000, 8000]]);
+        let short = vec![
+            cue(0, 2000, None),
+            cue(2200, 4000, None),
+            cue(4200, 6000, None),
+        ];
+        assert_eq!(candidates(&short, 0), [[0, 6000]]);
+        let unknown = vec![
+            cue(0, 1000, None),
+            cue(1000, 8000, Some("B")),
+            cue(9000, 16000, None),
+        ];
+        assert!(candidates(&unknown, 0).is_empty());
+        let gap = vec![cue(0, 2000, None), cue(6000, 9000, None)];
+        assert!(candidates(&gap, 0).is_empty());
+    }
+
+    #[test]
+    fn speaker_identity_keeps_known_and_unlabeled_runs_separate() {
+        let cues = vec![
+            cue(0, 2000, None),
+            cue(3000, 9000, Some("A")),
+            cue(10000, 12000, None),
+            cue(13000, 18000, Some("A")),
+        ];
+        assert_eq!(speaker_key(&cues, 1), speaker_key(&cues, 3));
+        assert_ne!(speaker_key(&cues, 0), speaker_key(&cues, 2));
+        assert_ne!(speaker_key(&cues, 0), speaker_key(&cues, 1));
+    }
 
     #[test]
     fn reference_reads_only_the_selected_stereo_region_and_resamples_it() {

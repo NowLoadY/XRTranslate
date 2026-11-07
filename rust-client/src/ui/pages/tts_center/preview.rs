@@ -29,6 +29,7 @@ pub(super) fn generate(server: &str, voice: &str) -> Result<(Vec<u8>, u32), Stri
                 ..Default::default()
             }),
             reference_audio: None,
+            reference_context: None,
         })
     })?;
     let mut reader = hound::WavReader::new(std::io::Cursor::new(wav)).map_err(|e| e.to_string())?;

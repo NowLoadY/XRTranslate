@@ -304,7 +304,7 @@ pub(super) fn render_task_control_card(
         {
             changed |= ui.add_enabled_ui(controller.speech_job.is_none(), |ui| {
                 components::checkbox(ui, &mut task.speech_use_source_voice, tr(language, "Use original voice"))
-                    .on_hover_text(tr(language, "Select a reference on the vocal timeline, or use each subtitle's original vocals. At least 5 seconds of clear speech is required."))
+                    .on_hover_text(tr(language, "Automatically choose an original voice reference and reuse it for short subtitles. You can also select a passage on the vocal timeline."))
                     .changed()
             }).inner;
             if let Some([start, end]) = task.speech_reference_range {

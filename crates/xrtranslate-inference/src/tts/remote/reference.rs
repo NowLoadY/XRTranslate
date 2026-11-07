@@ -1,21 +1,11 @@
 //! Provider voice enrollment; the caller owns persistence and removal.
 use super::*;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
-    /// Isolate saved voice IDs by service, model and credentials without storing secrets.
-    pub fn voice_scope(&self) -> String {
-        let mut hash = Sha256::new();
-        for value in [
-            self.endpoint.as_str(),
-            self.model.model.as_str(),
-            self.api_key.as_str(),
-        ] {
-            hash.update(value.as_bytes());
-            hash.update([0]);
-        }
-        format!("{:x}", hash.finalize())
+    /// Voices belong to the selected workspace endpoint and model.
+    pub fn voice_scope(&self) -> &str {
+        &self.endpoint
     }
 
     pub async fn create_reference_voice(&self, wav: &[u8]) -> Result<String, InferenceError> {

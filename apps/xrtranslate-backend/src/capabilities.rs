@@ -17,6 +17,7 @@ pub(crate) struct SpeechResources {
     pub tts: Option<TtsAdapter>,
     pub voices: Arc<VoiceLibrary>,
     pub diagnostic: OnnxRuntimeDiagnostic,
+    pub reference_voices: tokio::sync::Mutex<crate::tts_session::ReferenceVoices>,
 }
 
 impl BackendState {
@@ -148,6 +149,7 @@ impl BackendState {
                     .await,
                 );
                 Ok::<_, String>(SpeechResources {
+                    reference_voices: Default::default(),
                     tts,
                     voices,
                     diagnostic,

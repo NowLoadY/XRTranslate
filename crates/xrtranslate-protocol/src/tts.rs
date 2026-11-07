@@ -11,6 +11,15 @@ pub struct SpeechRequest {
     /// Optional mono PCM16 WAV reference, encoded as Base64. Applies only to this request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_audio: Option<String>,
+    /// Reuse a reference voice within one finite synthesis job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_context: Option<SpeechReferenceContext>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpeechReferenceContext {
+    pub session: String,
+    pub voice: String,
 }
 
 /// Query for a canonical mono PCM16 / 16 kHz reference body.

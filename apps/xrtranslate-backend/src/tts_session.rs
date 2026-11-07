@@ -5,6 +5,8 @@
 //! share the same local and online adapters here.
 
 mod reference;
+mod reference_voices;
+pub(crate) use reference_voices::{ReferenceVoices, release_reference_session};
 mod speech;
 mod voices;
 pub(crate) use reference::transcribe_reference;

@@ -518,8 +518,8 @@ mod tests {
             TtsAdapter::remote(
                 RemoteTtsAdapter::new(
                     ReqwestClient::with_default_direct_timeout().unwrap(),
-                    endpoint.clone(),
-                    key.into(),
+                    format!("{endpoint}?workspace={key}"),
+                    "test-key".into(),
                     model,
                 ),
                 vec!["en".into(), "zh".into()],
@@ -595,7 +595,7 @@ mod tests {
         assert!(!other.status().personal_available);
         assert_eq!(open("first-account").await.active_voice(), second);
         let saved = fs::read_to_string(directory.path().join("selections.json")).unwrap();
-        assert!(!saved.contains("first-account"));
+        assert!(!saved.contains("test-key"));
         let preset = library.status().preset_voices[0].clone();
         library
             .select(VoiceSelection {

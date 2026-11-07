@@ -575,6 +575,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
             "/tts/reference/transcribe",
             axum::routing::post(tts_session::transcribe_reference),
         )
+        .route(
+            "/tts/reference/session/{session}",
+            axum::routing::delete(tts_session::release_reference_session),
+        )
         .route("/integrations/vrcx/status", get(vrcx_status))
         .with_state(state);
 

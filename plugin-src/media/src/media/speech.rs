@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 use xrtranslate_plugin::{Client, Request};
-use xrtranslate_protocol::tts::{SpeechRequest, VoiceStatus};
+use xrtranslate_protocol::tts::{SpeechReferenceContext, SpeechRequest, VoiceStatus};
 
 const SAMPLE_RATE: u32 = 48_000;
 const SPEC: hound::WavSpec = hound::WavSpec {
@@ -71,6 +71,11 @@ impl SpeechJob {
         if let Some(result) = &self.result {
             return match result.try_recv() {
                 Ok(result) => Some(result),
+                Err(crossbeam_channel::TryRecvError::Empty)
+                    if self.cancelled.load(Ordering::Relaxed) =>
+                {
+                    Some(SpeechEvent::Finished(Ok(())))
+                }
                 Err(crossbeam_channel::TryRecvError::Empty) => None,
                 Err(_) => Some(SpeechEvent::Finished(Err(
                     "Speech generation stopped unexpectedly".into(),
@@ -100,29 +105,50 @@ impl SpeechJob {
         let (send, receive) = crossbeam_channel::unbounded();
         let (server, directory, ctx) = (server.to_owned(), directory.to_owned(), ctx.clone());
         let (cancelled, progress) = (self.cancelled.clone(), self.progress.clone());
-        let worker = std::thread::Builder::new().name("media-speech".into()).spawn(move || {
-            let result = (|| {
-                tokio::runtime::Builder::new_current_thread().enable_all().build()
-                    .map_err(|e| e.to_string())?.block_on(async {
-                        tokio::select! {
-                            biased;
-                            _ = async {
-                                while !cancelled.load(Ordering::Relaxed) {
-                                    tokio::time::sleep(Duration::from_millis(50)).await;
-                                }
-                            } => Ok(()),
-                            output = generate(&task, cue_id.as_deref(), &server, &directory, &cancelled, &progress, &ctx, &send) => output,
-                        }
-                    })
-            })();
-            match &result {
-                Ok(_) if cancelled.load(Ordering::Relaxed) => log::info!("Media speech cancelled: task={} completed={}", task.id, progress.completed.load(Ordering::Relaxed)),
-                Ok(_) => log::info!("Media speech completed: task={} language={} cues={}", task.id, task.target_language, task.subtitles.count()),
-                Err(error) => log::warn!("Media speech stopped: task={} language={} completed={} error={error}", task.id, task.target_language, progress.completed.load(Ordering::Relaxed)),
-            }
-            let _ = send.send(SpeechEvent::Finished(result));
-            ctx.request_repaint();
-        });
+        let worker = std::thread::Builder::new()
+            .name("media-speech".into())
+            .spawn(move || {
+                let result = (|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| e.to_string())?
+                        .block_on(async {
+                            generate(
+                                &task,
+                                cue_id.as_deref(),
+                                &server,
+                                &directory,
+                                &cancelled,
+                                &progress,
+                                &ctx,
+                                &send,
+                            )
+                            .await
+                        })
+                })();
+                match &result {
+                    Ok(_) if cancelled.load(Ordering::Relaxed) => log::info!(
+                        "Media speech cancelled: task={} completed={}",
+                        task.id,
+                        progress.completed.load(Ordering::Relaxed)
+                    ),
+                    Ok(_) => log::info!(
+                        "Media speech completed: task={} language={} cues={}",
+                        task.id,
+                        task.target_language,
+                        task.subtitles.count()
+                    ),
+                    Err(error) => log::warn!(
+                        "Media speech stopped: task={} language={} completed={} error={error}",
+                        task.id,
+                        task.target_language,
+                        progress.completed.load(Ordering::Relaxed)
+                    ),
+                }
+                let _ = send.send(SpeechEvent::Finished(result));
+                ctx.request_repaint();
+            });
         if let Err(error) = worker {
             return Some(SpeechEvent::Finished(Err(error.to_string())));
         }
@@ -226,128 +252,195 @@ async fn generate(
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
-    url.set_path("/tts/voice");
-    let status: VoiceStatus = response(client.get(url.clone()), progress)
-        .await?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-    if task.speech_use_source_voice && !status.supports_reference_audio {
-        return Err("The selected TTS model does not support reference audio.".into());
-    }
-    if !task.speech_use_source_voice && !status.ready {
-        return Err("Choose an available voice in the TTS Center first.".into());
-    }
-    url.set_path("/tts/synthesize");
-    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let existing = task.speech_track.as_ref();
-    for (completed, (index, cue)) in task
-        .subtitles
-        .cues()
-        .iter()
-        .enumerate()
-        .filter(|(_, cue)| cue_id.is_none_or(|id| cue.id == id))
-        .enumerate()
-    {
-        if existing.is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms)) {
-            progress.completed.store(completed + 1, Ordering::Relaxed);
-            continue;
-        }
-        let start = cue.start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
-        // Natural speech may use the following pause, but must not displace the next cue.
-        let mut end_ms = task
-            .subtitles
-            .cues()
-            .get(index + 1)
-            .map_or(task.duration_ms.max(cue.end_ms), |next| next.start_ms);
-        if cue_id.is_some() {
-            end_ms = end_ms.min(cue.end_ms);
-        }
-        if let Some(next) = existing
-            .into_iter()
-            .flat_map(|track| &track.clips)
-            .filter(|clip| clip.start_ms > cue.start_ms)
-            .map(|clip| clip.start_ms)
-            .min()
-        {
-            end_ms = end_ms.min(next);
-        }
-        let end = end_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
-        let available = usize::try_from(end - start).map_err(|e| e.to_string())?;
-        let audio = async {
-            let reference_audio = task
-                .speech_use_source_voice
-                .then(|| reference::audio(task, cue.start_ms, cue.end_ms))
-                .transpose()?;
-            let body = response(
-                client.post(url.clone()).json(&SpeechRequest {
-                    text: cue.translated_text.clone().unwrap(),
-                    language: task.target_language.clone(),
-                    voice: Some(status.selection.clone()),
-                    reference_audio,
-                }),
-                progress,
-            )
+    let reference_session = uuid::Uuid::new_v4().to_string();
+    let work = async {
+        let mut references = reference::References::default();
+        url.set_path("/tts/voice");
+        let status: VoiceStatus = response(client.get(url.clone()), progress)
             .await?
-            .bytes()
+            .json()
             .await
             .map_err(|e| e.to_string())?;
-            let samples = decode(&body)?;
-            fit(samples, available, cancelled)
+        if task.speech_use_source_voice && !status.supports_reference_audio {
+            return Err("The selected TTS model does not support reference audio.".into());
         }
-        .await
-        .map_err(|error: String| {
-            format!(
-                "Subtitle {} ({}–{} ms): {error}",
-                index + 1,
-                cue.start_ms,
-                cue.end_ms
-            )
-        })?;
-        if cancelled.load(Ordering::Relaxed) {
-            return Ok(());
+        if !task.speech_use_source_voice && !status.ready {
+            return Err("Choose an available voice in the TTS Center first.".into());
         }
-        let output = tempfile::Builder::new()
-            .suffix(".wav")
-            .tempfile_in(directory)
-            .map_err(|e| e.to_string())?;
-        let mut writer = hound::WavWriter::new(
-            BufWriter::new(output.reopen().map_err(|e| e.to_string())?),
-            SPEC,
-        )
-        .map_err(|e| e.to_string())?;
-        let duration_ms = (audio.len() as u64 * 1000).div_ceil(u64::from(SAMPLE_RATE)) as i64;
-        let peak = audio
+        url.set_path("/tts/synthesize");
+        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        let existing = task.speech_track.as_ref();
+        for (completed, (index, cue)) in task
+            .subtitles
+            .cues()
             .iter()
-            .map(|s| s.unsigned_abs())
-            .max()
-            .unwrap_or(1)
-            .max(1) as f32;
-        let peaks = audio
-            .chunks(audio.len().div_ceil(48))
-            .map(|chunk| {
-                (chunk.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f32 / peak * 255.0)
-                    as u8
-            })
-            .collect();
-        for sample in audio {
-            writer.write_sample(sample).map_err(|e| e.to_string())?;
+            .enumerate()
+            .filter(|(_, cue)| cue_id.is_none_or(|id| cue.id == id))
+            .enumerate()
+        {
+            if existing.is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms)) {
+                progress.completed.store(completed + 1, Ordering::Relaxed);
+                continue;
+            }
+            let start = cue.start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
+            // Natural speech may use the following pause, but must not displace the next cue.
+            let mut end_ms = task
+                .subtitles
+                .cues()
+                .get(index + 1)
+                .map_or(task.duration_ms.max(cue.end_ms), |next| next.start_ms);
+            if cue_id.is_some() {
+                end_ms = end_ms.min(cue.end_ms);
+            }
+            if let Some(next) = existing
+                .into_iter()
+                .flat_map(|track| &track.clips)
+                .filter(|clip| clip.start_ms > cue.start_ms)
+                .map(|clip| clip.start_ms)
+                .min()
+            {
+                end_ms = end_ms.min(next);
+            }
+            let end = end_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
+            let available = usize::try_from(end - start).map_err(|e| e.to_string())?;
+            let audio = async {
+                let chosen = if task.speech_use_source_voice {
+                    Some(references.choose(task, index)?)
+                } else {
+                    None
+                };
+                let fallback = chosen.as_ref().and_then(|chosen| {
+                    references
+                        .previous(task, index)
+                        .filter(|previous| previous.id != chosen.id)
+                });
+                let mut attempts = vec![chosen];
+                if let Some(fallback) = fallback {
+                    attempts.push(Some(fallback));
+                }
+                let mut result = Err("No speech was generated".to_owned());
+                for (attempt, reference) in attempts.into_iter().enumerate() {
+                    if attempt > 0 {
+                        log::warn!(
+                            "Retrying subtitle {} with the previous successful original voice",
+                            index + 1
+                        );
+                    }
+                    let output = async {
+                        response(
+                            client.post(url.clone()).json(&SpeechRequest {
+                                text: cue.translated_text.clone().unwrap(),
+                                language: task.target_language.clone(),
+                                voice: Some(status.selection.clone()),
+                                reference_audio: reference
+                                    .as_ref()
+                                    .map(|reference| reference.audio.clone()),
+                                reference_context: reference.as_ref().map(|reference| {
+                                    SpeechReferenceContext {
+                                        session: reference_session.clone(),
+                                        voice: reference.id.clone(),
+                                    }
+                                }),
+                            }),
+                            progress,
+                        )
+                        .await?
+                        .bytes()
+                        .await
+                        .map_err(|e| e.to_string())
+                    }
+                    .await;
+                    match output {
+                        Ok(body) => {
+                            if let Some(reference) = reference {
+                                references.remember(task, index, reference);
+                            }
+                            result = Ok(body);
+                            break;
+                        }
+                        Err(error) => result = Err(error),
+                    }
+                }
+                let body = result?;
+                let samples = decode(&body)?;
+                fit(samples, available, cancelled)
+            }
+            .await
+            .map_err(|error: String| {
+                format!(
+                    "Subtitle {} ({}–{} ms): {error}",
+                    index + 1,
+                    cue.start_ms,
+                    cue.end_ms
+                )
+            })?;
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let output = tempfile::Builder::new()
+                .suffix(".wav")
+                .tempfile_in(directory)
+                .map_err(|e| e.to_string())?;
+            let mut writer = hound::WavWriter::new(
+                BufWriter::new(output.reopen().map_err(|e| e.to_string())?),
+                SPEC,
+            )
+            .map_err(|e| e.to_string())?;
+            let duration_ms = (audio.len() as u64 * 1000).div_ceil(u64::from(SAMPLE_RATE)) as i64;
+            let peak = audio
+                .iter()
+                .map(|s| s.unsigned_abs())
+                .max()
+                .unwrap_or(1)
+                .max(1) as f32;
+            let peaks = audio
+                .chunks(audio.len().div_ceil(48))
+                .map(|chunk| {
+                    (chunk.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f32 / peak
+                        * 255.0) as u8
+                })
+                .collect();
+            for sample in audio {
+                writer.write_sample(sample).map_err(|e| e.to_string())?;
+            }
+            writer.finalize().map_err(|e| e.to_string())?;
+            let clip = SpeechClip {
+                id: uuid::Uuid::new_v4().to_string(),
+                path: directory.join(format!("{}.wav", uuid::Uuid::new_v4())),
+                start_ms: cue.start_ms,
+                duration_ms,
+                text: cue.translated_text.clone().unwrap(),
+                peaks,
+            };
+            send.send(SpeechEvent::Clip(clip, output.into_temp_path()))
+                .map_err(|_| "Speech generation cancelled")?;
+            progress.completed.store(completed + 1, Ordering::Relaxed);
+            ctx.request_repaint();
         }
-        writer.finalize().map_err(|e| e.to_string())?;
-        let clip = SpeechClip {
-            id: uuid::Uuid::new_v4().to_string(),
-            path: directory.join(format!("{}.wav", uuid::Uuid::new_v4())),
-            start_ms: cue.start_ms,
-            duration_ms,
-            text: cue.translated_text.clone().unwrap(),
-            peaks,
-        };
-        send.send(SpeechEvent::Clip(clip, output.into_temp_path()))
-            .map_err(|_| "Speech generation cancelled")?;
-        progress.completed.store(completed + 1, Ordering::Relaxed);
-        ctx.request_repaint();
+        Ok(())
+    };
+    let result = tokio::select! {
+        biased;
+        _ = async {
+            while !cancelled.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        } => Ok(()),
+        result = work => result,
+    };
+    if task.speech_use_source_voice {
+        url.set_path(&format!("/tts/reference/session/{reference_session}"));
+        match client
+            .delete(url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {}
+            result => log::warn!("Could not release temporary speech voices: {result:?}"),
+        }
     }
-    Ok(())
+    result
 }
 
 async fn response(
@@ -817,6 +910,138 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::time::Instant;
+
+    #[test]
+    fn original_voice_generation_covers_short_cues_and_releases_its_session() {
+        use crate::media::{backend::MediaSource, subtitles::SubtitleCue, task::SubtitleMode};
+        use std::io::BufRead;
+        let directory = tempfile::tempdir().unwrap();
+        let vocals = directory.path().join("vocals.wav");
+        let mut writer = hound::WavWriter::create(&vocals, SPEC).unwrap();
+        for _ in 0..SAMPLE_RATE * 10 {
+            writer.write_sample(1000_i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let mut task = MediaTask::new(
+            "original".into(),
+            MediaSource::LocalFile("source.mp4".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::TranslateExisting,
+            Default::default(),
+        );
+        task.duration_ms = 10000;
+        task.speech_use_source_voice = true;
+        task.separated_audio = Some(xrtranslate_protocol::SeparatedAudio {
+            vocals,
+            background: "unused.wav".into(),
+        });
+        for (start_ms, end_ms) in [(0, 1000), (2000, 8000), (9000, 10000)] {
+            task.subtitles.add_cue_with_metadata(
+                SubtitleCue {
+                    id: start_ms.to_string(),
+                    start_ms,
+                    end_ms,
+                    speaker_name: Some("A".into()),
+                    original_text: format!("Speech {start_ms}"),
+                    translated_text: Some("你好".into()),
+                    source_language: "en".into(),
+                    target_language: "zh".into(),
+                },
+                Default::default(),
+            );
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let mut session = None;
+            for call in 0..5 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut socket);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let method = line.clone();
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let output = if call == 0 {
+                    assert!(method.starts_with("GET /tts/voice "));
+                    serde_json::to_vec(&VoiceStatus {
+                        supports_reference_audio: true,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                } else if call == 4 {
+                    assert!(method.starts_with(&format!(
+                        "DELETE /tts/reference/session/{} ",
+                        session.as_ref().unwrap()
+                    )));
+                    Vec::new()
+                } else {
+                    assert!(method.starts_with("POST /tts/synthesize "));
+                    let request: SpeechRequest = serde_json::from_slice(&body).unwrap();
+                    let reference = request.reference_context.unwrap();
+                    assert_eq!(reference.voice, "speaker:A");
+                    assert_eq!(
+                        session.get_or_insert(reference.session.clone()),
+                        &reference.session
+                    );
+                    assert!(request.reference_audio.unwrap().len() > 5 * 24000 * 2);
+                    let mut wav = Cursor::new(Vec::new());
+                    let mut writer = hound::WavWriter::new(&mut wav, SPEC).unwrap();
+                    for _ in 0..SAMPLE_RATE / 2 {
+                        writer.write_sample(100_i16).unwrap();
+                    }
+                    writer.finalize().unwrap();
+                    wav.into_inner()
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    output.len()
+                )
+                .unwrap();
+                socket.write_all(&output).unwrap();
+            }
+        });
+        let (send, receive) = crossbeam_channel::unbounded();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(generate(
+                &task,
+                None,
+                &server,
+                directory.path(),
+                &AtomicBool::new(false),
+                &SpeechProgress::default(),
+                &Default::default(),
+                &send,
+            ))
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            receive
+                .try_iter()
+                .filter(|event| matches!(event, SpeechEvent::Clip(..)))
+                .count(),
+            3
+        );
+    }
 
     #[test]
     fn a_single_cue_creates_an_independent_clip_and_respects_occupied_time() {
