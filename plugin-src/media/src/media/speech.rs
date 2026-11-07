@@ -608,6 +608,13 @@ impl MediaController {
         }
         self.error = None;
         let mut pending = task.clone();
+        if cue_id.is_none() {
+            // Whole-track dubbing always chooses references automatically.
+            pending.speech_reference_range = None;
+        } else if pending.speech_reference_range.is_some() {
+            // A manually selected reference applies only to this local repair.
+            pending.speech_use_source_voice = true;
+        }
         // Keep the old track until the first new clip is saved. A fresh run must
         // not mix the previously selected voice with its replacement.
         let replace_track = restart
@@ -1165,9 +1172,20 @@ mod tests {
             .unwrap()
             .clips[0]
             .start_ms = 7000;
+        controller.set_vocal_reference(Some([10_000, 18_000]));
         controller.start_cue_speech(cue.id);
         assert_eq!(controller.speech_job.as_ref().unwrap().total, 1);
         assert!(!controller.speech_job.as_ref().unwrap().replace_track);
+        let pending = controller
+            .speech_job
+            .as_ref()
+            .unwrap()
+            .pending
+            .as_ref()
+            .unwrap();
+        assert!(pending.speech_use_source_voice);
+        assert_eq!(pending.speech_reference_range, Some([10_000, 18_000]));
+        assert!(!controller.store.tasks[0].speech_use_source_voice);
         assert_eq!(
             controller.store.tasks[0]
                 .speech_track
@@ -1224,10 +1242,18 @@ mod tests {
         controller.active_task_id = Some(task.id.clone());
         controller.subtitles = task.subtitles.clone();
         controller.store.tasks = vec![task];
+        controller.set_vocal_reference(Some([10_000, 18_000]));
+        controller.store.tasks[0].speech_use_source_voice = true;
         for restart in [false, true] {
             controller.start_speech(restart);
             let job = controller.speech_job.as_ref().unwrap();
             assert_eq!(job.replace_track, restart);
+            assert!(job.pending.as_ref().unwrap().speech_use_source_voice);
+            assert_eq!(job.pending.as_ref().unwrap().speech_reference_range, None);
+            assert_eq!(
+                controller.store.tasks[0].speech_reference_range,
+                Some([10_000, 18_000])
+            );
             assert_eq!(
                 job.pending.as_ref().unwrap().speech_track.is_none(),
                 restart

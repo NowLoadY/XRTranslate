@@ -42,6 +42,22 @@ pub fn show_in(ctx: &egui::Context, items: impl IntoIterator<Item = Feedback>) {
     }
     let until = ctx.input(|input| input.time) + LIFETIME;
     ctx.data_mut(|data| {
+        // A verification read often follows a write immediately. Give the
+        // actual result its full display time instead of replacing it.
+        if items.iter().all(|item| {
+            matches!(
+                item.feedback.effect,
+                Effect::Read | Effect::Pending | Effect::Invoke
+            )
+        }) && data.get_temp::<State>(key()).is_some_and(|state| {
+            state.until > until - LIFETIME
+                && state
+                    .items
+                    .iter()
+                    .any(|item| matches!(item.feedback.effect, Effect::Change { .. }))
+        }) {
+            return;
+        }
         data.insert_temp(
             key(),
             State {
@@ -49,7 +65,7 @@ pub fn show_in(ctx: &egui::Context, items: impl IntoIterator<Item = Feedback>) {
                 until,
                 reveal: true,
             },
-        )
+        );
     });
     ctx.request_repaint();
 }
@@ -103,6 +119,16 @@ pub fn reveal_target(ctx: &egui::Context) -> Option<crate::feedback::Target> {
     ctx.data(|data| data.get_temp::<State>(key()))
         .filter(|state| state.reveal)
         .and_then(|state| state.items.first().map(|item| item.feedback.target))
+}
+
+/// Keep feedback visible without moving a view the user is watching or browsing.
+pub fn dismiss_reveal(ctx: &egui::Context) {
+    ctx.data_mut(|data| {
+        if let Some(mut state) = data.get_temp::<State>(key()) {
+            state.reveal = false;
+            data.insert_temp(key(), state);
+        }
+    });
 }
 
 /// Bind the same stable identity used by controls or documents to this frame's geometry.
@@ -255,5 +281,48 @@ fn pulses(
                 if reading { Color32::WHITE } else { accent },
             ),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verification_does_not_hide_a_write_and_navigation_can_stay_put() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(1.0),
+                ..Default::default()
+            },
+            |_| {},
+        );
+        output.textures_delta.clear();
+        let change = Feedback::changed(7, "00:01", "old", "new").unwrap();
+        show_in(&ctx, [change.clone()]);
+        let until = expires(&ctx);
+        for effect in [Effect::Read, Effect::Pending, Effect::Invoke] {
+            show_in(&ctx, [Feedback::new(8, "", effect)]);
+            assert_eq!(current(&ctx)[0].feedback, change);
+            assert_eq!(expires(&ctx), until);
+        }
+        dismiss_reveal(&ctx);
+        assert_eq!(reveal_target(&ctx), None);
+        assert_eq!(current(&ctx)[0].feedback, change);
+        let next = Feedback::changed(9, "00:02", "first", "second").unwrap();
+        show_in(&ctx, [next.clone()]);
+        assert_eq!(current(&ctx)[0].feedback, next);
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(6.0),
+                ..Default::default()
+            },
+            |_| {},
+        );
+        output.textures_delta.clear();
+        let read = Feedback::new(8, "", Effect::Read);
+        show_in(&ctx, [read.clone()]);
+        assert_eq!(current(&ctx)[0].feedback, read);
     }
 }

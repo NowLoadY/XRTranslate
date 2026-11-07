@@ -353,6 +353,18 @@ impl ServiceConfigEditor {
         })
     }
 
+    pub(crate) fn tts_supports_reference_audio(&self) -> bool {
+        self.selected_tts_provider().is_some_and(|provider| {
+            if provider_is_remote(provider) {
+                provider_remote_model(provider)
+                    .and_then(|model| model.tts.as_ref())
+                    .is_some_and(|tts| tts.reference_audio)
+            } else {
+                self.tts_is_configured()
+            }
+        })
+    }
+
     pub(crate) fn tts_sample_rate(&self) -> u32 {
         if let Some(tts) = self
             .selected_tts_provider()

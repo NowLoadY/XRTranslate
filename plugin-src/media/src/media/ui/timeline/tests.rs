@@ -103,7 +103,10 @@ fn vocals_are_visible_without_subtitles_and_select_an_independent_reference() {
     frame(&mut controller, vec![button(pos(18_000.0), false)]);
     let task = controller.store.get(&id).unwrap();
     assert_eq!(task.speech_reference_range, Some([10_000, 18_000]));
-    assert!(task.speech_use_source_voice);
+    assert!(
+        !task.speech_use_source_voice,
+        "a local reference must not change the whole track's voice mode"
+    );
     assert_eq!(task.subtitles.count(), 0);
     assert!(task.speech_track.is_none());
     assert_eq!(

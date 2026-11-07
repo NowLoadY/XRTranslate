@@ -294,9 +294,6 @@ impl MediaController {
             return;
         };
         task.speech_reference_range = range;
-        if range.is_some() {
-            task.speech_use_source_voice = true;
-        }
         self.save_active();
     }
 

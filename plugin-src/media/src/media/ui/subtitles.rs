@@ -30,9 +30,7 @@ pub(super) fn render_subtitles_card(
         })
         .flatten();
     if ui.rect_contains_pointer(ui.max_rect())
-        && ui.input(|input| {
-            input.smooth_scroll_delta.y.abs() > 0.1 || input.pointer.is_decidedly_dragging()
-        })
+        && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1 || input.pointer.any_down())
     {
         controller.last_manual_scroll = Some(std::time::Instant::now());
     }
@@ -81,8 +79,24 @@ pub(super) fn render_subtitles_card(
             optimizing && workspace.status == "open" && controller.subtitle_edit.is_none()
         });
     let subtitles = preview.map_or(&controller.subtitles, |workspace| &workspace.draft);
-    if preview.is_some() {
-        ui.weak(tr(language, "Optimization preview"));
+    let writing = ui_director::egui::feedback::current(ui.ctx())
+        .iter()
+        .any(|item| {
+            matches!(
+                item.feedback.effect,
+                ui_director::feedback::Effect::Change { .. }
+            )
+        });
+    // Follow actual changes, not verification reads. Manual browsing takes
+    // priority, and feedback never changes the video's playback position.
+    if !writing
+        || controller
+            .last_manual_scroll
+            .is_some_and(|time| time.elapsed().as_secs() < 5)
+        || controller.subtitle_edit.is_some()
+        || controller.speech_edit.is_some()
+    {
+        ui_director::egui::feedback::dismiss_reveal(ui.ctx());
     }
     let list_rect = ui.available_rect_before_wrap();
     let mut seek = None;
@@ -565,6 +579,36 @@ mod tests {
             controller.subtitles.export_srt(),
             base.export_srt(),
             "preview must not publish edits"
+        );
+        ui_director::egui::feedback::show_in(
+            &ctx,
+            [ui_director::feedback::Feedback::changed(
+                super::super::subtitle_target(
+                    controller.active_task_id.as_deref().unwrap(),
+                    "srt_0",
+                )
+                .value(),
+                "00:01",
+                "Long subtitle.",
+                "Short.",
+            )
+            .unwrap()],
+        );
+        controller.last_manual_scroll = Some(std::time::Instant::now());
+        render(&mut controller, true);
+        assert_eq!(
+            ui_director::egui::feedback::reveal_target(&ctx),
+            None,
+            "agent feedback must yield to manual browsing"
+        );
+        assert!(
+            matches!(
+                ui_director::egui::feedback::current(&ctx)[0]
+                    .feedback
+                    .effect,
+                ui_director::feedback::Effect::Change { .. }
+            ),
+            "keep the change visible without forcing navigation"
         );
     }
 }

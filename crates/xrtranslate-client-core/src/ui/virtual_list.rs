@@ -4,6 +4,7 @@ use eframe::egui::{self, Vec2};
 use std::{collections::HashMap, sync::Arc};
 
 mod merge;
+mod motion;
 use merge::MergeGesture;
 
 #[derive(Clone)]
@@ -255,8 +256,27 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         let prepared = prepare_rows(ui);
         ui.set_max_width(content_width);
         let rows = prepared.as_ref();
-        let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
-        let offsets = variable_row_offsets(&row_heights, row_gap);
+        let mut row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
+        let mut offsets = variable_row_offsets(&row_heights, row_gap);
+        if let Some(key) = row_key {
+            let geometry = motion::layout(
+                ui,
+                anchor_id.with("layout"),
+                content_width,
+                rows.iter()
+                    .enumerate()
+                    .map(|(index, (height, row))| motion::Row {
+                        id: key(row),
+                        top: offsets[index],
+                        height: *height,
+                    })
+                    .collect(),
+                gesture.is_none(),
+            );
+            row_heights = geometry.iter().map(|row| row.height).collect();
+            offsets = geometry.iter().map(|row| row.top).collect();
+            offsets.push(geometry.last().map_or(0.0, |row| row.top + row.height));
+        }
         let content_height = offsets.last().copied().unwrap_or_default();
         let content_top = ui.max_rect().top();
         let content_left = ui.max_rect().left();
@@ -281,7 +301,8 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         }
         let requested = row_key
             .zip(ui_director::egui::feedback::reveal_target(ui.ctx()))
-            .and_then(|(key, target)| rows.iter().position(|(_, row)| key(row).value() == target));
+            .and_then(|(key, target)| rows.iter().position(|(_, row)| key(row).value() == target))
+            .filter(|&index| !ui.clip_rect().contains(row_rect(index).center()));
         reveal = gesture.is_none() && requested.is_some();
         let scroll_target = if gesture.is_some() {
             ScrollTarget::None
@@ -384,13 +405,21 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
             let dragging = gesture
                 .as_ref()
                 .filter(|state| !state.pending && Some(state.source) == key);
-            let mut builder = egui::UiBuilder::new().id_salt((id_salt, index)).max_rect(
-                egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(grip_width, 0.0)),
-            );
+            let mut builder = egui::UiBuilder::new()
+                .id_salt(key.unwrap_or_else(|| ui.scope_id().with((id_salt, index))))
+                .max_rect(egui::Rect::from_min_max(
+                    rect.min,
+                    rect.max - egui::vec2(grip_width, 0.0),
+                ));
             if let Some(drag) = dragging {
                 builder = builder.layer_id(egui::LayerId::new(egui::Order::Tooltip, drag.source));
             }
             ui.scope_builder(builder, |ui| {
+                if (row_height - rows[index].0).abs() > 0.5 {
+                    // Unfold content within its allocated space; never paint
+                    // text or controls over a neighboring animated row.
+                    ui.set_clip_rect(ui.clip_rect().intersect(rect.expand(2.0)));
+                }
                 if let Some(drag) = dragging {
                     drag.paint(ui, rect, |ui| render_row(ui, index, row_height, row));
                 } else {

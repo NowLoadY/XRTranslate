@@ -5732,7 +5732,13 @@ pub fn run() -> eframe::Result<()> {
     #[cfg(target_os = "android")]
     let options = android::native_options(options);
     #[cfg(windows)]
-    let options = configure_transparent_wgpu(options, window_backdrop);
+    let options = {
+        let mut options = configure_transparent_wgpu(options, window_backdrop);
+        // winit registers with the taskbar before assigning icons. Wait until
+        // both icons are ready so Explorer cannot cache the default icon.
+        options.viewport = options.viewport.with_taskbar(false);
+        options
+    };
     #[cfg(all(target_os = "linux", feature = "mpv"))]
     let options = {
         let mut options = options;
@@ -5755,6 +5761,7 @@ pub fn run() -> eframe::Result<()> {
                     winit::window::Icon::from_rgba(app_icon.rgba, app_icon.width, app_icon.height)
                         .expect("embedded application icon must be valid RGBA"),
                 ));
+                window.set_skip_taskbar(false);
             }
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "android")]

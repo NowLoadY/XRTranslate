@@ -57,6 +57,8 @@ pub struct Capabilities {
     pub ask: bool,
     pub agent: bool,
     pub tts: bool,
+    #[serde(default)]
+    pub tts_reference_audio: bool,
     pub text: TextState,
 }
 

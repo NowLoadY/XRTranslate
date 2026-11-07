@@ -549,6 +549,7 @@ impl crate::XRTranslateApp {
             agent: self.service_config.agent_available()
                 && self.plugin_host.enabled(PluginId::AGENT),
             tts: self.service_config.tts_is_configured(),
+            tts_reference_audio: self.service_config.tts_supports_reference_audio(),
         };
         self.plugin_host
             .set_context("host.services", json!(services));

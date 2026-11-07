@@ -427,6 +427,7 @@ impl surface::UiPlugin for App {
             languages: cap.languages,
             can_optimize: cap.agent,
             can_synthesize: cap.tts,
+            can_clone_speech: cap.tts_reference_audio,
             optimizing_task: self.agent["scope"]["workspace"]
                 .as_str()
                 .and_then(|id| media.workspace_task(id))

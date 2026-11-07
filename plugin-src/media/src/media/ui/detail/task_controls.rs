@@ -249,43 +249,96 @@ pub(super) fn render_task_control_card(
                 && can_edit
                 && translated == count
                 && controller.speech_job.is_none();
+            let can_clone = snapshot.can_clone_speech
+                && task
+                    .separated_audio
+                    .as_ref()
+                    .is_some_and(|stems| stems.vocals.is_file());
+            let use_source_voice = if task.speech_track.is_some() {
+                task.speech_use_source_voice
+            } else {
+                can_clone
+            };
             let partial = task.speech_track.as_ref().is_some_and(|track| {
                 let completed = track.completed(task);
                 completed > 0 && completed < count
             });
+            let restart_label = if use_source_voice {
+                "Regenerate cloned speech"
+            } else {
+                "Regenerate speech track"
+            };
             crate::ui::layout::flow_row(ui, |ui| {
                 if components::secondary_button_enabled(
                     ui,
                     tr(
                         language,
-                        if partial {
+                        if partial && use_source_voice {
+                            "Continue cloned speech"
+                        } else if partial {
                             "Continue speech track"
                         } else if task.speech_track.is_some() {
-                            "Regenerate speech track"
+                            restart_label
+                        } else if use_source_voice {
+                            "Generate cloned speech"
                         } else {
                             "Generate speech track"
                         },
                     ),
-                    enabled,
+                    enabled && (!use_source_voice || can_clone),
                 )
-                .on_disabled_hover_text(tr(language, "Finish translating the subtitles first."))
+                .on_disabled_hover_text(tr(
+                    language,
+                    if enabled && !snapshot.can_clone_speech {
+                        "The selected TTS model does not support reference audio."
+                    } else if enabled && use_source_voice && !can_clone {
+                        "Separate the original vocals before cloning a voice."
+                    } else {
+                        "Finish translating the subtitles first."
+                    },
+                ))
                 .clicked()
                 {
+                    task.speech_use_source_voice = use_source_voice;
+                    changed = true;
                     generate_speech = Some(!partial && task.speech_track.is_some());
                 }
-                if partial {
+                if partial || use_source_voice || can_clone {
                     ui.add_enabled_ui(enabled, |ui| {
                         components::icon_menu(
                             ui,
                             tr(language, "Task actions"),
                             xrtranslate_client_core::ui::icon!("more.svg"),
                             |ui| {
-                                if components::secondary_button(
-                                    ui,
-                                    tr(language, "Regenerate speech track"),
-                                )
-                                .clicked()
+                                if partial
+                                    && components::secondary_button_enabled(
+                                        ui,
+                                        tr(language, restart_label),
+                                        !use_source_voice || can_clone,
+                                    )
+                                    .clicked()
                                 {
+                                    task.speech_use_source_voice = use_source_voice;
+                                    changed = true;
+                                    generate_speech = Some(true);
+                                    ui.close();
+                                }
+                                if (use_source_voice || can_clone)
+                                    && components::secondary_button(
+                                        ui,
+                                        tr(
+                                            language,
+                                            if use_source_voice {
+                                                "Generate with selected voice"
+                                            } else {
+                                                "Generate cloned speech"
+                                            },
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    task.speech_use_source_voice = !use_source_voice;
+                                    changed = true;
                                     generate_speech = Some(true);
                                     ui.close();
                                 }
@@ -295,18 +348,7 @@ pub(super) fn render_task_control_card(
                 }
             });
         }
-        if snapshot.can_synthesize
-            && (task.speech_use_source_voice
-                || task
-                    .separated_audio
-                    .as_ref()
-                    .is_some_and(|stems| stems.vocals.is_file()))
-        {
-            changed |= ui.add_enabled_ui(controller.speech_job.is_none(), |ui| {
-                components::checkbox(ui, &mut task.speech_use_source_voice, tr(language, "Use original voice"))
-                    .on_hover_text(tr(language, "Automatically choose an original voice reference and reuse it for short subtitles. You can also select a passage on the vocal timeline."))
-                    .changed()
-            }).inner;
+        if snapshot.can_synthesize {
             if let Some([start, end]) = task.speech_reference_range {
                 crate::ui::layout::flow_row(ui, |ui| {
                     ui.weak(format!(

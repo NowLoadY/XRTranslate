@@ -47,6 +47,8 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_width(310.0);
+            // Recompute room for the list instead of inheriting the popup's cached height.
+            ui.set_max_height((ui.ctx().content_rect().height() - 24.0).clamp(0.0, 300.0));
             ui.add_enabled_ui(enabled, |ui| {
                 changed = controls(task, tracks, language, ui, overlay);
             });

@@ -33,6 +33,7 @@ pub struct MediaUiSnapshot {
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
     pub can_optimize: bool,
     pub can_synthesize: bool,
+    pub can_clone_speech: bool,
     pub optimizing_task: Option<String>,
     pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
     pub preprocessing_models: crate::ui::components::AudioPreprocessingModels,

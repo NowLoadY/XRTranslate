@@ -78,6 +78,10 @@ pub(super) fn overview(
     ui: &mut egui::Ui,
 ) -> Option<Action> {
     let cues = subtitles.cues();
+    let changes = ui_director::egui::feedback::current(ui.ctx());
+    let change_strength =
+        ((ui_director::egui::feedback::expires(ui.ctx()) - ui.input(|input| input.time)) / 0.8)
+            .clamp(0.0, 1.0) as f32;
     let task = controller
         .active_task_id
         .as_deref()
@@ -450,6 +454,27 @@ pub(super) fn overview(
             2,
             theme::primary().gamma_multiply(if active { 1.0 } else { 0.4 }),
         );
+        if change_strength > 0.0
+            && changes.iter().any(|item| {
+                item.feedback.target
+                    == super::subtitle_target(
+                        controller.active_task_id.as_deref().unwrap_or_default(),
+                        &cue.id,
+                    )
+                    .value()
+                    && matches!(
+                        item.feedback.effect,
+                        ui_director::feedback::Effect::Change { .. }
+                    )
+            })
+        {
+            ui.painter().rect_stroke(
+                span.expand(1.0),
+                3,
+                egui::Stroke::new(1.5 * change_strength, theme::primary()),
+                egui::StrokeKind::Outside,
+            );
+        }
         if editable {
             for (edge, time, handle_x) in [
                 (SubtitleField::Start, start_ms, start + 2.0),
