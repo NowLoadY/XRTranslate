@@ -113,14 +113,20 @@ impl<C: AsyncHttpClient> RemoteTtsAdapter<C> {
                     "text_normalization_mode": "quality"
                 }),
             ),
-            RemoteConnector::DashscopeSpeech => HttpRequest::post_json(
-                &self.endpoint,
-                json!({
-                    "model": self.model.model,
-                    "input": {"text": text, "voice": voice, "format": "pcm",
-                        "sample_rate": self.capabilities().sample_rate, "language_hints": [language]}
-                }),
-            ),
+            RemoteConnector::DashscopeSpeech => {
+                let language_name = SupportedLanguage::parse(language)
+                    .map(SupportedLanguage::name)
+                    .unwrap_or(language);
+                HttpRequest::post_json(
+                    &self.endpoint,
+                    json!({
+                        "model": self.model.model,
+                        "input": {"text": text, "voice": voice, "format": "pcm",
+                            "sample_rate": self.capabilities().sample_rate, "language_hints": [language],
+                            "instruction": format!("Speak in {language_name}. Read only the provided text, without translating it or adding content.")}
+                    }),
+                )
+            }
             _ => {
                 return Err(InferenceError::InvalidConfiguration {
                     field: "tts.connector",

@@ -140,6 +140,11 @@ async fn qwen_reference_uses_the_active_workspace_and_can_be_cleaned_up() {
             .starts_with("data:audio/wav;base64,")
     );
     assert_eq!(requests[2].body["input"]["voice"], voice);
+    assert_eq!(requests[2].body["input"]["language_hints"], json!(["zh"]));
+    assert_eq!(
+        requests[2].body["input"]["instruction"],
+        "Speak in Chinese. Read only the provided text, without translating it or adding content."
+    );
     assert_eq!(
         requests.last().unwrap().body["input"]["action"],
         "delete_voice"
@@ -288,6 +293,10 @@ async fn dashscope_downloads_pcm_without_forwarding_credentials() {
     );
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests[0].body["input"]["language_hints"], json!(["ja"]));
+    assert_eq!(
+        requests[0].body["input"]["instruction"],
+        "Speak in Japanese. Read only the provided text, without translating it or adding content."
+    );
     assert_eq!(requests[0].body["input"]["format"], "pcm");
     assert_eq!(requests[0].body["input"]["sample_rate"], 48000);
     assert_eq!(requests[0].body["input"]["voice"], "longanlingxin_v3.1");
