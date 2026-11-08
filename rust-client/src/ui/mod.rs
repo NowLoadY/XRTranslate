@@ -112,7 +112,6 @@ impl NavigationState {
         self.page = page;
     }
 
-    #[cfg(target_os = "android")]
     pub fn back(&mut self) {
         self.page = self.history.pop().unwrap_or(Page::Translation);
     }

@@ -1373,7 +1373,7 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
             let response = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text(hint)
-                    .vertical_align(egui::Align::Center)
+                    .align(egui::Align2::LEFT_CENTER)
                     .frame(text_frame)
                     .margin(Margin::symmetric(0, 0))
                     .desired_width(ui.available_width() - if has_query { 24.0 } else { 0.0 }),
