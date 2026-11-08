@@ -12,6 +12,7 @@ managed-ort = ["ort/load-dynamic"]
 sherpa = ["dep:sherpa-onnx"]
 
 [dependencies]
+xrtranslate-http = { path = "../xrtranslate-http" }
 xrtranslate-connections = { path = "../xrtranslate-connections" }
 base64 = "0.22.1"
 futures-util = "0.3.33"

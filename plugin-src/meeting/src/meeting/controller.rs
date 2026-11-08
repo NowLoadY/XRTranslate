@@ -560,6 +560,7 @@ impl MeetingController {
     }
 
     pub(crate) fn handle_back(&mut self) -> bool {
+        self.resource_browser.invalidate();
         if self.route == MeetingRoute::Library {
             return false;
         }

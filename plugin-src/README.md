@@ -57,3 +57,16 @@ host features do not require existing plugins to adopt them.
 Translation, capture, models and downloads remain host services. Each plugin owns
 its own records and context policy. Private plugins are not included in public
 packages. A plugin can use a host panel or its own window, depending on its needs.
+
+## Android
+
+The Android build automatically builds plugins whose Cargo package metadata has
+`xrtranslate.android = true`. Currently these are Agent, Media, Meeting,
+Vocabulary and the two OSC outputs. They remain independent executables packaged
+by the APK installer, with the same host protocol and separate settings/data.
+Desktop-only plugins and private source are not bundled.
+
+Run `scripts/build-android-release.sh` with the signing environment configured.
+The Android SDK/NDK is needed on the build machine; Python is only a build tool
+and is not included in the application. Android Media uses the shared audio
+player/decoder; desktop MPV video rendering and video export are not included.

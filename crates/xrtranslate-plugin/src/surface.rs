@@ -144,6 +144,8 @@ pub struct Frame {
 }
 
 pub trait UiPlugin: Plugin {
+    /// Return true when Back was handled inside the plugin's current page.
+    fn back(&mut self) -> bool { false }
     /// Install the same shared fonts/theme/image loaders as the shell.
     fn configure_ui(&mut self, _context: &egui::Context, _options: &Value) {}
     fn ui(&mut self, ui: &mut egui::Ui, context: &mut Context);
@@ -381,6 +383,15 @@ impl<P: UiPlugin> Plugin for Page<P> {
         }
     }
     fn event(&mut self, name: &str, value: Value, context: &mut Context) {
+        if name == "ui.back" {
+            if egui::Popup::is_any_open(&self.context) {
+                egui::Popup::close_all(&self.context);
+            } else if !self.plugin.back() {
+                let _ = context.event("ui.back", Value::Null);
+            }
+            self.context.request_repaint();
+            return;
+        }
         self.plugin.event(name, value, context);
         self.context.request_repaint();
     }

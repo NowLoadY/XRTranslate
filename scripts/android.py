@@ -104,7 +104,7 @@ def llama_server(sdk, abi, destination):
     if os.name == 'nt' and not shutil.which('ninja'): raise SystemExit('Install Ninja and add it to PATH for Android builds on Windows.')
     prefix_map = '"-ffile-prefix-map=' + ROOT.as_posix() + '=/xrtranslate"'
     run('cmake', *generator, '-S', source, '-B', build, '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_TOOLCHAIN_FILE=' + str(sdk / 'ndk' / NDK_VERSION / 'build/cmake/android.toolchain.cmake'), '-DANDROID_ABI=' + abi, '-DANDROID_PLATFORM=android-29', '-DBUILD_SHARED_LIBS=OFF', '-DGGML_NATIVE=OFF', '-DGGML_OPENMP=OFF', '-DGGML_LLAMAFILE=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_UI=OFF', '-DLLAMA_USE_PREBUILT_UI=OFF', '-DLLAMA_BUILD_APP=OFF', '-DLLAMA_BUILD_NUMBER=10333', '-DLLAMA_BUILD_COMMIT=08659901', '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,max-page-size=16384', '-DCMAKE_C_FLAGS=' + prefix_map, '-DCMAKE_CXX_FLAGS=' + prefix_map)
-    run('cmake', '--build', build, '--target', 'llama-server', '--parallel', str(min(os.cpu_count() or 2, 4)))
+    run('cmake', '--build', build, '--target', 'llama-server', '--parallel', os.environ.get('CARGO_BUILD_JOBS', str(min(os.cpu_count() or 2, 4))))
     shutil.copy2(build / 'bin/llama-server', destination / 'libllama-server.so')
 
 def prepare_elf(path):
@@ -137,6 +137,27 @@ def prepare_elf(path):
                 data[start:end] = b'$ORIGIN' + b'\0' * (end - start - 7)
     path.write_bytes(data)
 
+def build_plugins(target, environment, profile, destination, assets):
+    """Use the same independent SDK builder; Android installs code via JNI libs."""
+    builder = ROOT / 'target/release' / ('xrt-plugin.exe' if os.name == 'nt' else 'xrt-plugin')
+    for source in sorted((ROOT / 'plugin-src').iterdir()):
+        if not (source / 'plugin.json').is_file(): continue
+        package = tomllib.loads((source / 'Cargo.toml').read_text())
+        if not package['package'].get('metadata', {}).get('xrtranslate', {}).get('android'): continue
+        output = ROOT / 'target/android/plugins' / target / profile / source.name
+        options = ['--debug'] if profile == 'debug' else []
+        run(builder, 'build', source, '--sdk', ROOT, '--output', output,
+            '--target-dir', ROOT / 'target', '--target', target, '--no-default-features', '--locked',
+            *options, env=environment)
+        manifest = json.loads((output / 'plugin.json').read_text())
+        executable = manifest['executable']
+        manifest['executable'] = 'lib' + executable + '.so'
+        shutil.copy2(output / executable, destination / manifest['executable'])
+        resource = assets / source.name
+        if resource.exists(): shutil.rmtree(resource)
+        shutil.copytree(output, resource, ignore=shutil.ignore_patterns(executable))
+        (resource / 'plugin.json').write_text(json.dumps(manifest, ensure_ascii=False))
+
 def native(sdk, args):
     generated = ROOT / 'android/app/build/generated/rust'
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=ROOT))
@@ -149,6 +170,9 @@ def native(sdk, args):
     # Generated package contents must not retain old ABIs, runtime files, or local data.
     jni_libraries = generated / args.profile / 'jniLibs'
     if jni_libraries.exists(): shutil.rmtree(jni_libraries)
+    plugin_assets = generated / args.profile / 'assets/plugins'
+    if plugin_assets.exists(): shutil.rmtree(plugin_assets)
+    run('cargo', 'build', '--locked', '--release', '-p', 'xrtranslate-plugin', '--features', 'host')
     for abi in args.abis.split(','):
         if abi not in TARGETS: raise SystemExit(f'Unsupported ABI: {abi}')
         target, environment = toolchain(sdk, abi)
@@ -160,6 +184,7 @@ def native(sdk, args):
         shutil.copy2(ROOT / 'target' / target / output_profile / 'xrtranslate-backend', destination / 'libxrtranslate-backend.so')
         run('cargo', 'build', '--locked', '--manifest-path', 'XR-Corpus/Cargo.toml', '--target-dir', ROOT / 'target', '-p', 'xr-corpus-server', '--target', target, *cargo_profile, env=environment)
         shutil.copy2(ROOT / 'target' / target / output_profile / 'xr-corpus-server', destination / 'libxr-corpus-server.so')
+        build_plugins(target, environment, args.profile, destination, plugin_assets)
         llama_server(sdk, abi, destination)
         with tarfile.open(SHERPA_ARCHIVE) as archive:
             for name in ['libsherpa-onnx-c-api.so', 'libonnxruntime.so']:
@@ -180,7 +205,7 @@ def native(sdk, args):
         'application/models/gtcrn/LICENSE',
     }
     for path in assets.parent.rglob('*'):
-        if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets):
+        if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets and 'plugins' not in path.relative_to(assets.parent).parts[:1]):
             path.unlink()
     # Export the same public service defaults used by desktop releases; never runtime.
     run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', ROOT / 'config.json', 'export-defaults', '--output', assets / 'config.json')

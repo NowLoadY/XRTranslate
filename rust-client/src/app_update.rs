@@ -900,7 +900,7 @@ fn parse_version(value: &str) -> Result<ParsedVersion, String> {
 }
 
 fn http_client(proxy_url: Option<&str>) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = xrtranslate_download::client_builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(45));

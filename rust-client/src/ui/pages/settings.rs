@@ -1,8 +1,6 @@
 use crate::ui::components::{self, SubNavItem, section, sub_sidebar};
 use eframe::egui;
 mod avatar;
-#[cfg(target_os = "android")]
-mod prompt_unlock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum SettingsSection {
@@ -635,8 +633,6 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             UpdateChannel::Stable
         });
     }
-    #[cfg(target_os = "android")]
-    prompt_unlock::observe(&beta_response, beta_enabled, &app.project_root());
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
         ui.label(

@@ -164,6 +164,9 @@ pub(super) fn render_timeline(
     );
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
+        if ui.available_width() < 600.0 {
+            ui.spacing_mut().interact_size.y = 32.0;
+        }
         let scroll_id = ui.make_persistent_id(egui::IdSalt::new("meeting_timeline_scroll"));
         let geometry_id = scroll_id.with("geometry");
         let target = rows::scroll_target(ui, scroll_id, geometry_id, follow, evidence);

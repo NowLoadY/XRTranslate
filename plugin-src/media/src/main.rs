@@ -234,6 +234,8 @@ impl Plugin for App {
         #[cfg(windows)]
         xrtranslate_client_core::playback::configure_host_runtime(&environment.host_executable);
         let client = context.client();
+        #[cfg(target_os = "android")]
+        xrtranslate_client_core::file_dialog::install_client(client.clone());
         if self.media.is_none() {
             std::fs::create_dir_all(&environment.data_directory).map_err(|e| e.to_string())?;
             // Adopt existing projects once. Absolute source/audio paths stay valid.

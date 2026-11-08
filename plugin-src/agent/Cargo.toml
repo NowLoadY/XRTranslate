@@ -15,3 +15,6 @@ crossbeam-channel = "0.5"
 tempfile = "3"
 log = "0.4"
 env_logger = "0.11"
+
+[package.metadata.xrtranslate]
+android = true

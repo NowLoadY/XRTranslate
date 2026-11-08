@@ -248,7 +248,7 @@ async fn generate(
     .map_err(|_| "Invalid speech service URL")?;
     url.set_query(None);
     url.set_fragment(None);
-    let client = reqwest::Client::builder()
+    let client = xrtranslate_download::client_builder()
         .timeout(Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;

@@ -3094,6 +3094,12 @@ impl XRTranslateApp {
     }
 
     pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
+        #[cfg(target_os = "android")]
+        if theme.variant == ui::theme::ThemeVariant::HandDrawn
+            && let Err(error) = ui::pages::prompt_studio::unlock_editor(&self.project_root())
+        {
+            log::warn!("Could not unlock prompt editor: {error}");
+        }
         self.ui_theme = theme;
         self.save_settings();
     }
@@ -5181,11 +5187,7 @@ impl eframe::App for XRTranslateApp {
         #[cfg(target_os = "android")]
         if let Some(granted) = android::take_microphone_result() {
             if granted {
-                if let Some(action) = meeting {
-                    self.apply_meeting_action(action, ui.ctx().clone());
-                } else {
-                    self.set_microphone_enabled(true, Some(ui.ctx().clone()));
-                }
+                self.set_microphone_enabled(true, Some(ui.ctx().clone()));
             } else {
                 self.last_error = Some("Allow microphone access before recording.".into());
             }

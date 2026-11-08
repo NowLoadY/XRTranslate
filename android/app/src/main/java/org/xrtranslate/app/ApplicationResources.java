@@ -13,6 +13,16 @@ public final class ApplicationResources {
     public static synchronized void prepare(Context context, boolean all) throws IOException {
         copy(context, all ? "application" : "application/config.json",
             all ? context.getFilesDir() : new File(context.getFilesDir(), "config.json"));
+        if (!all) preparePlugins(context);
+    }
+
+    private static void preparePlugins(Context context) throws IOException {
+        File root = new File(context.getFilesDir(), "plugins");
+        if (!root.isDirectory() && !root.mkdirs()) throw new IOException("Cannot create plugin storage");
+        String[] plugins = context.getAssets().list("plugins");
+        if (plugins == null) return;
+        // Refresh packaged resources; settings and documents live under runtime/plugins.
+        for (String plugin : plugins) copy(context, "plugins/" + plugin, new File(root, plugin));
     }
 
     private static void copy(Context context, String source, File destination) throws IOException {
@@ -20,7 +30,7 @@ public final class ApplicationResources {
         if (children != null && children.length > 0) {
             if (!destination.isDirectory() && !destination.mkdirs()) throw new IOException("Cannot create application storage");
             for (String child : children) copy(context, source + "/" + child, new File(destination, child));
-        } else if (!destination.exists() || source.equals("application/config.json")) {
+        } else if (!destination.exists() || source.equals("application/config.json") || source.startsWith("plugins/")) {
             File temporary = File.createTempFile("resource-", ".part", destination.getParentFile());
             try {
                 try (InputStream input = context.getAssets().open(source); FileOutputStream output = new FileOutputStream(temporary)) {

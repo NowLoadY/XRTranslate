@@ -61,7 +61,6 @@ pub(super) fn apply_action(
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
-            controller.resource_browser.invalidate();
             controller.handle_back();
         }
         UiAction::Open(id) => {

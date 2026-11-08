@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn read(directory: &Path) -> Result<Manifest, String> {
+pub fn read(directory: &Path, executables: Option<&Path>) -> Result<Manifest, String> {
     let path = directory.join("plugin.json");
     if fs::metadata(&path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
         return Err("Plugin manifest is too large".into());
@@ -13,18 +13,34 @@ pub fn read(directory: &Path) -> Result<Manifest, String> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     manifest.validate()?;
-    let root = directory.canonicalize().map_err(|e| e.to_string())?;
-    let executable = root
-        .join(&manifest.executable)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    if !executable.starts_with(&root) || !executable.is_file() {
-        return Err("Plugin executable is outside its directory".into());
-    }
+    executable(directory, &manifest, executables)?;
     Ok(manifest)
 }
 
-pub fn discover(root: &Path) -> Result<Vec<(PathBuf, Result<Manifest, String>)>, String> {
+/// Resources may live separately from OS-installed executable code (e.g. Android).
+pub fn executable(
+    directory: &Path,
+    manifest: &Manifest,
+    executables: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let root = executables
+        .unwrap_or(directory)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let path = root
+        .join(&manifest.executable)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("Plugin executable is outside its installation directory".into());
+    }
+    Ok(path)
+}
+
+pub fn discover(
+    root: &Path,
+    executables: Option<&Path>,
+) -> Result<Vec<(PathBuf, Result<Manifest, String>)>, String> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -43,7 +59,7 @@ pub fn discover(root: &Path) -> Result<Vec<(PathBuf, Result<Manifest, String>)>,
     Ok(directories
         .into_iter()
         .map(|path| {
-            let manifest = read(&path);
+            let manifest = read(&path, executables);
             (path, manifest)
         })
         .collect())

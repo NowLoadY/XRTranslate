@@ -144,7 +144,10 @@ pub fn playback_button(
     } else {
         crate::ui::theme::text_strong()
     };
-    let rect = response.rect.shrink(if active { 6.0 } else { 7.0 });
+    let rect = egui::Rect::from_center_size(
+        response.rect.center(),
+        egui::Vec2::splat(if active { 24.0 } else { 22.0 }),
+    );
     if overlay {
         // A small icon outline stays legible on bright footage without a panel.
         for offset in [
@@ -186,6 +189,8 @@ pub fn playback_slider(
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.spacing_mut().slider_width = width;
+            // Touch row height must not scale the slider's artwork.
+            ui.spacing_mut().interact_size.y = 20.0;
             ui.spacing_mut().slider_rail_height = 4.0;
             // The page's transparent controls otherwise make the rail disappear.
             if overlay {
@@ -201,6 +206,7 @@ pub fn playback_slider(
             ui.add_enabled(
                 enabled,
                 egui::Slider::new(value, 0.0..=maximum)
+                    .handle_shape(egui::style::HandleShape::Circle)
                     .show_value(false)
                     .trailing_fill(true),
             )

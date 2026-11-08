@@ -305,6 +305,8 @@ impl Plugin for App {
             }
             self.meeting = Some(MeetingPlugin::open(&environment.data_directory));
         }
+        #[cfg(target_os = "android")]
+        xrtranslate_client_core::file_dialog::install_client(context.client());
         self.client = Some(context.client());
         Ok(())
     }
@@ -401,6 +403,9 @@ impl Plugin for App {
     }
 }
 impl surface::UiPlugin for App {
+    fn back(&mut self) -> bool {
+        self.meeting.as_mut().is_some_and(|meeting| meeting.controller.handle_back())
+    }
     fn configure_ui(&mut self, ctx: &egui::Context, options: &Value) {
         ui::configure_surface(ctx, options)
     }

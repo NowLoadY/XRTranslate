@@ -2097,7 +2097,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             .collect::<Vec<_>>();
         let missing_download_bytes = missing.iter().map(|item| item.download_bytes).sum::<u64>();
         let missing_installed_bytes = missing.iter().map(|item| item.installed_bytes).sum::<u64>();
-        ui.horizontal_wrapped(|ui| {
+        download_controls(ui, |ui| {
             ui.label(
                 RichText::new(i18n::tr(language, "Model Packages"))
                     .size(15.0)
@@ -2113,7 +2113,10 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 }).map(|item| item.id.clone()).collect::<Vec<_>>();
                 let action = if !active_downloads.is_empty() {
                     "Pause"
-                } else if missing.iter().any(|item| app.model_task_manager.is_model_paused(&item.id)) {
+                } else if missing
+                    .iter()
+                    .any(|item| app.model_task_manager.is_model_paused(&item.id))
+                {
                     "Resume"
                 } else {
                     "Download"
@@ -2124,22 +2127,30 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     missing.len(),
                     components::format_file_size(missing_download_bytes),
                 );
-                let downloaded = missing.iter().filter_map(|item| {
-                    app.model_task_manager.model_download_progress(&item.id).map(|(bytes, _)| bytes)
-                }).sum::<u64>();
+                let downloaded = missing
+                    .iter()
+                    .filter_map(|item| {
+                        app.model_task_manager
+                            .model_download_progress(&item.id)
+                            .map(|(bytes, _)| bytes)
+                    })
+                    .sum::<u64>();
                 let progress = (missing_download_bytes > 0
                     && (!active_downloads.is_empty() || downloaded > 0))
                     .then(|| downloaded as f32 / missing_download_bytes as f32);
-                let clicked = ui.scope(|ui| {
-                    ui.set_max_width(220.0);
-                    components::download_progress_button(
-                        ui,
-                        &label,
-                        false,
-                        !app.runtime_installer.is_busy(),
-                        progress,
-                    ).clicked()
-                }).inner;
+                let clicked = ui
+                    .scope(|ui| {
+                        ui.set_max_width(220.0);
+                        components::download_progress_button(
+                            ui,
+                            &label,
+                            false,
+                            !app.runtime_installer.is_busy(),
+                            progress,
+                        )
+                        .clicked()
+                    })
+                    .inner;
                 if clicked {
                     if active_downloads.is_empty() {
                         installs.extend(missing.iter().map(|item| item.id.clone()));
@@ -2265,6 +2276,16 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             });
         });
     }
+}
+
+fn download_controls(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width();
+    let layout = if width < 680.0 {
+        Layout::top_down(Align::Min)
+    } else {
+        Layout::left_to_right(Align::Center).with_main_wrap(true)
+    };
+    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), layout, contents);
 }
 
 fn render_download_card(
@@ -2432,7 +2453,7 @@ fn render_runtime_installation_section(
         let mut use_mirror = app.runtime_installer.use_mirror();
         let previous_source = use_mirror;
         let mut delete_runtime = false;
-        ui.horizontal_wrapped(|ui| {
+        download_controls(ui, |ui| {
             if ready {
                 Frame::new()
                     .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))

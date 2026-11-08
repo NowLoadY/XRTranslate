@@ -31,24 +31,28 @@ fn now() -> u64 {
 }
 
 fn client() -> Result<Client> {
-    let builder = Client::builder()
+    let builder = xrtranslate_http::client_builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("XRTranslate/", env!("CARGO_PKG_VERSION")));
-    #[cfg(target_os = "android")]
-    let builder = builder.use_preconfigured_tls(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            })
-            .with_no_client_auth(),
-    );
-    builder.build().map_err(|_| Error::Network)
+    builder
+        .build()
+        .map_err(|error| network_error("client", error))
+}
+
+fn network_error(stage: &str, error: reqwest::Error) -> Error {
+    // URLs can contain authorization data; retain the transport cause only.
+    log::warn!("ChatGPT {stage} failed: {:?}", error.without_url());
+    Error::Network
 }
 
 async fn json<T: serde::de::DeserializeOwned>(mut response: Response) -> Result<T> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Network)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| network_error("response body", error))?
+    {
         if bytes.len() + chunk.len() > 1024 * 1024 {
             return Err(Error::InvalidAuthorization);
         }
@@ -118,11 +122,12 @@ async fn exchange(client: &Client, fields: &[(&str, &str)]) -> Result<TokenRespo
         .form(fields)
         .send()
         .await
-        .map_err(|_| Error::Network)?;
+        .map_err(|error| network_error("token exchange", error))?;
     if response.status().is_success() {
         return json(response).await;
     }
     let status = response.status();
+    log::warn!("ChatGPT token exchange returned HTTP {status}");
     if status.is_server_error() || status.as_u16() == 429 {
         return Err(Error::Network);
     }
@@ -225,7 +230,13 @@ async fn discover_models(client: &Client, token: &str) -> Result<Vec<AccountMode
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|_| Error::Network)?;
+        .map_err(|error| network_error("model discovery", error))?;
+    if !response.status().is_success() {
+        log::warn!(
+            "ChatGPT model discovery returned HTTP {}",
+            response.status()
+        );
+    }
     if response.status().as_u16() == 401 {
         return Err(Error::LoginRequired);
     }

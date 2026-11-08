@@ -92,6 +92,21 @@ impl crate::XRTranslateApp {
     }
     pub(crate) fn poll_installed_plugins(&mut self, ctx: &egui::Context) {
         self.plugin_host.refresh();
+        #[cfg(target_os = "android")]
+        {
+            let mut replies = Vec::new();
+            self.plugin_host.documents.retain(|(plugin, id, request)| {
+                if let Some(reply) = request.host_reply() {
+                    replies.push((plugin.clone(), *id, reply));
+                    false
+                } else {
+                    true
+                }
+            });
+            for (plugin, id, reply) in replies {
+                self.plugin_host.reply(&plugin, id, reply);
+            }
+        }
         if self.plugin_host.osc.active() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -233,6 +248,30 @@ impl crate::XRTranslateApp {
         );
         for (plugin, message) in calls {
             match message {
+                #[cfg(target_os = "android")]
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
+                } if name == "files.dialog" => {
+                    match xrtranslate_client_core::file_dialog::host_dialog(arguments) {
+                        Ok(request) => self.plugin_host.documents.push((plugin, id, request)),
+                        Err(error) => self.plugin_host.reply(&plugin, id, Err(error)),
+                    }
+                }
+                #[cfg(target_os = "android")]
+                Message::Call {
+                    id,
+                    name,
+                    arguments,
+                } if name == "files.commit" => {
+                    let result = arguments["id"]
+                        .as_u64()
+                        .ok_or_else(|| "Missing document request ID".to_owned())
+                        .and_then(xrtranslate_client_core::file_dialog::commit_save)
+                        .map(|_| Value::Null);
+                    self.plugin_host.reply(&plugin, id, result);
+                }
                 Message::Call {
                     id,
                     name,
@@ -414,6 +453,12 @@ impl crate::XRTranslateApp {
                 Message::Event { name, value } if name == "message" => {
                     if let Some(message) = value.as_str() {
                         self.companion_inbox.post_text(&plugin, message.to_owned());
+                    }
+                }
+                Message::Event { name, .. } if name == "ui.back" => {
+                    if matches!(self.navigation.page, crate::ui::Page::Plugin(id) if id.as_str() == plugin) {
+                        self.navigation.back();
+                        self.save_settings();
                     }
                 }
                 Message::Event { name, value } if name == "ui.repaint" => {

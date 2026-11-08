@@ -35,7 +35,7 @@ impl SessionEventSubscriber for ResultSubscriber {
             TranslationEvent::Finished { stream_id, .. } => {
                 self.pending.lock().unwrap().remove(stream_id);
             }
-            TranslationEvent::Preview(_) => {}
+            TranslationEvent::Preview(_) | TranslationEvent::SeparatedAudio(_) => {}
         }
     }
 }

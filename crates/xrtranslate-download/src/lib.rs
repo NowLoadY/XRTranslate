@@ -138,26 +138,17 @@ impl DownloadClient {
                 "download max_attempts must be greater than zero".into(),
             ));
         }
-        let mut builder = reqwest::Client::builder()
+        let mut builder = client_builder()
             .user_agent(user_agent)
             .connect_timeout(policy.connect_timeout)
             .read_timeout(policy.read_timeout);
         if let Some(proxy_url) = proxy_url.filter(|url| !url.trim().is_empty()) {
-            builder = builder.proxy(
+            builder = builder.no_proxy().proxy(
                 reqwest::Proxy::all(proxy_url)
                     .map_err(|error| DownloadError::Client(error.to_string()))?,
             );
         }
-        #[cfg(target_os = "android")]
-        let builder = {
-            let roots = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            };
-            let config = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            builder.use_preconfigured_tls(config)
-        };
+
         let client = builder
             .build()
             .map_err(|error| DownloadError::Client(error.to_string()))?;
@@ -758,6 +749,8 @@ fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
         .duration_since(std::time::SystemTime::now())
         .ok()
 }
+
+pub use xrtranslate_http::client_builder;
 
 #[cfg(test)]
 mod tests {

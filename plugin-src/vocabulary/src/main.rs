@@ -27,6 +27,8 @@ struct App {
 }
 impl Plugin for App {
     fn initialize(&mut self, _: Environment, context: &mut Context) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        xrtranslate_client_core::file_dialog::install_client(context.client());
         if self.archive.is_none() {
             self.archive = Some(archive::Archive::new(context.client()));
             self.inference = Some(Inference {

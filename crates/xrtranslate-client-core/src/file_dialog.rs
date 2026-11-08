@@ -113,65 +113,43 @@ impl FileDialog {
         }
     }
     pub fn save(self, content: impl AsRef<[u8]>) -> Result<(), String> {
-        #[cfg(not(target_os = "android"))]
-        {
-            let bytes = content.as_ref().to_vec();
-            self.write(move |path| std::fs::write(path, bytes))?;
-        }
-        #[cfg(target_os = "android")]
-        {
-            let request = bridge::start(self, true);
-            let bytes = content.as_ref().to_vec();
-            std::thread::Builder::new()
-                .name("document-export".into())
-                .spawn(move || {
-                    let result = (|| -> Result<(), String> {
-                        let Some(path) = request
-                            .receiver
-                            .lock()
-                            .unwrap()
-                            .recv()
-                            .map_err(|error| error.to_string())??
-                        else {
-                            return Ok(());
-                        };
-                        std::fs::write(path, bytes).map_err(|error| error.to_string())?;
-                        crate::android::with_activity(|env, activity| {
-                            env.call_method(
-                                activity,
-                                "commitFileSave",
-                                "(J)V",
-                                &[jni::objects::JValue::Long(request.id as i64)],
-                            )?;
-                            Ok(())
-                        })
-                    })();
-                    if let Err(error) = result {
-                        report_error(error);
-                    }
-                })
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
+        let bytes = content.as_ref().to_vec();
+        self.write(move |path| std::fs::write(path, bytes))
     }
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn write(
         self,
         write: impl FnOnce(PathBuf) -> std::io::Result<()> + Send + 'static,
     ) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        let request = bridge::start(self, true);
         std::thread::Builder::new()
             .name("document-export".into())
             .spawn(move || {
-                if let Some(path) = self.native.save_file()
-                    && let Err(error) = write(path)
-                {
-                    report_error(error.to_string());
+                let result = (|| -> Result<(), String> {
+                    #[cfg(not(target_os = "android"))]
+                    let path = self.native.save_file();
+                    #[cfg(target_os = "android")]
+                    let path = request
+                        .receiver
+                        .lock()
+                        .unwrap()
+                        .recv()
+                        .map_err(|e| e.to_string())??;
+                    let Some(path) = path else {
+                        return Ok(());
+                    };
+                    write(path).map_err(|e| e.to_string())?;
+                    #[cfg(target_os = "android")]
+                    commit_save(request.id.load(std::sync::atomic::Ordering::Acquire))?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    report_error(error);
                 }
             })
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "android"))]
     pub fn copy_file(self, source: PathBuf) -> Result<(), String> {
         self.write(move |path| {
             if path.canonicalize().ok() != source.canonicalize().ok() {
@@ -190,7 +168,7 @@ impl FileDialog {
 pub struct FileRequest {
     receiver: Arc<Mutex<mpsc::Receiver<FileResult>>>,
     #[cfg(target_os = "android")]
-    id: u64,
+    id: Arc<std::sync::atomic::AtomicU64>,
 }
 impl FileRequest {
     pub fn poll(&self) -> Option<FileResult> {
@@ -223,6 +201,22 @@ mod bridge {
             .lock()
             .unwrap()
             .insert(id, sender);
+        if let Some(client) = CLIENT.lock().unwrap().clone() {
+            let remote_id = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let pending_id = remote_id.clone();
+            std::thread::spawn(move || {
+                let result = client.request("files.dialog", serde_json::json!({"name":dialog.name,"extensions":dialog.extensions,"save":save})).wait()
+                    .and_then(|value| {
+                        pending_id.store(value["id"].as_u64().ok_or("Missing document request ID")?, Ordering::Release);
+                        serde_json::from_value(value["path"].clone()).map_err(|e| e.to_string())
+                    });
+                complete(id, result);
+            });
+            return FileRequest {
+                receiver: Arc::new(Mutex::new(receiver)),
+                id: remote_id,
+            };
+        }
         let result = crate::android::with_activity(|env, activity| {
             let name = env.new_string(dialog.name)?;
             let extensions = env.new_string(dialog.extensions.join(","))?;
@@ -244,7 +238,7 @@ mod bridge {
         }
         FileRequest {
             receiver: Arc::new(Mutex::new(receiver)),
-            id,
+            id: Arc::new(std::sync::atomic::AtomicU64::new(id)),
         }
     }
 
@@ -285,5 +279,53 @@ mod bridge {
                 .map_err(|error| error.to_string())
         };
         complete(id as u64, result);
+    }
+}
+
+#[cfg(target_os = "android")]
+static CLIENT: Mutex<Option<xrtranslate_plugin::Client>> = Mutex::new(None);
+
+#[cfg(target_os = "android")]
+pub fn install_client(client: xrtranslate_plugin::Client) {
+    *CLIENT.lock().unwrap() = Some(client);
+}
+
+#[cfg(target_os = "android")]
+pub fn host_dialog(arguments: serde_json::Value) -> Result<FileRequest, String> {
+    let extensions: Vec<String> =
+        serde_json::from_value(arguments["extensions"].clone()).map_err(|e| e.to_string())?;
+    let dialog = FileDialog {
+        name: arguments["name"].as_str().unwrap_or_default().into(),
+        extensions,
+    };
+    Ok(bridge::start(
+        dialog,
+        arguments["save"].as_bool().unwrap_or(false),
+    ))
+}
+
+#[cfg(target_os = "android")]
+pub fn commit_save(id: u64) -> Result<(), String> {
+    if let Some(client) = CLIENT.lock().unwrap().clone() {
+        return client
+            .request("files.commit", serde_json::json!({"id":id}))
+            .wait()
+            .map(|_| ());
+    }
+    crate::android::with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "commitFileSave",
+            "(J)V",
+            &[jni::objects::JValue::Long(id as i64)],
+        )?;
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "android")]
+impl FileRequest {
+    pub fn host_reply(&self) -> Option<xrtranslate_plugin::Result> {
+        self.poll().map(|result| result.map(|path| serde_json::json!({"id":self.id.load(std::sync::atomic::Ordering::Acquire),"path":path})))
     }
 }

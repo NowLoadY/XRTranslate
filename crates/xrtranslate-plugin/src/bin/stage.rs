@@ -56,11 +56,11 @@ fn stage(
             copy(&source.join(name), &root.join(name))?;
         }
     }
-    xrtranslate_plugin::directory::read(&root).map_err(io::Error::other)?;
+    xrtranslate_plugin::directory::read(&root, None).map_err(io::Error::other)?;
     let previous = temporary.path().join("previous");
     if destination.exists() {
         let installed =
-            xrtranslate_plugin::directory::read(destination).map_err(io::Error::other)?;
+            xrtranslate_plugin::directory::read(destination, None).map_err(io::Error::other)?;
         if installed.id != manifest.id || fs::symlink_metadata(destination)?.is_symlink() {
             return Err("Destination must be a directory for the same plugin".into());
         }

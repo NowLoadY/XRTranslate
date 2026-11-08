@@ -34,8 +34,9 @@ pub(super) async fn verify_identity(
         .get(format!("{ISSUER}/.well-known/jwks.json"))
         .send()
         .await
-        .map_err(|_| Error::Network)?;
+        .map_err(|error| network_error("identity keys", error))?;
     if !response.status().is_success() {
+        log::warn!("ChatGPT identity keys returned HTTP {}", response.status());
         return Err(Error::Network);
     }
     let keys: JwkSet = json(response).await?;

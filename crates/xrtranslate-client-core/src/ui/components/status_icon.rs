@@ -34,10 +34,10 @@ impl StatusIcon {
 
 /// Monochrome state symbols with a full accessible label and hover explanation.
 pub fn status_icon(ui: &mut egui::Ui, state: StatusIcon, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(34.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(24.0), egui::Sense::hover());
     egui::Image::new(state.artwork())
         .tint(theme::text_normal())
-        .paint_at(ui, rect.shrink(6.0));
+        .paint_at(ui, rect.shrink(2.0));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
     ui_director::egui::record_output(
         ui,

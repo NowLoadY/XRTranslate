@@ -410,22 +410,7 @@ fn transport_error(error: reqwest::Error) -> TransportError {
     TransportError::new(kind, message)
 }
 
-fn client_builder() -> reqwest::ClientBuilder {
-    let builder = reqwest::Client::builder();
-    #[cfg(target_os = "android")]
-    {
-        // The managed service is a native process and has no Java VM.
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        builder.use_preconfigured_tls(config)
-    }
-    #[cfg(not(target_os = "android"))]
-    builder
-}
+use xrtranslate_http::client_builder;
 
 #[cfg(test)]
 mod tests {

@@ -10,7 +10,6 @@ xrtranslate-plugin = { version = "0.1.0", features = ["egui"] }
 xrtranslate-protocol = { version = "0.4.0" }
 xrtranslate-engine = { version = "0.4.0" }
 ui-director = { version = "0.0.1", features = ["egui"] }
-eframe = "0.37.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -19,3 +18,12 @@ parking_lot = "0.12"
 rosc = "0.11.4"
 crossbeam-channel = "0.5.16"
 unicode-segmentation = "1.13"
+
+[package.metadata.xrtranslate]
+android = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.37"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "android-game-activity", "links"] }

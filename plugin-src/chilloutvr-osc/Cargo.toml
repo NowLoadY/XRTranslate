@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 xrt-osc = { path = "../osc" }
+
+[package.metadata.xrtranslate]
+android = true

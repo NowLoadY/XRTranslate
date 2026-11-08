@@ -40,13 +40,19 @@ mod collapsing;
 pub use collapsing::CollapsingHeader;
 
 pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {
+    let compact = ui.available_width() < 600.0;
+    let full_title = title;
     let title = egui::RichText::new(title)
-        .size(22.0)
+        .size(if compact { 18.0 } else { 22.0 })
         .color(theme::text_strong())
         .strong();
-    if ui.available_width() < 600.0 {
-        ui.add(egui::Label::new(title).wrap());
-        ui.horizontal_wrapped(actions);
+    if compact {
+        ui.add(egui::Label::new(title).truncate()).on_hover_text(full_title);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 0.0),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            actions,
+        );
     } else {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -57,7 +63,7 @@ pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {
             });
         });
     }
-    ui.add_space(14.0);
+    ui.add_space(if compact { 6.0 } else { 14.0 });
 }
 
 pub fn live_preview(ui: &mut Ui, preview: &crate::session_coordinator::TranslationPreview) {
@@ -107,10 +113,14 @@ pub fn card_margins(ctx: &egui::Context) -> Vec2 {
     )
 }
 
-fn card_frame(_ctx: &egui::Context) -> Frame {
+fn card_frame(ctx: &egui::Context) -> Frame {
     Frame::new()
         .corner_radius(theme::container_radius(16))
-        .inner_margin(Margin::same(16))
+        .inner_margin(if ctx.content_rect().width() < 600.0 {
+            Margin::symmetric(12, 8)
+        } else {
+            Margin::same(16)
+        })
         .shadow(egui::Shadow::NONE)
 }
 
@@ -1350,7 +1360,10 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
             .inner_margin(Margin::symmetric(12, 8))
     };
 
+    let content_height = (ui.spacing().interact_size.y - frame.total_margin().sum().y)
+        .max(ui.text_style_height(&egui::TextStyle::Body));
     let inner_resp = frame.show(ui, |ui| {
+        ui.spacing_mut().interact_size.y = content_height;
         ui.horizontal(|ui| {
             let text_frame = Frame::new()
                 .fill(Color32::TRANSPARENT)
@@ -1360,6 +1373,7 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
             let response = ui.add(
                 egui::TextEdit::singleline(query)
                     .hint_text(hint)
+                    .vertical_align(egui::Align::Center)
                     .frame(text_frame)
                     .margin(Margin::symmetric(0, 0))
                     .desired_width(ui.available_width() - if has_query { 24.0 } else { 0.0 }),

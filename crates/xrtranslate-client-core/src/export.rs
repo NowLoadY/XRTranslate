@@ -45,7 +45,6 @@ pub fn save(name: &str, format: Format, content: impl AsRef<[u8]>) -> Result<(),
         .save(content)
 }
 
-#[cfg(not(target_os = "android"))]
 pub fn copy_file(name: &str, format: Format, source: std::path::PathBuf) -> Result<(), String> {
     let extension = format.extension();
     crate::file_dialog::FileDialog::new()
@@ -55,7 +54,6 @@ pub fn copy_file(name: &str, format: Format, source: std::path::PathBuf) -> Resu
 }
 
 /// Generate a large export on the existing dialog worker rather than the UI thread.
-#[cfg(not(target_os = "android"))]
 pub fn write_file(
     name: &str,
     format: Format,

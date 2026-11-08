@@ -1,7 +1,6 @@
 //! Android Back unwinds visible UI before returning through the main pages.
 use crate::{
     XRTranslateApp,
-    plugins::PluginId,
     ui::{self, Page},
 };
 use eframe::egui;
@@ -30,6 +29,10 @@ impl XRTranslateApp {
             return;
         }
         match self.navigation.page {
+            Page::Plugin(id) if self.plugin_host.available(id.as_str()) => {
+                self.plugin_host.send_event(id.as_str(), "ui.back", serde_json::Value::Null);
+                return;
+            }
             Page::Translation if self.history_archive.open => {
                 self.history_archive.cancel_delete();
                 self.history_archive.open = false;

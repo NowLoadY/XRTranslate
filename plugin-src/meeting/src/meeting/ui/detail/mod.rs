@@ -41,6 +41,9 @@ pub(super) fn render_detail(
     let finishing =
         active.is_some() && !processing_audio && meeting.status == MeetingStatus::Processing;
     let mut action = UiAction::None;
+    if ui.available_width() < 600.0 {
+        ui.spacing_mut().item_spacing.y = 4.0;
+    }
     page_header(ui, &meeting.name, language, |ui| {
         if meeting.status == MeetingStatus::Live && active.is_some() && !processing_audio {
             let latest = controller
@@ -126,7 +129,9 @@ pub(super) fn render_detail(
         {
             action = UiAction::Continue(meeting.id.clone());
         }
-        if components::back_button(ui, tr(language, "Meetings")).clicked() {
+        if !cfg!(target_os = "android")
+            && components::back_button(ui, tr(language, "Meetings")).clicked()
+        {
             action = UiAction::Back;
         }
     });
@@ -146,7 +151,7 @@ pub(super) fn render_detail(
     if let Some(error) = &controller.error {
         components::error_notice(ui, language, error);
     }
-    ui.add_space(8.0);
+    ui.add_space(if ui.available_width() < 600.0 { 4.0 } else { 8.0 });
     playback::render(controller, language, ui);
     ui.horizontal_wrapped(|ui| {
         if components::selectable_label(

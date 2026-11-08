@@ -167,6 +167,8 @@ fn build(arguments: &[OsString]) -> Result<()> {
     let mut output = None;
     let mut target = None;
     let mut features = None;
+    let mut triple = None;
+    let mut no_default_features = false;
     let mut debug = false;
     let mut offline = false;
     let mut locked = false;
@@ -177,6 +179,8 @@ fn build(arguments: &[OsString]) -> Result<()> {
             Some("--output") => output = args.next().map(PathBuf::from),
             Some("--target-dir") => target = args.next().map(PathBuf::from),
             Some("--features") => features = args.next().cloned(),
+            Some("--target") => triple = args.next().cloned(),
+            Some("--no-default-features") => no_default_features = true,
             Some("--debug") => debug = true,
             Some("--offline") => offline = true,
             Some("--locked") => locked = true,
@@ -228,6 +232,12 @@ fn build(arguments: &[OsString]) -> Result<()> {
     }
     if let Some(target) = target {
         command.arg("--target-dir").arg(target);
+    }
+    if let Some(triple) = triple {
+        command.arg("--target").arg(triple);
+    }
+    if no_default_features {
+        command.arg("--no-default-features");
     }
     if let Some(features) = features {
         command.arg("--features").arg(features);
@@ -301,6 +311,6 @@ pub(super) fn run(args: &[OsString]) -> Result<()> {
     } else if args[0] == "build" {
         build(&args[1..])
     } else {
-        Err("Usage: xrt-plugin sdk <source-root> <output> | build <plugin-source> --sdk <SDK directory> --output <plugin directory> [--target-dir <cache>] [--features <features>] [--debug] [--offline] [--locked]".into())
+        Err("Usage: xrt-plugin sdk <source-root> <output> | build <plugin-source> --sdk <SDK directory> --output <plugin directory> [--target-dir <cache>] [--features <features>] [--target <triple>] [--no-default-features] [--debug] [--offline] [--locked]".into())
     }
 }

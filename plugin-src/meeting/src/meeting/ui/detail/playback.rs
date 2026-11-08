@@ -18,7 +18,8 @@ pub(super) fn render(
     let capturing = controller.active_meeting_id().is_some();
     let playback = &mut controller.playback;
     let mut error = playback.take_error();
-    components::card(ui, |ui| {
+    let compact = ui.available_width() < 600.0;
+    let mut render_player = |ui: &mut egui::Ui| {
         ui.set_width(ui.available_width());
         ui.add_enabled_ui(!capturing, |ui| {
             let duration = playback.duration().max(0) as f64 / 1000.0;
@@ -103,7 +104,12 @@ pub(super) fn render(
                 }
             });
         });
-    });
+    };
+    if compact {
+        render_player(ui);
+    } else {
+        components::card(ui, render_player);
+    }
     if let Some(error) = error {
         controller.error = Some(error);
     }
@@ -111,7 +117,7 @@ pub(super) fn render(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
-    ui.add_space(8.0);
+    ui.add_space(if compact { 4.0 } else { 8.0 });
 }
 
 fn clip_selector(

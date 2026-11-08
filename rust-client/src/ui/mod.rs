@@ -595,6 +595,22 @@ struct NavigationEntry {
     icon: egui::ImageSource<'static>,
 }
 impl NavigationEntry {
+    fn icon(&self, selected: bool) -> egui::Image<'static> {
+        let mut source = self.icon.clone();
+        if selected
+            && let egui::ImageSource::Bytes { uri, bytes } = &source
+            && let Ok(svg) = std::str::from_utf8(bytes)
+        {
+            let [r, g, b, _] = theme::primary().to_array();
+            let color = format!("#{r:02x}{g:02x}{b:02x}");
+            source = egui::ImageSource::Bytes {
+                uri: format!("{uri}/{color}.svg").into(),
+                bytes: svg.replace("currentColor", &color).into_bytes().into(),
+            };
+        }
+        egui::Image::new(source).fit_to_exact_size(egui::vec2(18.0, 18.0))
+    }
+
     fn label(&self, language: crate::i18n::UiLanguage) -> &str {
         match &self.title {
             std::borrow::Cow::Borrowed(key) => crate::i18n::tr(language, key),
@@ -718,8 +734,7 @@ pub fn render_top_navigation(
                 ui.horizontal(|ui| {
                     for entry in navigation_entries(plugins, tts_configured) {
                         let selected = navigation.page == entry.page;
-                        let icon = egui::Image::new(entry.icon.clone())
-                            .fit_to_exact_size(egui::vec2(18.0, 18.0));
+                        let icon = entry.icon(selected);
                         let title = entry.label(language);
                         let button = if icons_only {
                             egui::Button::image(icon)

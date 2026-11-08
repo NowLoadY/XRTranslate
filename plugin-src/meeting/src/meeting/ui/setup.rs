@@ -40,7 +40,9 @@ pub(super) fn render_setup(
         },
         language,
         |ui| {
-            if components::back_button(ui, tr(language, "Back")).clicked() {
+            if !cfg!(target_os = "android")
+                && components::back_button(ui, tr(language, "Back")).clicked()
+            {
                 action = UiAction::Back;
             }
         },

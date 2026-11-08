@@ -90,6 +90,7 @@ struct Installed {
     modified: Option<std::time::SystemTime>,
     icon: Option<(String, Vec<u8>)>,
     directory: PathBuf,
+    executable: PathBuf,
     manifest: Manifest,
     settings: Settings,
     process: Option<Process>,
@@ -106,6 +107,12 @@ struct Inference {
 pub(crate) struct Host {
     datagrams: datagram::Outputs,
     osc: osc::Control,
+    #[cfg(target_os = "android")]
+    documents: Vec<(
+        String,
+        u64,
+        xrtranslate_client_core::file_dialog::FileRequest,
+    )>,
     bookmarks: Vec<(String, u64, xrtranslate_client_core::bookmarks::Reply)>,
     stopped: Vec<String>,
     visible: Option<String>,
@@ -114,6 +121,7 @@ pub(crate) struct Host {
     pub playback: playback::Players,
     root: PathBuf,
     directory: PathBuf,
+    executables: Option<PathBuf>,
     next_scan: std::time::Instant,
     models_root: PathBuf,
     resources: Option<(String, BTreeMap<String, PathBuf>)>,
@@ -161,6 +169,8 @@ impl Host {
         let mut host = Self {
             datagrams: Default::default(),
             osc: Default::default(),
+            #[cfg(target_os = "android")]
+            documents: Vec::new(),
             bookmarks: Vec::new(),
             stopped: Vec::new(),
             visible: None,
@@ -169,6 +179,10 @@ impl Host {
             playback: playback::Players::default(),
             root: runtime.runtime_root().join("plugins"),
             directory: root.join("plugins"),
+            #[cfg(target_os = "android")]
+            executables: Some(crate::android::native_library_directory()),
+            #[cfg(not(target_os = "android"))]
+            executables: None,
             next_scan: std::time::Instant::now(),
             models_root,
             resources: None,
@@ -192,7 +206,10 @@ impl Host {
             return;
         }
         self.next_scan = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        let entries = match xrtranslate_plugin::directory::discover(&self.directory) {
+        let entries = match xrtranslate_plugin::directory::discover(
+            &self.directory,
+            self.executables.as_deref(),
+        ) {
             Ok(entries) => entries,
             Err(error) => {
                 self.error = Some(error);
@@ -214,9 +231,14 @@ impl Host {
                 errors.push(format!("Duplicate plugin ID: {id}"));
                 continue;
             }
-            let modified = std::fs::metadata(directory.join(&manifest.executable))
-                .ok()
-                .and_then(|m| m.modified().ok());
+            let modified = std::fs::metadata(
+                self.executables
+                    .as_deref()
+                    .unwrap_or(&directory)
+                    .join(&manifest.executable),
+            )
+            .ok()
+            .and_then(|m| m.modified().ok());
             if self.installed.get(&id).is_some_and(|entry| {
                 entry.directory == directory
                     && entry.manifest == manifest
@@ -294,6 +316,11 @@ impl Host {
                     env!("CARGO_PKG_VERSION"),
                 )
                 .err(),
+                executable: xrtranslate_plugin::directory::executable(
+                    &directory,
+                    &manifest,
+                    self.executables.as_deref(),
+                )?,
                 directory,
                 manifest,
                 settings,
@@ -394,6 +421,8 @@ impl Host {
         self.save(id)
     }
     fn stop(&mut self, id: &str) {
+        #[cfg(target_os = "android")]
+        self.documents.retain(|(plugin, _, _)| plugin != id);
         self.datagrams.remove(id);
         self.osc.cancel(id, None);
         self.bookmarks.retain(|(plugin, _, _)| plugin != id);
@@ -486,7 +515,7 @@ impl Host {
                 } else {
                     let repaint = ctx.clone();
                     match Process::start(
-                        &entry.directory,
+                        &entry.executable,
                         &entry.manifest,
                         environment,
                         move || repaint.request_repaint(),

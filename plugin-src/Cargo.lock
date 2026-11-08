@@ -7637,8 +7637,8 @@ version = "0.4.1"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
+ "log",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -7646,7 +7646,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
- "webpki-roots",
+ "xrtranslate-http",
 ]
 
 [[package]]
@@ -7655,9 +7655,8 @@ version = "0.4.1"
 dependencies = [
  "httpdate",
  "reqwest",
- "rustls",
  "tokio",
- "webpki-roots",
+ "xrtranslate-http",
 ]
 
 [[package]]
@@ -7667,6 +7666,18 @@ dependencies = [
  "audioadapter-buffers",
  "rubato",
  "serde",
+]
+
+[[package]]
+name = "xrtranslate-http"
+version = "0.4.1"
+dependencies = [
+ "regex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "webpki-roots",
 ]
 
 [[package]]

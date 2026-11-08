@@ -29,7 +29,7 @@ pub struct Process {
 }
 impl Process {
     pub fn start(
-        directory: &Path,
+        executable: &Path,
         manifest: &Manifest,
         environment: Environment,
         wake: impl Fn() + Send + 'static,
@@ -43,7 +43,7 @@ impl Process {
                 .push(crate::surface::wire::CAPABILITY.into());
             environment
         };
-        let mut command = Command::new(directory.join(&manifest.executable));
+        let mut command = Command::new(executable);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

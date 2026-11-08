@@ -62,9 +62,33 @@ Keep callback resources in the plugin renderer's `CallbackResources` and create
 them in `prepare`. Playback continues to use the shared playback service, so a
 page does not need its own video decoder. UI controls, input and automation use
 the same API with either presentation path.
+Implement `UiPlugin::back` to handle system Back inside an embedded page. Return
+`true` when handled (including blocked navigation while saving); return `false`
+to let the host leave the page. The surface closes open popup menus first.
 Custom GPU callbacks require the shared GPU path; provide a drawing fallback or
 an independent window when supporting older hosts or other platforms.
 
 Only task requests and state need to cross the host connection for an independent
 window. Recognition and translation still run through host services; each plugin
 keeps its own domain state and context policy.
+
+## Android packaging
+
+Android plugins use the same process messages, host services and rendered UI.
+The SDK builder accepts `--target aarch64-linux-android --no-default-features`
+with the NDK compiler configured by the Android build entry.
+
+Android does not execute code from writable application storage. The APK bundles
+plugin executables as `lib<executable>.so` in `jniLibs`, and plugin manifests and
+resources separately in assets. The host resolves executables within Android's
+installed native library directory; plugin state remains in `runtime/plugins`.
+The file picker and exports are handled by the host Activity through the shared
+file-dialog adapter. Plugins never need their own Activity.
+
+For the repository's APK build, opt in with
+`[package.metadata.xrtranslate] android = true` in the plugin's Cargo manifest.
+Use the shared Android-compatible UI dependencies and install the file-dialog
+client during plugin initialization if the page imports or exports files.
+Updating packaged code requires installing a new APK; copying executables into
+writable storage is not an Android installation mechanism. Plugins can still be
+enabled or disabled independently.

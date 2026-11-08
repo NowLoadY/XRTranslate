@@ -28,7 +28,7 @@ pub struct HttpClient {
 
 impl HttpClient {
     pub fn new(proxy: &str, stop: Arc<AtomicBool>) -> Result<Self, String> {
-        let mut builder = reqwest::Client::builder()
+        let mut builder = xrtranslate_download::client_builder()
             .user_agent("XRTranslate/0.3 podcast reader")
             .connect_timeout(Duration::from_secs(15));
         if !proxy.trim().is_empty() {
