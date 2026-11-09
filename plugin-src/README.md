@@ -23,8 +23,8 @@ an optional build cache. On Linux, use `bash build.sh /opt/xrtranslate-sdk
 building a single plugin directory directly.
 
 The SDK path may also be a host source checkout with its `xrt-plugin` tool already
-built. Linux `scripts/run-linux.sh` uses this to update public plugins automatically
-before launching, without exporting a separate SDK copy.
+built. The Windows and Linux development launchers build and update public plugins
+before starting the app. Other installed plugins are kept as they are.
 
 Copy completed plugin directories into the application's `plugins/` folder.
 The Windows and Linux release scripts build and include the current public

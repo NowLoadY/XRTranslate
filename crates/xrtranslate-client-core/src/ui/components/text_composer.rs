@@ -90,7 +90,6 @@ impl TextComposer {
         }
         let collecting = context.recognition.is_some_and(|input| input.active);
         let mut toggle_collection = false;
-        let mut copy_recognition = false;
         let mut edited = false;
         let editor_id = ui.make_persistent_id((id, "editor"));
         let enter = self.submit_key.pressed(ui.ctx(), editor_id);
@@ -98,7 +97,7 @@ impl TextComposer {
         let expansion = AnimationSystem::animate_bool(
             ui.ctx(),
             editor_id.with("expansion"),
-            focused,
+            focused || collecting,
             theme::animation_timings(ui.ctx()).window_resize,
         );
         let expansion = AnimationSystem::ease_out_cubic(expansion);
@@ -218,16 +217,18 @@ impl TextComposer {
                         if waiting {
                             ui.spinner();
                         }
-                        if self.mode == TextMode::Translate && context.can_copy {
+                        if self.mode == TextMode::Translate
+                            && context.can_copy
+                            && !waiting
+                            && !collecting
+                        {
                             copy = super::action_button::floating_copy_button(
                                 ui,
                                 tr(context.language, "Copy translation"),
                             )
                             .clicked();
                         }
-                        if self.mode == TextMode::Translate
-                            && let Some(input) = context.recognition
-                        {
+                        if self.mode == TextMode::Translate && context.recognition.is_some() {
                             toggle_collection = ui
                                 .add_enabled_ui(!waiting || collecting, |ui| {
                                     super::action_button::recognition_input_button(
@@ -245,13 +246,6 @@ impl TextComposer {
                                 })
                                 .inner
                                 .clicked();
-                            if input.can_copy {
-                                copy_recognition = super::copy_button(
-                                    ui,
-                                    tr(context.language, "Copy recognized text"),
-                                )
-                                .clicked();
-                            }
                         }
                         egui::ScrollArea::vertical()
                             .id_salt((id, "draft_scroll"))
@@ -306,8 +300,6 @@ impl TextComposer {
                 enabled: !collecting,
                 text: self.text.clone(),
             })
-        } else if copy_recognition {
-            Some(TextAction::CopyRecognition)
         } else if submit {
             self.submit_key = SubmitShortcut::default();
             ui.memory_mut(|memory| memory.request_focus(editor_id));

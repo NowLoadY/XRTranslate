@@ -82,6 +82,11 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host 'Preparing development plugins...'
+& (Join-Path $projectRoot 'plugin-src/build.ps1') -Sdk $projectRoot `
+    -Output (Join-Path $projectRoot 'plugins') -TargetDirectory (Join-Path $projectRoot 'target') `
+    -DebugBuild:(!$Release) -Locked
+
 $targetSubdir = if ($Release) { 'release' } else { 'debug' }
 $targetBinDir = Join-Path $projectRoot "target\$targetSubdir"
 $resourceBinDir = Join-Path $projectRoot 'rust-client\resources\bin'

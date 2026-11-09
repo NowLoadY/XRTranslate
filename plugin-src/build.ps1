@@ -11,9 +11,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $sdkRoot = (Resolve-Path -LiteralPath $Sdk).Path
 $outputRoot = [System.IO.Path]::GetFullPath($Output)
-$builder = Join-Path $sdkRoot 'xrt-plugin.exe'
-if (-not (Test-Path -LiteralPath $builder)) { $builder = Join-Path $sdkRoot 'target/release/xrt-plugin.exe' }
-if (-not (Test-Path -LiteralPath $builder)) { throw "SDK build tool not found: $builder" }
+$profile = if ($DebugBuild) { 'debug' } else { 'release' }
+$builder = @('xrt-plugin.exe', "target/$profile/xrt-plugin.exe", 'target/release/xrt-plugin.exe') |
+    ForEach-Object { Join-Path $sdkRoot $_ } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if (-not $builder) { throw "SDK build tool not found in: $sdkRoot" }
 foreach ($directory in Get-ChildItem -LiteralPath $PSScriptRoot -Directory) {
     if (-not (Test-Path -LiteralPath (Join-Path $directory.FullName 'plugin.json'))) { continue }
     if ($Plugin -and $directory.Name -notin $Plugin) { continue }
