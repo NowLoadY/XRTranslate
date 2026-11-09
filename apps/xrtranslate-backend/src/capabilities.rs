@@ -195,7 +195,7 @@ mod tests {
             model_plan: Arc::new(crate::NativeProviderPlan::resolve(&config, temp.path()).unwrap()),
             config,
             corpus_client: crate::CorpusClient::new("http://127.0.0.1:1").unwrap(),
-            contexts: crate::ContextRegistry::default(),
+            contexts: crate::ContextRegistry::new(8192),
             project_root: temp.path().to_owned(),
             onnx_runtime: Default::default(),
             audio_runtime: Default::default(),

@@ -61,6 +61,7 @@ impl crate::XRTranslateApp {
                                 self.plugin_host.composer(id).text.clear();
                             }
                         }
+                        Some(TextAction::ContextSettings) => self.open_context_settings(ui.ctx()),
                         Some(TextAction::Copy) => self.copy_text_translation(ui.ctx()),
                         Some(TextAction::DismissCopy) => self.dismiss_text_result(),
                         Some(TextAction::CopyRecognition) => self.copy_recognized_text(ui.ctx()),

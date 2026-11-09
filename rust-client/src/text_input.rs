@@ -3,6 +3,19 @@ use eframe::egui;
 use serde_json::Value;
 
 impl crate::XRTranslateApp {
+    pub(crate) fn open_context_settings(&mut self, ctx: &egui::Context) {
+        self.settings_section = crate::ui::pages::settings::SettingsSection::Models;
+        self.navigation.open(crate::ui::Page::Settings);
+        self.fullscreen_history = false;
+        for command in [
+            egui::ViewportCommand::Visible(true),
+            egui::ViewportCommand::Minimized(false),
+            egui::ViewportCommand::Focus,
+        ] {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+        }
+    }
+
     pub(crate) fn text_input_budget(&self) -> Option<usize> {
         self.service_config.translation_input_budget(
             &self.prompt_library.active_graph(),
@@ -79,6 +92,7 @@ impl crate::XRTranslateApp {
     ) -> xrtranslate_plugin::Result {
         use xrtranslate_client_core::services::TextAction;
         match action {
+            TextAction::ContextSettings => self.open_context_settings(ctx),
             TextAction::Clear => self.clear_history(),
             TextAction::Copy => self.copy_text_translation(ctx),
             TextAction::DismissCopy => self.dismiss_text_result(),

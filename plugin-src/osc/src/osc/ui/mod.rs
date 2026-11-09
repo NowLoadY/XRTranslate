@@ -22,6 +22,7 @@ pub struct OscPageContext<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum OscUiAction {
+    ContextSettings,
     ClearHostHistory,
     CopyTranslation,
     DismissTranslationCopy,

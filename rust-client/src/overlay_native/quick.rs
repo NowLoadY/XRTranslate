@@ -113,8 +113,8 @@ impl Capsule {
         }
         let scale = ctx.pixels_per_point();
         let work = (input.work_area(window) / scale).shrink(8.0);
-        let position = window.inner_position().map_err(|e| e.to_string())?;
-        let position = egui::pos2(position.x as f32, position.y as f32) / scale;
+        let inner_position = window.inner_position().map_err(|e| e.to_string())?;
+        let position = egui::pos2(inner_position.x as f32, inner_position.y as f32) / scale;
         let anchor = self.anchor.get_or_insert_with(|| {
             let pointer = input
                 .pointer_position(window, scale)
@@ -218,19 +218,25 @@ impl Capsule {
         let actual_size = window.inner_size().to_logical::<f32>(scale as f64);
         ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::splat(40.0)));
         ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
-        let resizing =
-            (egui::vec2(actual_size.width, actual_size.height) - size).length() > 1.0 / scale;
+        let resizing = native_bounds_differ(
+            egui::vec2(actual_size.width, actual_size.height),
+            size,
+            scale,
+        );
         if resizing {
             let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
                 (size.x * scale).round() as u32,
                 (size.y * scale).round() as u32,
             ));
         }
-        let moving = position.distance(desired.min) > 1.0 / scale;
+        let moving = native_bounds_differ(position.to_vec2(), desired.min.to_vec2(), scale);
         if moving {
+            // Even undecorated Windows surfaces can have a client-area inset.
+            // Place the client origin, rather than repeatedly moving the outer frame.
+            let outer = window.outer_position().map_err(|e| e.to_string())?;
             window.set_outer_position(winit::dpi::PhysicalPosition::new(
-                (desired.left() * scale).round() as i32,
-                (desired.top() * scale).round() as i32,
+                (desired.left() * scale).round() as i32 - (inner_position.x - outer.x),
+                (desired.top() * scale).round() as i32 - (inner_position.y - outer.y),
             ));
         }
         self.last_rect = Some(desired);
@@ -517,6 +523,33 @@ impl Capsule {
             id: self.state.id.clone(),
             action: Action::Close,
         });
+    }
+}
+
+fn native_bounds_differ(actual: Vec2, desired: Vec2, scale: f32) -> bool {
+    // Native coordinates round each axis independently to physical pixels.
+    ((actual * scale).round() - (desired * scale).round())
+        .abs()
+        .max_elem()
+        > 1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fractional_native_bounds_allow_result_expansion() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let desired = egui::vec2(1335.6, 682.0) / scale;
+            let actual = egui::vec2(1336.0, 683.0) / scale;
+            assert!(!native_bounds_differ(actual, desired, scale));
+            assert!(native_bounds_differ(
+                actual + Vec2::splat(2.0),
+                desired,
+                scale
+            ));
+        }
     }
 }
 

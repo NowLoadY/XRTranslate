@@ -41,6 +41,7 @@ impl App {
     }
     fn action(&mut self, action: OscUiAction, context: &mut Context) -> Result<(), String> {
         let host_action = match action {
+            OscUiAction::ContextSettings => Some(TextAction::ContextSettings),
             OscUiAction::ClearHostHistory => Some(TextAction::Clear),
             OscUiAction::CopyTranslation => Some(TextAction::Copy),
             OscUiAction::DismissTranslationCopy => Some(TextAction::DismissCopy),

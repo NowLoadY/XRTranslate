@@ -1,8 +1,6 @@
 use xr_corpus_protocol::SegmentContext as CorpusSegmentContext;
 use xrtranslate_engine::TranslationSegmentPair;
-use xrtranslate_prompt::{PromptTurn, SurroundingSource, TranslationPromptContext, estimated_tokens};
-
-const MAX_REFERENCE_CHARS: usize = 1_200;
+use xrtranslate_prompt::{SurroundingSource, TranslationPromptContext, estimated_tokens};
 
 /// Combines task-owned facts and retrieved terms within one request budget.
 /// Segment positions identify neighboring source, including repeated sentences.
@@ -29,21 +27,17 @@ pub(crate) fn prompt_context_for_segment(
         return context.without_reference_context();
     }
 
-    if let Some(turn) = reference
-        .previous_revision
-        .as_ref()
-        .filter(|turn| bounded_turn(turn))
-    {
+    if let Some(turn) = reference.previous_revision.as_ref() {
         context.previous_revision = Some(turn.clone());
         if !within_budget(&context, token_budget) {
             context.previous_revision = None;
         }
     }
 
-    // Binary search limits allocation and rendering to a small fixed window;
-    // the media transcript itself is never joined or searched.
+    // The current input and reserved output take priority. Reference text uses
+    // the remaining tokens, without a second fixed character ceiling.
     let mut low = 0;
-    let mut high = MAX_REFERENCE_CHARS;
+    let mut high = token_budget.saturating_mul(3);
     while low < high {
         let size = (low + high).div_ceil(2);
         context.surrounding_source =
@@ -67,12 +61,7 @@ pub(crate) fn prompt_context_for_segment(
             context.terminology_rows.pop();
         }
     }
-    for turn in reference
-        .recent_turns
-        .iter()
-        .rev()
-        .filter(|turn| bounded_turn(turn))
-    {
+    for turn in reference.recent_turns.iter().rev() {
         context.recent_turns.push(turn.clone());
         if !within_budget(&context, token_budget) {
             context.recent_turns.pop();
@@ -159,21 +148,12 @@ fn excerpt(text: &str, max_chars: usize, tail: bool) -> String {
     }
 }
 
-fn bounded_turn(turn: &PromptTurn) -> bool {
-    turn.source_text
-        .chars()
-        .chain(turn.translated_text.chars())
-        .take(MAX_REFERENCE_CHARS + 1)
-        .count()
-        <= MAX_REFERENCE_CHARS
-}
-
 fn within_budget(context: &TranslationPromptContext, token_budget: usize) -> bool {
     let Some(reference) = context.reference_text_for_quality_checks() else {
         return true;
     };
     let rendered = format!("# Translation Context\n\n{reference}");
-    rendered.chars().count() <= MAX_REFERENCE_CHARS && estimated_tokens(&rendered) <= token_budget
+    estimated_tokens(&rendered) <= token_budget
 }
 
 fn render_term_row(term: &xr_corpus_protocol::CorpusPromptTerm) -> String {
@@ -254,6 +234,57 @@ mod tests {
             prompt_context_for_segment("zh", "en", &corpus, &reference, &segments, 0, budget);
         assert!(result.surrounding_source.is_some());
         assert!(within_budget(&result, 100));
+        assert_eq!(segments[0].translation_text, current);
+    }
+
+    #[test]
+    fn recent_history_uses_the_available_window_instead_of_a_character_ceiling() {
+        let current = "Translate this input.";
+        let segments = [TranslationSegmentPair {
+            source_text: current.into(),
+            translation_text: current.into(),
+        }];
+        let corpus = CorpusSegmentContext {
+            corrected_text: current.into(),
+            prompt_terms: Vec::new(),
+            source_corrections: Vec::new(),
+            activation_matches: Vec::new(),
+            context_matches: Vec::new(),
+        };
+        let reference = TranslationPromptContext {
+            recent_turns: (0..20)
+                .map(|index| xrtranslate_prompt::PromptTurn {
+                    turn_id: Some(index.to_string()),
+                    speaker_id: "text".into(),
+                    source_language: "en".into(),
+                    target_language: "zh".into(),
+                    source_text: "Earlier complete sentence. ".repeat(25),
+                    translated_text: "较早的完整句子。".repeat(25),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let select = |budget| {
+            prompt_context_for_segment("en", "zh", &corpus, &reference, &segments, 0, budget)
+        };
+        let small = select(700);
+        let large = select(4000);
+        assert!(!small.recent_turns.is_empty());
+        assert!(large.recent_turns.len() > small.recent_turns.len());
+        assert_eq!(
+            large.recent_turns.last().unwrap().turn_id.as_deref(),
+            Some("19")
+        );
+        assert!(
+            large
+                .reference_text_for_quality_checks()
+                .unwrap()
+                .chars()
+                .count()
+                > 1200
+        );
+        assert!(within_budget(&large, 4000 - estimated_tokens(current)));
+        assert!(select(estimated_tokens(current)).recent_turns.is_empty());
         assert_eq!(segments[0].translation_text, current);
     }
 }

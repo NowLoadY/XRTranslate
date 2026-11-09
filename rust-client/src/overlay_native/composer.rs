@@ -49,6 +49,7 @@ impl Composer {
             }));
         }
         let action = match response.inner {
+            Some(TextAction::ContextSettings) => Some(HostAction::ContextSettings),
             Some(TextAction::Translate { text, .. }) => Some(HostAction::Submit { text }),
             Some(TextAction::CollectRecognition { enabled, text }) => {
                 Some(HostAction::CollectRecognition { enabled, text })

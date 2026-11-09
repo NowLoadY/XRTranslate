@@ -3,10 +3,25 @@ use crate::{
     estimated_tokens,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub struct TextTranslationBudget {
+    pub input_tokens: usize,
+    pub output_tokens: u32,
+}
+
+impl TextTranslationBudget {
+    /// Short drafts keep a small allowance; longer drafts can use the reserved
+    /// output space without changing the model's realtime defaults.
+    pub fn output_limit(self, text: &str, minimum: u32) -> u32 {
+        let estimate = estimated_tokens(text).saturating_mul(2).saturating_add(64);
+        minimum
+            .max(u32::try_from(estimate).unwrap_or(u32::MAX))
+            .min(self.output_tokens)
+    }
+}
+
 impl PromptNodeGraph {
-    /// Estimated capacity for one complete text translation. Reserve the configured
-    /// output allowance and prompt overhead; the output limit also bounds the source
-    /// so a large context window does not imply an equally large possible translation.
+    /// Estimated capacity shared by the composer and text task segmentation.
     pub fn translation_input_budget(
         &self,
         profile: TranslationPromptProfile,
@@ -15,6 +30,21 @@ impl PromptNodeGraph {
         context_tokens: u32,
         output_tokens: u32,
     ) -> Result<usize, PromptGraphError> {
+        self.text_translation_budget(profile, source, target, context_tokens, output_tokens)
+            .map(|budget| budget.input_tokens)
+    }
+
+    /// Share the window between source/context and translation after reserving
+    /// the active prompt, including its style. A configured output allowance is
+    /// a floor, not a fixed input ceiling for longer text.
+    pub fn text_translation_budget(
+        &self,
+        profile: TranslationPromptProfile,
+        source: &str,
+        target: &str,
+        context_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<TextTranslationBudget, PromptGraphError> {
         let prompt = self.render(
             profile.target(),
             "x",
@@ -29,10 +59,14 @@ impl PromptNodeGraph {
             .sum::<usize>()
             .saturating_add(64)
             .max(256);
-        Ok((context_tokens as usize)
-            .saturating_sub(output_tokens as usize)
-            .saturating_sub(overhead)
-            .min(output_tokens as usize))
+        let available = (context_tokens as usize).saturating_sub(overhead);
+        let output_tokens = (output_tokens as usize)
+            .max(available.div_ceil(2))
+            .min(available);
+        Ok(TextTranslationBudget {
+            input_tokens: available - output_tokens,
+            output_tokens: output_tokens as u32,
+        })
     }
 }
 
@@ -41,11 +75,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capacity_reserves_output_and_respects_its_limit() {
+    fn capacity_grows_with_context_without_the_realtime_output_ceiling() {
         let graph = PromptNodeGraph::default();
         let budget = |context, output| {
             graph
-                .translation_input_budget(
+                .text_translation_budget(
                     TranslationPromptProfile::ChatMessages,
                     "English",
                     "Chinese",
@@ -54,8 +88,63 @@ mod tests {
                 )
                 .unwrap()
         };
-        assert_eq!(budget(8192, 1024), 1024);
-        assert!(budget(2048, 1024) <= 768);
-        assert_eq!(budget(256, 256), 0);
+        let original = budget(2048, 256);
+        let expanded = budget(4700, 256);
+        assert!(original.input_tokens > 256);
+        assert!(expanded.input_tokens > original.input_tokens);
+        assert!(budget(8192, 256).input_tokens > expanded.input_tokens);
+        assert!(expanded.output_tokens as usize >= expanded.input_tokens);
+        assert!(expanded.input_tokens + expanded.output_tokens as usize <= 4700 - 256);
+        assert!(budget(2048, 1024).input_tokens <= 768);
+        assert_eq!(budget(256, 256).input_tokens, 0);
+    }
+
+    #[test]
+    fn longer_requests_receive_the_output_space_reserved_by_the_input_budget() {
+        let graph = PromptNodeGraph::default();
+        let budget = graph
+            .text_translation_budget(
+                TranslationPromptProfile::ChatMessages,
+                "English",
+                "Chinese",
+                4700,
+                256,
+            )
+            .unwrap();
+        assert_eq!(budget.output_limit("Hello.", 256), 256);
+        assert!(budget.output_limit(&"word ".repeat(300), 256) > 256);
+        let full_input = "中".repeat(budget.input_tokens);
+        assert_eq!(budget.output_limit(&full_input, 256), budget.output_tokens);
+        assert_eq!(
+            graph
+                .translation_input_budget(
+                    TranslationPromptProfile::ChatMessages,
+                    "English",
+                    "Chinese",
+                    4700,
+                    256,
+                )
+                .unwrap(),
+            budget.input_tokens
+        );
+    }
+
+    #[test]
+    fn style_space_is_reserved_before_dividing_the_window() {
+        let mut graph = PromptNodeGraph::default();
+        let budget = |graph: &PromptNodeGraph| {
+            graph
+                .translation_input_budget(
+                    TranslationPromptProfile::ChatMessages,
+                    "English",
+                    "Chinese",
+                    4700,
+                    256,
+                )
+                .unwrap()
+        };
+        let plain = budget(&graph);
+        assert!(graph.set_style_text(&"Keep the original meaning. ".repeat(50)));
+        assert!(budget(&graph) < plain);
     }
 }

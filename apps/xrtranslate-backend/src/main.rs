@@ -541,11 +541,13 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         usize::from(model_plan.asr_runtime().parallel_slots),
         usize::from(model_plan.translation_runtime().parallel_slots),
     );
+    let contexts =
+        ContextRegistry::new(model_plan.translation_runtime().context_window_tokens as usize);
     let state = BackendState {
         config,
         model_plan,
         corpus_client,
-        contexts: ContextRegistry::default(),
+        contexts,
         project_root,
         onnx_runtime: Arc::new(tokio::sync::OnceCell::new()),
         audio_runtime: Arc::new(tokio::sync::OnceCell::new()),
@@ -2237,12 +2239,13 @@ async fn run_inference_worker(
                 };
                 let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let (asr_tokens, _) = inference.prompt_context_token_budgets();
-                let translation_tokens = match inference.text_input_budget(
+                let (inference, translation_tokens) = match inference.for_text_request(
                     &prompt_graph_for_turn,
                     &routed_source,
                     &routed_target,
+                    &job.text,
                 ) {
-                    Ok(budget) if budget > 0 => budget,
+                    Ok((request, budget)) if budget > 0 => (request, budget),
                     budget => {
                         let message = budget.err().map_or_else(
                             || "The translation prompt leaves no room for input text".to_owned(),

@@ -88,6 +88,7 @@ pub struct RecognitionInput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum TextAction {
+    ContextSettings,
     Clear,
     Copy,
     DismissCopy,

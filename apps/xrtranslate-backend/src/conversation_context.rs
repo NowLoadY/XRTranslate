@@ -3,14 +3,25 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, Weak},
 };
-use xrtranslate_prompt::{ContextFacts, PromptTurn, TaskContext, TranslationPromptContext};
+use xrtranslate_prompt::{
+    ContextFacts, PromptTurn, TaskContext, TranslationPromptContext, estimated_tokens,
+};
 
-const MAX_TURNS: usize = 32;
-const MAX_CHARACTERS: usize = 16_384;
+const MAX_PENDING_TURNS: usize = 64;
 
-#[derive(Clone, Default)]
-pub(crate) struct ContextRegistry(Arc<Mutex<Vec<(String, Weak<Mutex<History>>)>>>);
+#[derive(Clone)]
+pub(crate) struct ContextRegistry {
+    histories: Arc<Mutex<Vec<(String, Weak<Mutex<History>>)>>>,
+    token_budget: usize,
+}
 impl ContextRegistry {
+    pub(crate) fn new(token_budget: usize) -> Self {
+        Self {
+            histories: Default::default(),
+            token_budget,
+        }
+    }
+
     pub(crate) fn bind(&self, context: TaskContext) -> ContextBinding {
         match context {
             TaskContext::Snapshot { facts } => ContextBinding::Snapshot(facts),
@@ -23,14 +34,20 @@ impl ContextRegistry {
                     surrounding_source,
                     ..
                 } = seed;
-                let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
+                let mut scopes = self
+                    .histories
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 scopes.retain(|(_, memory)| memory.strong_count() > 0);
                 let memory = scopes
                     .iter()
                     .find(|(id, _)| id == &scope)
                     .and_then(|(_, memory)| memory.upgrade())
                     .unwrap_or_else(|| {
-                        let mut history = History::default();
+                        let mut history = History {
+                            token_budget: self.token_budget,
+                            ..Default::default()
+                        };
                         for (index, mut turn) in recent_turns.into_iter().enumerate() {
                             let id = format!("seed-{index}");
                             turn.turn_id = Some(id.clone());
@@ -61,6 +78,7 @@ impl Default for ContextBinding {
 }
 #[derive(Default)]
 pub(crate) struct History {
+    token_budget: usize,
     next_order: u64,
     observed: VecDeque<(String, u64)>,
     turns: Vec<(u64, u64, PromptTurn)>,
@@ -73,7 +91,7 @@ impl History {
         }
         self.observed.push_back((id.to_owned(), self.next_order));
         self.next_order += 1;
-        while self.observed.len() > MAX_TURNS * 2 {
+        while self.observed.len() > MAX_PENDING_TURNS {
             self.observed.pop_front();
         }
     }
@@ -105,15 +123,19 @@ impl History {
         if completed {
             self.surrounding_source = None;
         }
-        while self.turns.len() > MAX_TURNS
-            || self
+        // Keep complete recent turns according to the configured model window.
+        // A single long turn is retained; prompt selection decides whether it fits.
+        while self.turns.len() > 1
+            && self
                 .turns
                 .iter()
                 .map(|(_, _, turn)| {
-                    turn.source_text.chars().count() + turn.translated_text.chars().count()
+                    estimated_tokens(&turn.source_text)
+                        + estimated_tokens(&turn.translated_text)
+                        + 16
                 })
                 .sum::<usize>()
-                > MAX_CHARACTERS
+                > self.token_budget
         {
             self.turns.remove(0);
         }
@@ -329,7 +351,7 @@ mod tests {
     use super::*;
     #[test]
     fn snapshot_speaker_is_independent_of_neighboring_speakers() {
-        let registry = ContextRegistry::default();
+        let registry = ContextRegistry::new(8192);
         let context = registry.bind(TaskContext::snapshot(ContextFacts {
             current_speaker_id: "microphone/A".into(),
             surrounding_source: Some(xrtranslate_prompt::SurroundingSource {
@@ -361,8 +383,26 @@ mod tests {
         }
     }
     #[test]
+    fn conversation_retention_grows_with_the_model_window() {
+        let counts = [256, 8192].map(|budget| {
+            let registry = ContextRegistry::new(budget);
+            let context = registry.bind(TaskContext::conversation("typing"));
+            for index in 0..50 {
+                let id = index.to_string();
+                context.observe(&id);
+                context.record(turn(&id, "A complete recent sentence.", "zh"), 0);
+            }
+            let history = context.snapshot("next", "text", "en", "zh").recent_turns;
+            assert_eq!(history.last().unwrap().turn_id.as_deref(), Some("49"));
+            history.len()
+        });
+        assert!(counts[0] < counts[1]);
+        assert_eq!(counts[1], 50);
+    }
+
+    #[test]
     fn shared_lanes_keep_observation_order_and_latest_revision() {
-        let registry = ContextRegistry::default();
+        let registry = ContextRegistry::new(8192);
         let microphone = registry.bind(TaskContext::conversation("meeting"));
         let system = registry.bind(TaskContext::conversation("meeting"));
         microphone.observe("mic/1");
@@ -401,7 +441,7 @@ mod tests {
     }
     #[test]
     fn snapshots_and_other_scopes_never_inherit_dialogue() {
-        let registry = ContextRegistry::default();
+        let registry = ContextRegistry::new(8192);
         let live = registry.bind(TaskContext::conversation("live"));
         live.observe("one");
         live.record(turn("one", "hello", "zh"), 1);
@@ -438,7 +478,7 @@ mod tests {
     }
     #[test]
     fn conversation_seed_keeps_neighbors_without_reseeding_live_memory() {
-        let registry = ContextRegistry::default();
+        let registry = ContextRegistry::new(8192);
         let facts = ContextFacts {
             recent_turns: vec![turn("existing", "earlier", "zh")],
             surrounding_source: Some(xrtranslate_prompt::SurroundingSource {

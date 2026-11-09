@@ -140,6 +140,7 @@ pub fn render_bottom_input_bar(
         },
     );
     match action {
+        Some(TextAction::ContextSettings) => actions.push(super::OscUiAction::ContextSettings),
         Some(TextAction::Translate { text, .. }) => {
             // Route changes precede submission in the same frame. The host is
             // the source of truth for both this composer and Translation.

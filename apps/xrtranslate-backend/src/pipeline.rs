@@ -495,6 +495,7 @@ pub(crate) struct NativeInference {
     translation_supports_reference_context: bool,
     asr_max_output_tokens: u32,
     translation_max_output_tokens: u32,
+    translation_output_ceiling: u32,
     asr_context_window_tokens: u32,
     translation_context_window_tokens: u32,
     speaker: Option<SpeakerInferenceConfig>,
@@ -1102,6 +1103,7 @@ impl NativeInference {
                 .translation_supports_reference_context(),
             asr_max_output_tokens: model_plan.asr_runtime().max_tokens,
             translation_max_output_tokens: model_plan.translation_runtime().max_tokens,
+            translation_output_ceiling: u32::MAX,
             asr_context_window_tokens: model_plan.asr_runtime().context_window_tokens,
             translation_context_window_tokens: model_plan
                 .translation_runtime()
@@ -1162,19 +1164,27 @@ impl NativeInference {
         )
     }
 
-    pub(crate) fn text_input_budget(
+    pub(crate) fn for_text_request(
         &self,
         graph: &PromptNodeGraph,
         source: &str,
         target: &str,
-    ) -> Result<usize, xrtranslate_prompt::PromptGraphError> {
-        graph.translation_input_budget(
+        text: &str,
+    ) -> Result<(Self, usize), xrtranslate_prompt::PromptGraphError> {
+        let budget = graph.text_translation_budget(
             self.translation.prompt_profile(),
             source,
             target,
             self.translation_context_window_tokens,
             self.translation_max_output_tokens,
-        )
+        )?;
+        // Reuse the same adapters and scheduler; only this text request's output
+        // allowance changes. Audio sessions keep their configured limits.
+        let mut request = self.clone();
+        request.translation_max_output_tokens =
+            budget.output_limit(text, self.translation_max_output_tokens);
+        request.translation_output_ceiling = budget.output_tokens;
+        Ok((request, budget.input_tokens))
     }
 
     pub(crate) async fn transcribe_stream<F, Fut>(
@@ -1623,7 +1633,8 @@ impl NativeInference {
                         options.max_tokens = expanded_output_budget(
                             options.max_tokens,
                             options.context_window_tokens,
-                        );
+                        )
+                        .min(self.translation_output_ceiling);
                     }
                     warn!(
                         %error,

@@ -1,5 +1,6 @@
 //! Shared draft editing and submission intent; translation and delivery belong to the host.
 use crate::i18n::{UiLanguage, tr};
+use crate::ui::{animation::AnimationSystem, theme};
 use eframe::egui;
 use xrtranslate_engine::language::LanguageCapabilities;
 
@@ -38,6 +39,7 @@ pub struct ComposerContext<'a> {
 }
 
 pub enum TextAction {
+    ContextSettings,
     Copy,
     DismissCopy,
     CopyRecognition,
@@ -92,7 +94,18 @@ impl TextComposer {
         let mut edited = false;
         let editor_id = ui.make_persistent_id((id, "editor"));
         let enter = self.submit_key.pressed(ui.ctx(), editor_id);
+        let focused = ui.memory(|memory| memory.has_focus(editor_id));
+        let expansion = AnimationSystem::animate_bool(
+            ui.ctx(),
+            editor_id.with("expansion"),
+            focused,
+            theme::animation_timings(ui.ctx()).window_resize,
+        );
+        let expansion = AnimationSystem::ease_out_cubic(expansion);
+        let expanded_height = (ui.ctx().content_rect().height() * 0.22).clamp(96.0, 160.0);
+        let editor_height = egui::lerp(32.0..=expanded_height, expansion);
         let mut copy = false;
+        let mut context_settings = false;
         let mut submit = false;
         let compact = ui.available_width() < 600.0;
         let radius = if compact { 22 } else { 10 };
@@ -111,45 +124,22 @@ impl TextComposer {
             crate::ui::theme::border(),
             |ui| {
                 if self.mode == TextMode::Translate
-                    && (context.input_budget.is_some() || context.can_copy)
+                    && let Some(budget) = context.input_budget
                 {
-                    // Keep result actions inside the composer, clear of the editable text.
-                    let diameter = 32.0_f32.max(ui.spacing().interact_size.y);
-                    let height = if context.can_copy { diameter } else { 16.0 };
-                    let (header, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), height),
-                        egui::Sense::hover(),
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 16.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            context_settings = ui
+                                .link(
+                                    egui::RichText::new(tr(context.language, "Settings"))
+                                        .size(11.0),
+                                )
+                                .on_hover_text(tr(context.language, "Context length"))
+                                .clicked();
+                            context_indicator(ui, &self.text, budget, context.language);
+                        },
                     );
-                    if context.can_copy {
-                        let mut action_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .id_salt((id, "copy_translation"))
-                                .max_rect(egui::Rect::from_center_size(
-                                    header.center(),
-                                    egui::Vec2::splat(diameter),
-                                ))
-                                .layout(egui::Layout::top_down(egui::Align::Center)),
-                        );
-                        copy = super::action_button::floating_copy_button(
-                            &mut action_ui,
-                            tr(context.language, "Copy translation"),
-                        )
-                        .clicked();
-                    }
-                    if let Some(budget) = context.input_budget {
-                        let mut rect = header;
-                        if context.can_copy {
-                            rect.min.x = (header.center().x + diameter * 0.5 + 8.0).min(rect.max.x);
-                        }
-                        let mut indicator_ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .id_salt((id, "context_remaining"))
-                                .max_rect(rect)
-                                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                        );
-                        indicator_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-                        context_indicator(&mut indicator_ui, &self.text, budget, context.language);
-                    }
                 }
                 if context.allow_direct {
                     ui.horizontal_wrapped(|ui| {
@@ -189,8 +179,10 @@ impl TextComposer {
                         TextMode::Direct => context.direct_enabled,
                     };
                 let mut clicked = false;
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), editor_height),
+                    egui::Layout::right_to_left(egui::Align::Max),
+                    |ui| {
                         let label = if context.allow_direct {
                             "Send"
                         } else {
@@ -204,6 +196,13 @@ impl TextComposer {
                         .clicked();
                         if waiting {
                             ui.spinner();
+                        }
+                        if self.mode == TextMode::Translate && context.can_copy {
+                            copy = super::action_button::floating_copy_button(
+                                ui,
+                                tr(context.language, "Copy translation"),
+                            )
+                            .clicked();
                         }
                         if self.mode == TextMode::Translate
                             && let Some(input) = context.recognition
@@ -235,7 +234,8 @@ impl TextComposer {
                         }
                         egui::ScrollArea::vertical()
                             .id_salt((id, "draft_scroll"))
-                            .max_height(84.0)
+                            .min_scrolled_height(32.0)
+                            .max_height(editor_height)
                             .stick_to_bottom(collecting)
                             .show(ui, |ui| {
                                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -251,10 +251,12 @@ impl TextComposer {
                                             .desired_width(f32::INFINITY)
                                             .desired_rows(1)
                                             .font(egui::FontId::proportional(13.5))
-                                            .min_size(egui::vec2(0.0, 32.0))
-                                            .align(egui::Align2::LEFT_CENTER)
-                                            .frame(egui::Frame::NONE)
-                                            .margin(egui::Margin::symmetric(0, 2))
+                                            .min_size(egui::vec2(0.0, editor_height))
+                                            .align(egui::Align2::LEFT_TOP)
+                                            .frame(
+                                                egui::Frame::NONE
+                                                    .inner_margin(egui::Margin::symmetric(0, 8)),
+                                            )
                                             .hint_text(tr(context.language, hint)),
                                     );
                                     edited |= response.changed();
@@ -275,12 +277,14 @@ impl TextComposer {
                                     ));
                                 });
                             });
-                    });
-                });
+                    },
+                );
                 submit = (clicked || enter) && available && !self.text.trim().is_empty();
             },
         );
-        if toggle_collection {
+        if context_settings {
+            Some(TextAction::ContextSettings)
+        } else if toggle_collection {
             Some(TextAction::CollectRecognition {
                 enabled: !collecting,
                 text: self.text.clone(),
@@ -317,7 +321,7 @@ fn context_indicator(ui: &mut egui::Ui, text: &str, budget: usize, language: UiL
     } else {
         format!("{} · ≈{remaining}", tr(language, "Context remaining"))
     };
-    let response = ui.horizontal(|ui| {
+    let response = ui.scope(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
         let radius = 5.5;
         ui.painter().circle_stroke(
