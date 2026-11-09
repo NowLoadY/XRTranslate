@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 xrtranslate-plugin = { version = "0.1.0", features = ["egui"] }
 xrtranslate-client-core = { version = "0.4.0" }
 xrtranslate-prompt = { version = "0.4.0" }
-xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "a01af88f7d37263e50b2daa67ca742e353601a80" }
+xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "eeef3ef5783711b7558258bc5880f3deacb2980a" }
 eframe = "0.37.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

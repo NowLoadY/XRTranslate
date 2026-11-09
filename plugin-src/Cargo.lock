@@ -7418,7 +7418,7 @@ dependencies = [
 [[package]]
 name = "xrt-connector-core"
 version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=a01af88f7d37263e50b2daa67ca742e353601a80#a01af88f7d37263e50b2daa67ca742e353601a80"
+source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=eeef3ef5783711b7558258bc5880f3deacb2980a#eeef3ef5783711b7558258bc5880f3deacb2980a"
 dependencies = [
  "serde",
  "unicode-normalization",

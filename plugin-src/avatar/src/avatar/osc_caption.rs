@@ -66,7 +66,12 @@ impl Board {
             self.lease = WriteLease::new(self.layout.interval());
             // A send racing cancellation may already be on the wire. Preserve
             // its hold interval and rewrite that unknown chunk from fresh state.
-            self.ready_at = Instant::now() + self.layout.interval();
+            self.ready_at = Instant::now()
+                + if self.buffer.needs_clear() {
+                    Duration::ZERO
+                } else {
+                    self.layout.interval()
+                };
         }
     }
 
