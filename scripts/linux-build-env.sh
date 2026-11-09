@@ -96,8 +96,12 @@ prepare_linux_sherpa() {
   mkdir -p "${cache}"
   printf 'Downloading sherpa-onnx %s.\n' "${version}" >&2
   # curl supports SOCKS proxies; the crate's built-in downloader does not.
-  curl --fail --location --retry 3 --connect-timeout 15 --output "${archive}.part" \
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2" || return
+  if ! curl --fail --location --retry 3 --connect-timeout 15 --output "${archive}.part" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2"; then
+    command -v gh >/dev/null || return 1
+    gh release download "v${version}" --repo k2-fsa/sherpa-onnx \
+      --pattern "${name}.tar.bz2" --output "${archive}.part" --clobber || return
+  fi
   tar -tjf "${archive}.part" >/dev/null || return
   mv -- "${archive}.part" "${archive}"
 }
