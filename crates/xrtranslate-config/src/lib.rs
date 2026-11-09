@@ -1509,7 +1509,7 @@ impl ModelManagerConfig {
                 url: "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-win-x64.zip".into(),
                 target: Some("windows-x86_64".into()),
                 archive_format: Some(LlamaCppArchiveFormat::Zip),
-                archive_path: Some("XRTranslate-v0.2.11-win-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx".into()),
+                archive_path: Some(RuntimeLayout::SPEAKER_MODEL_PATH.into()),
             },
         ]
     }

@@ -424,7 +424,7 @@
       },
       {
         "archive_format": "zip",
-        "archive_path": "XRTranslate-v0.2.11-win-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
+        "archive_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
         "bytes": 121632051,
         "label": "3D-Speaker Diarization",
         "name": "speaker_embedding.onnx",

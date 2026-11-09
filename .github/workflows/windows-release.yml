@@ -113,6 +113,7 @@ jobs:
           key: windows-build-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.native-image }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'XR-Corpus/Cargo.lock', 'build_release.ps1') }}-${{ steps.source.outputs.commit }}
           restore-keys: |
             windows-build-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.native-image }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'XR-Corpus/Cargo.lock', 'build_release.ps1') }}-
+            windows-build-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.native-image }}-
 
       - name: Restore bundled models and extracted ONNX runtime
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -120,11 +121,19 @@ jobs:
           path: |
             models/silero-vad/src/silero_vad/data/silero_vad.onnx
             models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
+            .temp/runtime-assets/downloads/*.zip
             .temp/runtime-assets/onnxruntime/cpu/onnxruntime.dll
             .temp/runtime-assets/licenses/onnxruntime/LICENSE
             .temp/runtime-assets/licenses/onnxruntime/ThirdPartyNotices.txt
           # No fallback: changed resource definitions must fetch their corresponding assets.
           key: windows-resources-v1-${{ runner.arch }}-${{ hashFiles('build_release.ps1', 'config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**') }}
+
+      - name: Prepare pinned release resources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/prepare-release-cache.py --target windows-x86_64 --cache .temp/runtime-assets/downloads
+          if ($LASTEXITCODE -ne 0) { throw 'Release resource preparation failed.' }
 
       - name: Export the SDK and build plugin packages independently
         run: |
