@@ -15,7 +15,14 @@ pub(in crate::lyrics) struct Player {
     _apartment: Apartment,
 }
 
-struct Apartment;
+pub(crate) struct Apartment(std::marker::PhantomData<std::rc::Rc<()>>);
+impl Apartment {
+    pub(crate) fn new() -> Result<Self, String> {
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| error.to_string())?;
+        Ok(Self(std::marker::PhantomData))
+    }
+}
+
 impl Drop for Apartment {
     fn drop(&mut self) {
         unsafe { RoUninitialize() };
@@ -24,8 +31,7 @@ impl Drop for Apartment {
 
 impl Player {
     pub async fn new() -> Result<Self, String> {
-        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| error.to_string())?;
-        let apartment = Apartment;
+        let apartment = Apartment::new()?;
         let manager = Manager::RequestAsync()
             .map_err(|error| error.to_string())?
             .await

@@ -130,7 +130,7 @@ pub fn render_banner_selector(
     if !lyrics_available && banner.content_type == BannerContentType::Lyrics {
         ui.colored_label(
             crate::ui::theme::danger(),
-            crate::i18n::tr(language, "Install and enable the Lyrics plugin."),
+            crate::i18n::tr(language, "Lyrics unavailable. Check the plugin in Settings."),
         );
     }
 

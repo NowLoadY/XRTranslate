@@ -568,7 +568,10 @@ impl Host {
                         .into_iter()
                         .map(|event| (id.clone(), event)),
                 );
-                if let Some(error) = process.error() {
+                if let Some(mut error) = process.error() {
+                    if let Some(status) = process.exit_status() {
+                        error = format!("{error} ({status})");
+                    }
                     log::warn!("Plugin {id}: {error}");
                     entry.error = Some(error);
                     failed.push(id.clone());

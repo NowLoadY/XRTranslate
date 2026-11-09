@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::{Arc, Mutex, mpsc},
     thread::JoinHandle,
     time::Instant,
@@ -256,6 +256,9 @@ impl Process {
     }
     pub fn error(&self) -> Option<String> {
         self.state.lock().unwrap().error.clone()
+    }
+    pub fn exit_status(&mut self) -> Option<ExitStatus> {
+        self.child.try_wait().ok().flatten()
     }
 }
 impl Drop for Process {

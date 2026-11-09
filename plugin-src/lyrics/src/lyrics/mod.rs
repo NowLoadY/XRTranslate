@@ -11,6 +11,8 @@ use crate::LyricsText;
 use output::Lookup;
 pub(crate) use output::Status;
 use parking_lot::Mutex;
+#[cfg(windows)]
+pub(crate) use player::Apartment;
 use player::Playback;
 use std::{
     collections::BTreeMap,

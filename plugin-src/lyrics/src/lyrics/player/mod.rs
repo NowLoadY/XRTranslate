@@ -7,6 +7,8 @@ pub(super) use linux::Player;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub(crate) use windows::Apartment;
+#[cfg(windows)]
 pub(super) use windows::Player;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

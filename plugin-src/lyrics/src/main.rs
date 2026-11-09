@@ -90,8 +90,16 @@ impl Plugin for Lyrics {
 }
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    if let Err(error) = xrtranslate_plugin::serve(Lyrics::default()) {
+    if let Err(error) = run() {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }
+}
+
+fn run() -> std::result::Result<(), String> {
+    // WinRT factories are cached for the process lifetime. Keep the MTA alive
+    // across lyric worker restarts so its cached interfaces cannot be unloaded.
+    #[cfg(windows)]
+    let _apartment = lyrics::Apartment::new()?;
+    xrtranslate_plugin::serve(Lyrics::default())
 }

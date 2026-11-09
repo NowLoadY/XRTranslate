@@ -80,9 +80,7 @@ impl Host {
             ) {
                 entry.error = Some(error);
             }
-            if let Some(error) = &entry.error {
-                components::error_notice(ui, language, error);
-            }
+            plugin_error_notice(ui, language, entry);
             return Vec::new();
         }
         ui.heading(entry.manifest.title.get(locale(language)));
@@ -110,9 +108,7 @@ impl Host {
                 }
             }
         }
-        if let Some(error) = &entry.error {
-            components::error_notice(ui, language, error);
-        }
+        plugin_error_notice(ui, language, entry);
         contributions
     }
     pub fn settings(&mut self, ui: &mut egui::Ui, language: UiLanguage) {
@@ -138,9 +134,7 @@ impl Host {
                         enable = Some((id.clone(), enabled));
                     }
                 });
-                if let Some(error) = &entry.error {
-                    components::error_notice(ui, language, error);
-                }
+                plugin_error_notice(ui, language, entry);
                 if !entry.manifest.page
                     && let Some(process) = &entry.process
                 {
@@ -174,6 +168,15 @@ impl Host {
         if let Some(error) = &self.error {
             components::error_notice(ui, language, error);
         }
+    }
+}
+
+fn plugin_error_notice(ui: &mut egui::Ui, language: UiLanguage, entry: &Installed) {
+    if let Some(error) = &entry.error {
+        ui.push_id(&entry.manifest.id, |ui| {
+            let title = entry.manifest.title.get(locale(language));
+            components::error_notice(ui, language, &format!("{title}: {error}"));
+        });
     }
 }
 
