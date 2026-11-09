@@ -22,7 +22,6 @@ struct Entry {
     source: String,
     target: String,
     additional: Vec<String>,
-    speaker: String,
     audio_source: CaptureSource,
     is_typing: bool,
     live: bool,
@@ -57,7 +56,7 @@ impl State {
                         &entry.source,
                         &entry.target,
                         entry.additional.iter().map(String::as_str),
-                        &entry.speaker,
+                        "",
                         self.settings.format,
                     );
                     (!text.trim().is_empty()).then(|| DisplayMessage {
@@ -163,7 +162,6 @@ impl HostOutputSubscriber for DisplayOutput {
                 translated,
                 additional_translations,
                 asr_only,
-                speaker,
                 update,
                 ..
             } => {
@@ -206,7 +204,6 @@ impl HostOutputSubscriber for DisplayOutput {
                         .take(4)
                         .map(|translation| translation.translated_text.chars().take(1024).collect())
                         .collect(),
-                    speaker: speaker.chars().take(64).collect(),
                     audio_source,
                     is_typing,
                     live,
@@ -251,7 +248,6 @@ impl HostOutputSubscriber for DisplayOutput {
                             .take(1024)
                             .collect(),
                         additional: Vec::new(),
-                        speaker: String::new(),
                         audio_source: preview.audio_source,
                         is_typing,
                         live: true,
@@ -324,7 +320,7 @@ mod tests {
                     asr_only,
                     audio_source,
                     additional_translations: (&[][..]).into(),
-                    speaker: ("").into(),
+                    speaker: ("17").into(),
                     is_typing: false,
                     update: CaptionUpdate::Replace,
                 }
