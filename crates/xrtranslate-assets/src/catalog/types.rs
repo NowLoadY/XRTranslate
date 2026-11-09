@@ -391,6 +391,8 @@ pub struct ModelBenchmark {
 pub struct ModelAssetManifest {
     pub id: ModelAssetId,
     pub label: &'static str,
+    /// Application default, not the model's advertised maximum context window.
+    pub default_context_window_tokens: Option<u32>,
     pub capability: ModelCapability,
     pub level: ModelLevel,
     /// Explicit default within this provider, capability and size tier.

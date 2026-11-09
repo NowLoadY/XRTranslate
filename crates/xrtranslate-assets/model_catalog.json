@@ -1,6 +1,7 @@
 [
   {
     "id": "qwen3-asr-gguf",
+    "default_context_window_tokens": 4800,
     "rust_variant": "Qwen3AsrGguf",
     "const_name": "QWEN3_ASR_GGUF",
     "label": "Qwen3-ASR 1.7B · Q4_K_M",
@@ -92,6 +93,7 @@
   },
   {
     "id": "qwen3-asr-0.6b-q8-gguf",
+    "default_context_window_tokens": 4800,
     "rust_variant": "Qwen3Asr06bQ8Gguf",
     "const_name": "QWEN3_ASR_06B_Q8_GGUF",
     "label": "Qwen3-ASR 0.6B · Q8_0",
@@ -183,6 +185,7 @@
   },
   {
     "id": "confucius4-r2t2-q8-gguf",
+    "default_context_window_tokens": 4800,
     "rust_variant": "Confucius4R2t2Q8Gguf",
     "const_name": "CONFUCIUS4_R2T2_Q8_GGUF",
     "label": "Confucius4-R2T2 1.7B · Q8_0",
@@ -268,6 +271,7 @@
   },
   {
     "id": "sensevoice-small-int8-onnx",
+    "default_context_window_tokens": 4800,
     "rust_variant": "SenseVoiceSmallInt8Onnx",
     "const_name": "SENSEVOICE_SMALL_INT8_ONNX",
     "label": "SenseVoiceSmall · INT8 ONNX",
@@ -333,6 +337,7 @@
   },
   {
     "id": "bark3-int8-onnx",
+    "default_context_window_tokens": 4800,
     "rust_variant": "Bark3Int8Onnx",
     "const_name": "BARK3_INT8_ONNX",
     "label": "Bark 3.0 · INT8 ONNX",
@@ -421,6 +426,7 @@
   },
   {
     "id": "hy-mt2",
+    "default_context_window_tokens": 2048,
     "rust_variant": "HunyuanMtGguf",
     "const_name": "HUNYUAN_MT_GGUF",
     "label": "Hy-MT2 1.8B · Q4_K_M",
@@ -514,6 +520,7 @@
   },
   {
     "id": "hy-mt2-1.8b-q2-k",
+    "default_context_window_tokens": 2048,
     "rust_variant": "HunyuanMtQ2kGguf",
     "const_name": "HUNYUAN_MT_Q2K_GGUF",
     "label": "Hy-MT2 1.8B · Q2_K",
@@ -605,6 +612,7 @@
   },
   {
     "id": "hy-mt2-big",
+    "default_context_window_tokens": 2048,
     "rust_variant": "HunyuanMt7bGguf",
     "const_name": "HUNYUAN_MT_7B_GGUF",
     "label": "Hy-MT2 7B · Q4_K_M",
@@ -698,6 +706,7 @@
   },
   {
     "id": "haidass-translate-143m-q8-gguf",
+    "default_context_window_tokens": 2048,
     "rust_variant": "HaidassTranslate143mQ8Gguf",
     "const_name": "HAIDASS_TRANSLATE_143M_Q8_GGUF",
     "label": "Haidass Translate 143M · Q8_0",

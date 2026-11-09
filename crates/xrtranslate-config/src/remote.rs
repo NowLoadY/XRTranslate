@@ -120,11 +120,14 @@ pub fn apply_remote_defaults(document: &mut Value) {
                 continue;
             };
             for (key, value) in &service.defaults {
+                if key == "context_window_tokens" {
+                    continue;
+                }
                 // Follow the selected model when switching built-in protocols.
                 // Credentials and explicitly customized endpoints remain user-owned.
                 let inherited_route = matches!(
                     key.as_str(),
-                    "connector" | "url" | "context_window_tokens" | "max_tokens" | "parallel_slots"
+                    "connector" | "url" | "max_tokens" | "parallel_slots"
                 ) && services().any(|other| {
                     settings
                         .get(key)
@@ -159,6 +162,7 @@ pub fn apply_remote_defaults(document: &mut Value) {
             }
         }
     }
+    crate::context_window::migrate_context_windows(document);
 }
 
 fn fold_provider_alias(
@@ -176,7 +180,9 @@ fn fold_provider_alias(
     };
     if selected {
         for (key, value) in &service.defaults {
-            previous.entry(key.clone()).or_insert_with(|| value.clone());
+            if key != "context_window_tokens" {
+                previous.entry(key.clone()).or_insert_with(|| value.clone());
+            }
         }
         providers.insert(provider.to_owned(), Value::Object(previous));
         category["provider"] = provider.into();

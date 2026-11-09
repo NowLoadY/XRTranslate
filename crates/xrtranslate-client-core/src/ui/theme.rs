@@ -247,6 +247,19 @@ pub fn surface_control_active() -> Color32 {
     Color32::from_rgba_unmultiplied(199, 205, 205, 140)
 }
 
+pub fn floating_frame(radius: CornerRadius) -> egui::Frame {
+    egui::Frame::new()
+        .fill(Color32::from_white_alpha(96))
+        .stroke(Stroke::new(1.0, border()))
+        .corner_radius(radius)
+        .shadow(egui::Shadow {
+            offset: [0, 3],
+            blur: 12,
+            spread: 0,
+            color: Color32::from_black_alpha(18),
+        })
+}
+
 pub fn sidebar(focused: bool) -> Color32 {
     let alpha = if focused { 174 } else { 132 };
     Color32::from_rgba_unmultiplied(255, 255, 255, alpha)

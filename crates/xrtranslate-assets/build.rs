@@ -308,8 +308,12 @@ fn manifest(value: &Value, variant: &str) -> String {
     } else {
         format!("Some({})", number(parameters))
     };
+    let context = value.get("default_context_window_tokens").map_or_else(
+        || "None".to_owned(),
+        |value| format!("Some({})", number(value)),
+    );
     format!(
-        "ModelAssetManifest {{ id: ModelAssetId::{variant}, label: {}, capability: {capability}, level: {level}, tier_default: {}, estimated_vram_bytes: {}, parameters_millions: {parameters}, benchmark: {}, provider: {}, languages: {}, voice_presets: &[{presets}], hardware: ModelHardwareRequirements {{ accelerator: {}, minimum_memory_bytes: {} }}, audio_output: {}, runtime: {}, relative_directory: {}, required_files: &[{files}], source: {} }}",
+        "ModelAssetManifest {{ id: ModelAssetId::{variant}, label: {}, default_context_window_tokens: {context}, capability: {capability}, level: {level}, tier_default: {}, estimated_vram_bytes: {}, parameters_millions: {parameters}, benchmark: {}, provider: {}, languages: {}, voice_presets: &[{presets}], hardware: ModelHardwareRequirements {{ accelerator: {}, minimum_memory_bytes: {} }}, audio_output: {}, runtime: {}, relative_directory: {}, required_files: &[{files}], source: {} }}",
         string(field(value, "label")),
         boolean(field(value, "tier_default")),
         number(field(value, "estimated_vram_bytes")),

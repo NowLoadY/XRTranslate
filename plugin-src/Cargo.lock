@@ -7376,7 +7376,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-avatar"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "crossbeam-channel",
  "eframe",
@@ -7410,7 +7410,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-chilloutvr-osc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "xrt-osc",
 ]
@@ -7494,7 +7494,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-ocr"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde_json",
  "uuid",
@@ -7504,7 +7504,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-osc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "crossbeam-channel",
  "eframe",
@@ -7565,7 +7565,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-assets"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7579,7 +7579,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-client-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -7621,7 +7621,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-config"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7633,7 +7633,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-connections"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -7651,7 +7651,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-download"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "httpdate",
  "reqwest",
@@ -7661,7 +7661,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-engine"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "audioadapter-buffers",
  "rubato",
@@ -7670,7 +7670,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-http"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "regex",
  "reqwest",
@@ -7698,7 +7698,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-prompt"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7706,7 +7706,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-protocol"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",

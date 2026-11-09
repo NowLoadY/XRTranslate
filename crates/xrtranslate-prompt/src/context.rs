@@ -6,10 +6,12 @@ use crate::PromptMode;
 /// roughly three ASCII characters or one non-ASCII character per token.
 /// This is a heuristic, not a model-specific tokenizer.
 pub fn estimated_tokens(text: &str) -> usize {
-    text.chars()
-        .map(|character| if character.is_ascii() { 1 } else { 3 })
-        .sum::<usize>()
-        .div_ceil(3)
+    text.chars().map(token_weight).sum::<usize>().div_ceil(3)
+}
+
+/// Integer thirds of an estimated token, also used when packing text chunks.
+pub fn token_weight(character: char) -> usize {
+    if character.is_ascii() { 1 } else { 3 }
 }
 
 /// Provider-neutral facts available before speech recognition. The prompt

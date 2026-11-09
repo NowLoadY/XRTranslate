@@ -9,6 +9,56 @@ pub fn copy_button(ui: &mut Ui, label: &str) -> egui::Response {
     )
 }
 
+pub(super) fn recognition_input_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
+    let accent = if active {
+        theme::primary()
+    } else {
+        theme::text_normal()
+    };
+    icon_button_with_colors(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/microphone.svg"),
+        32.0,
+        [
+            if active {
+                theme::primary().gamma_multiply(0.12)
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            theme::primary(),
+            if active {
+                accent
+            } else {
+                theme::border().gamma_multiply(0.6)
+            },
+            accent,
+        ],
+    )
+}
+
+pub(super) fn floating_copy_button(ui: &mut Ui, label: &str) -> egui::Response {
+    let diameter = 32.0_f32.max(ui.spacing().interact_size.y);
+    theme::floating_frame(egui::CornerRadius::same((diameter * 0.5) as u8))
+        // The shared icon button paints the outline and focus feedback.
+        .stroke(egui::Stroke::NONE)
+        .show(ui, |ui| {
+            icon_button_with_colors(
+                ui,
+                label,
+                egui::include_image!("../../../resources/icons/copy.svg"),
+                diameter,
+                [
+                    egui::Color32::TRANSPARENT,
+                    theme::primary(),
+                    theme::border(),
+                    theme::text_normal(),
+                ],
+            )
+        })
+        .inner
+}
+
 pub fn edit_button(ui: &mut Ui, label: &str) -> egui::Response {
     action_button(
         ui,

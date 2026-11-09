@@ -54,7 +54,7 @@ struct TextTask {
     context: TaskContext,
     workload: Option<xrtranslate_protocol::InferenceWorkload>,
     connection: TextConnection,
-    started: Instant,
+    last_activity: Instant,
     segments: BTreeMap<u32, String>,
     segment_count: u32,
     terminal: bool,
@@ -163,7 +163,7 @@ impl TextTask {
                 )?;
             self.pending = None;
             self.connection.drained = false;
-            self.started = Instant::now();
+            self.last_activity = Instant::now();
         }
         Ok(())
     }
@@ -237,10 +237,11 @@ impl TextTranslation {
         self.tasks.iter().any(|task| !task.terminal)
     }
 
-    pub(crate) fn preparing_host(&self) -> bool {
-        self.tasks
-            .iter()
-            .any(|task| !task.terminal && task.pending.is_some() && task.scope.owner.is_host())
+    pub(crate) fn busy_host(&self) -> bool {
+        self.tasks.iter().any(|task| {
+            task.scope.owner.is_host()
+                && (!task.terminal || !task.scope.finished.load(Ordering::Acquire))
+        })
     }
 
     pub(crate) fn scopes(&self) -> impl Iterator<Item = &Arc<ChannelScope>> {
@@ -286,7 +287,7 @@ impl TextTranslation {
                     _ => {}
                 }
             }
-            if !task.connection.drained && task.started.elapsed() > Duration::from_secs(180) {
+            if !task.connection.drained && task.last_activity.elapsed() > Duration::from_secs(180) {
                 task.connection.close();
             }
         }
@@ -393,7 +394,7 @@ impl TextTranslation {
             context: task.context,
             workload: task.text_workload,
             connection: TextConnection::default(),
-            started: Instant::now(),
+            last_activity: Instant::now(),
             segments: BTreeMap::new(),
             segment_count: 0,
             terminal: false,
@@ -500,6 +501,7 @@ impl TextTranslation {
         }
         for task in self.tasks.iter_mut().filter(|task| !task.terminal) {
             while let Ok(event) = task.connection.rx.try_recv() {
+                task.last_activity = Instant::now();
                 match &event {
                     SessionEvent::Connected => {
                         task.emit(event, target);
@@ -545,7 +547,7 @@ impl TextTranslation {
                     break;
                 }
             }
-            if !task.terminal && task.started.elapsed() > Duration::from_secs(180) {
+            if !task.terminal && task.last_activity.elapsed() > Duration::from_secs(180) {
                 let error = if task.pending.is_some() {
                     "Text translation startup timed out"
                 } else {
@@ -821,6 +823,26 @@ mod tests {
         translator.reset();
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn completed_text_combines_chunks_in_source_order_and_rejects_failures() {
+        for failed in [false, true] {
+            let mut translator = TextTranslation::default();
+            translator.submit(speech_task(true)).unwrap();
+            let task = &mut translator.tasks[0];
+            task.segments.insert(2, "Second paragraph.".into());
+            task.segments.insert(1, "First paragraph.".into());
+            task.segment_count = 2;
+            task.terminal = true;
+            task.scope.finished.store(true, Ordering::Release);
+            task.scope.failed.store(failed, Ordering::Release);
+            translator.retire_finished();
+            assert_eq!(translator.completed.len(), usize::from(!failed));
+            if let Some(result) = translator.completed.pop_front() {
+                assert_eq!(result.translated, "First paragraph. Second paragraph.");
+            }
+        }
     }
 
     #[test]

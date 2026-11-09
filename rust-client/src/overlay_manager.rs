@@ -16,6 +16,7 @@ use crate::ui::components::avatar::Presentation;
 struct Snapshot {
     language: crate::i18n::UiLanguage,
     controls: OverlayControls,
+    composer: Option<crate::overlay_ipc::ComposerState>,
     subtitles: Option<OverlayState>,
     ocr: Option<OcrOverlayState>,
     companion: Presentation,
@@ -213,6 +214,13 @@ impl OverlayManager {
         }
     }
 
+    pub fn set_composer(&mut self, composer: crate::overlay_ipc::ComposerState) {
+        if self.snapshot.composer.as_ref() != Some(&composer) {
+            self.snapshot.composer = Some(composer);
+            self.publish();
+        }
+    }
+
     pub fn send_state(&mut self, state: &OverlayState) {
         if self.snapshot.subtitles.as_ref() != Some(state) {
             self.snapshot.subtitles = Some(state.clone());
@@ -261,6 +269,11 @@ impl Writer {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();
                 let commands = [
+                    (previous
+                        .as_ref()
+                        .is_none_or(|p| p.composer != state.composer))
+                    .then(|| state.composer.clone().map(OverlayCommand::Composer))
+                    .flatten(),
                     (previous.as_ref().is_none_or(|p| p.quick != state.quick))
                         .then(|| state.quick.clone().map(OverlayCommand::QuickTranslation))
                         .flatten(),

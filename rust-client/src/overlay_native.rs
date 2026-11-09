@@ -1,4 +1,5 @@
 //! Shared desktop surfaces: subtitles and a transparent screen-translation frame.
+mod composer;
 mod platform;
 mod quick;
 #[cfg(target_os = "linux")]
@@ -26,7 +27,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("XRTranslate Floating Window")
             .with_inner_size([460.0, 360.0])
-            .with_min_inner_size([360.0, 160.0])
+            .with_min_inner_size([360.0, 280.0])
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
@@ -130,6 +131,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 input,
                 language: UiLanguage::English,
                 controls: OverlayControls::default(),
+                composer: composer::Composer::default(),
                 subtitles: OverlayState {
                     font_size: 14,
                     max_items: 5,
@@ -159,6 +161,7 @@ struct OverlayWindow {
     input: platform::InputRegion,
     language: UiLanguage,
     controls: OverlayControls,
+    composer: composer::Composer,
     subtitles: OverlayState,
     ocr: Option<OcrOverlayState>,
     collapsed: bool,
@@ -713,6 +716,7 @@ impl eframe::App for OverlayWindow {
                     self.controls = controls;
                 }
                 OverlayCommand::Subtitles(state) => self.subtitles = state,
+                OverlayCommand::Composer(state) => self.composer.update(state),
                 OverlayCommand::Ocr(state) => self.ocr = state,
                 OverlayCommand::Companion(presentation) => self.companion.update(presentation),
                 OverlayCommand::QuickTranslation(state) => {
@@ -753,11 +757,16 @@ impl eframe::App for OverlayWindow {
                 regions.push((header, if collapsed { 8.0 } else { CORNER as f32 }));
                 anchor = header;
                 ui.add_space(GAP);
+                if !collapsed && let Some(rect) = self.composer.show(ui, self.language) {
+                    regions.push((rect.expand(3.0), 0.0));
+                    anchor = anchor.union(rect);
+                    ui.add_space(GAP);
+                }
                 if let Some(rect) =
                     recognition_area(ui, self.controls.ocr_enabled == Some(true), &mut regions)
                 {
                     selection = Some(rect.shrink(12.0));
-                    anchor = header.union(rect);
+                    anchor = anchor.union(rect);
                 }
             });
         let Some(window) = frame.winit_window() else {
@@ -792,19 +801,21 @@ impl eframe::App for OverlayWindow {
             }
         }
         // Windows clips painting as well as input to this region. Include only
-        // tooltips painted this pass, with their shadows, until they disappear.
-        let tooltips = ui.ctx().memory(|memory| {
+        // popups painted this pass, with their shadows, until they disappear.
+        let popups = ui.ctx().memory(|memory| {
             memory
                 .areas()
                 .visible_layer_ids()
                 .into_iter()
-                .filter(|layer| layer.order == egui::Order::Tooltip)
+                .filter(|layer| {
+                    matches!(layer.order, egui::Order::Tooltip | egui::Order::Foreground)
+                })
                 .filter_map(|layer| memory.area_rect(layer.id).map(|rect| (layer, rect)))
                 .collect::<Vec<_>>()
         });
         let shadow = ui.ctx().global_style().visuals.popup_shadow.margin();
         ui.ctx().graphics(|graphics| {
-            regions.extend(tooltips.into_iter().filter_map(|(layer, rect)| {
+            regions.extend(popups.into_iter().filter_map(|(layer, rect)| {
                 graphics
                     .get(layer)
                     .filter(|paint| !paint.is_empty())

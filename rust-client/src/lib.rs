@@ -69,6 +69,8 @@ mod screen_text_host;
 mod service_config;
 pub mod session_coordinator;
 pub use xrtranslate_client_core::streaming;
+mod text_collection;
+mod text_input;
 mod text_translation;
 mod translation_service;
 mod ui;
@@ -650,6 +652,8 @@ struct XRTranslateApp {
     ui_tools: ui_director::egui::tools::UiTools,
     director_audio: director_audio::AudioInput,
     text_composer: ui::components::text_composer::TextComposer,
+    text_result: Option<String>,
+    text_result_dismissed: bool,
     server_url: String,
     download_proxy_url: String,
     update_channel: client_settings::UpdateChannel,
@@ -728,6 +732,7 @@ struct AudioDeviceSnapshot {
 
 #[derive(Default)]
 struct SharedSessionState {
+    text_collection: text_collection::TextCollection,
     connection_status: String,
     history_timeline: history::FeedTimeline,
     partial_text: String,
@@ -1046,6 +1051,11 @@ impl Default for XRTranslateApp {
                         }
                     );
                     let results = scope.publish(&event, &result_subscribers);
+                    if scope.owner.is_host() && !scope.is_text && scope.publish_to_host_outputs {
+                        for result in &results {
+                            state.text_collection.observe(result);
+                        }
+                    }
                     if !scope.is_text
                         && matches!(
                             &event,
@@ -1784,6 +1794,8 @@ impl Default for XRTranslateApp {
             ui_tools: Default::default(),
             director_audio: Default::default(),
             text_composer: ui::components::text_composer::TextComposer::default(),
+            text_result: None,
+            text_result_dismissed: false,
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
             update_channel: settings.update_channel,
@@ -2716,6 +2728,7 @@ impl XRTranslateApp {
     fn render_text_composer(&mut self, ui: &mut egui::Ui) {
         use ui::components::text_composer::{ComposerContext, TextAction};
         let capabilities = self.language_capabilities().for_text();
+        let state = self.text_input_state();
         let action = self.text_composer.render(
             ui,
             "host_text_composer",
@@ -2723,21 +2736,31 @@ impl XRTranslateApp {
             ComposerContext {
                 language: self.ui_language,
                 capabilities,
-                preparing: self.text_translation.preparing_host(),
+                preparing: state.preparing,
+                input_budget: state.input_budget,
+                can_copy: state.can_copy,
+                recognition: state.recognition.as_ref(),
                 translation_enabled: true,
                 allow_direct: false,
                 direct_enabled: false,
                 show_languages: false,
             },
         );
-        if let Some(TextAction::Translate {
-            text,
-            source_lang,
-            target_lang,
-        }) = action
-            && self.submit_text_translation(&text, Some(source_lang), Some(target_lang), None)
-        {
-            self.text_composer.text.clear();
+        match action {
+            Some(TextAction::Translate {
+                text,
+                source_lang,
+                target_lang,
+            }) => {
+                self.submit_text_translation(&text, Some(source_lang), Some(target_lang), None);
+            }
+            Some(TextAction::Copy) => self.copy_text_translation(ui.ctx()),
+            Some(TextAction::DismissCopy) => self.dismiss_text_result(),
+            Some(TextAction::CopyRecognition) => self.copy_recognized_text(ui.ctx()),
+            Some(TextAction::CollectRecognition { enabled, text }) => {
+                self.collect_recognition(enabled, text);
+            }
+            _ => {}
         }
     }
 
@@ -4470,6 +4493,7 @@ impl XRTranslateApp {
         let Some(selection) = self.select_host_languages() else {
             return;
         };
+        self.dismiss_text_result();
         self.active_languages = Some(selection);
         self.save_settings();
         for task in self
@@ -4632,6 +4656,7 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn clear_history(&mut self) {
+        self.dismiss_text_result();
         self.history_timeline = Default::default();
         self.translations.clear();
         self.recognition_history.clear();
@@ -4691,11 +4716,17 @@ impl XRTranslateApp {
                 } else {
                     TaskContext::default()
                 };
-                self.start_translation_task(
+                let host = plugin.is_none();
+                let accepted = self.start_translation_task(
                     TranslationTask::text(trimmed.to_owned(), languages, plugin)
                         .with_context(context),
                     None,
-                )
+                );
+                if accepted && host {
+                    self.text_result = None;
+                    self.text_result_dismissed = false;
+                }
+                accepted
             }
             Err(error) => {
                 self.last_error = Some(error);
@@ -4733,6 +4764,7 @@ impl XRTranslateApp {
         self.cancel_text_tasks(None);
         if let Ok(mut state) = self.shared_session_state.lock() {
             state.translation_enabled = false;
+            state.text_collection.stop();
             for task in &self.audio_tasks {
                 for channel in &task.channels {
                     channel.scope.cancel(&self.session_event_subscribers);
@@ -4798,13 +4830,13 @@ impl XRTranslateApp {
         }
         for result in output.completed {
             self.companion_inbox.observe_error("text", None);
-            if result.owner.is_host() {
-                ctx.copy_text(result.translated);
+            if result.owner.is_host() && !self.text_result_dismissed {
+                self.text_result = Some(result.translated);
             }
         }
     }
 
-    fn poll_session_events(&mut self) {
+    fn poll_session_events(&mut self, ctx: &egui::Context) {
         for error in [self.osc_transport.take_error()].into_iter().flatten() {
             self.last_error = Some(error);
         }
@@ -4851,10 +4883,21 @@ impl XRTranslateApp {
                 })
             })
             .flatten();
+        let composer = self
+            .floating_subtitles_enabled
+            .then(|| overlay_ipc::ComposerState {
+                text: self.text_input_state(),
+                source_language: self.source_lang.clone(),
+                target_language: self.target_lang.clone(),
+                languages: self.language_capabilities().for_text(),
+            });
         let overlay_events = if let Ok(mut manager) = self.overlay_manager.lock() {
             if self.floating_subtitles_enabled {
                 manager.set_language(self.ui_language);
                 manager.set_controls(overlay_controls);
+                if let Some(composer) = composer {
+                    manager.set_composer(composer);
+                }
                 // Consume close/failure events before considering another launch.
                 let events = manager.poll_events();
                 if events.iter().any(|event| {
@@ -4905,6 +4948,11 @@ impl XRTranslateApp {
                 }
                 overlay_ipc::OverlayEvent::AutoInputEnabled(enabled) => {
                     self.set_auto_input_enabled(enabled);
+                }
+                overlay_ipc::OverlayEvent::Text(action) => {
+                    if let Err(error) = self.handle_text_action(action, ctx) {
+                        self.notifications.error("", &error);
+                    }
                 }
                 event => {
                     #[cfg(any(windows, target_os = "linux"))]
@@ -5141,7 +5189,7 @@ impl eframe::App for XRTranslateApp {
         if !self.first_run {
             self.poll_backend_startup(Some(ctx.clone()));
             self.poll_text_translation(ctx);
-            self.poll_session_events();
+            self.poll_session_events(ctx);
         }
         if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
             // Keep an existing companion reading queued errors while hidden.

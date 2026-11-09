@@ -352,6 +352,7 @@
     {
       "model": "qwen-plus",
       "connector": "openai-chat",
+      "default_context_window_tokens": 32768,
       "capabilities": {
         "supports_chat": true,
         "streaming": "delta",
@@ -382,6 +383,7 @@
     {
       "model": "gemini-3.5-flash-lite",
       "connector": "openai-audio-chat",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "asr_prompt_mode": "instruction",
         "reasoning_effort": "minimal"
@@ -408,6 +410,7 @@
     {
       "model": "tencent/Hunyuan-MT-7B",
       "connector": "openai-chat",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": false,
         "streaming": "delta",
@@ -417,6 +420,7 @@
     {
       "model": "gemini-3.5-flash-lite",
       "connector": "openai-chat",
+      "default_context_window_tokens": 32768,
       "capabilities": {
         "supports_chat": true,
         "supports_json_output": true,
@@ -428,6 +432,7 @@
     {
       "model": "qwen/qwen3.8-27b",
       "connector": "openai-chat",
+      "default_context_window_tokens": 4096,
       "capabilities": {
         "supports_chat": true,
         "streaming": "delta",
@@ -438,6 +443,7 @@
     {
       "model": "openrouter/free",
       "connector": "openai-chat",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": true,
         "streaming": "delta",
@@ -447,6 +453,7 @@
     {
       "model": "gpt-4o-transcribe",
       "connector": "openai-transcription",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "asr_prompt_mode": "context_bias"
       }
@@ -454,6 +461,7 @@
     {
       "model": "gpt-4o-mini-transcribe",
       "connector": "openai-transcription",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "asr_prompt_mode": "context_bias"
       }
@@ -461,6 +469,7 @@
     {
       "model": "whisper-1",
       "connector": "openai-transcription",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "asr_prompt_mode": "context_bias"
       }
@@ -468,11 +477,13 @@
     {
       "model": "gpt-4o-transcribe-diarize",
       "connector": "openai-transcription",
+      "default_context_window_tokens": 8192,
       "capabilities": {}
     },
     {
       "model": "gpt-4o-mini",
       "connector": "openai-chat",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": true,
         "streaming": "delta",
@@ -538,6 +549,7 @@
     {
       "model": "qwen-mt-flash",
       "connector": "dashscope-translation",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": false,
         "streaming": "delta",
@@ -547,6 +559,7 @@
     {
       "model": "qwen-mt-lite",
       "connector": "dashscope-translation",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": false,
         "streaming": "delta",
@@ -556,6 +569,7 @@
     {
       "model": "qwen-mt-plus",
       "connector": "dashscope-translation",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": false,
         "streaming": "cumulative",
@@ -565,6 +579,7 @@
     {
       "model": "qwen-mt-turbo",
       "connector": "dashscope-translation",
+      "default_context_window_tokens": 8192,
       "capabilities": {
         "supports_chat": false,
         "streaming": "cumulative",

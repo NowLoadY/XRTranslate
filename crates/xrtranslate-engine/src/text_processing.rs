@@ -337,6 +337,60 @@ pub fn translation_segment_pairs_for_text_with_lang(
         .collect()
 }
 
+/// Packs complete sentences into the largest fitting chunks. Only an oversized
+/// sentence falls back to word/character boundaries. Inner whitespace and wording
+/// are preserved; unlike recognition cleanup, typed text is not normalized.
+pub fn text_chunks<'a>(
+    text: &'a str,
+    budget: usize,
+    weight: impl Fn(char) -> usize,
+) -> Vec<&'a str> {
+    let text = text.trim();
+    if budget == 0 || text.is_empty() {
+        return Vec::new();
+    }
+    let endings = sentence_end_offsets(text);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut used = 0;
+        let mut limit = start;
+        let mut word_end = start;
+        for (offset, character) in text[start..].char_indices() {
+            used += weight(character);
+            if used > budget {
+                break;
+            }
+            limit = start + offset + character.len_utf8();
+            if character.is_whitespace() {
+                word_end = limit;
+            }
+        }
+        // Always make progress, even when the smallest unit exceeds the budget.
+        if limit == start {
+            limit += text[start..].chars().next().unwrap().len_utf8();
+        }
+        let end = if limit == text.len() {
+            limit
+        } else {
+            let index = endings.partition_point(|&end| end <= limit);
+            index
+                .checked_sub(1)
+                .map(|index| endings[index])
+                .filter(|&end| end > start)
+                .or((word_end > start).then_some(word_end))
+                .unwrap_or(limit)
+        };
+        let chunk = text[start..end].trim();
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+        start = end;
+        start += text[start..].len() - text[start..].trim_start().len();
+    }
+    chunks
+}
+
 /// Produces cleaned source strings supplied to the translation model for a given source language.
 pub fn translation_segments_for_text_with_lang(text: &str, source_lang: &str) -> Vec<String> {
     translation_segment_pairs_for_text_with_lang(text, source_lang)
@@ -1087,6 +1141,51 @@ fn merge_word_casing(w1: &str, w2: &str) -> String {
 #[cfg(test)]
 mod sentence_segmentation_tests {
     use super::translation_segment_pairs_for_text_with_lang;
+
+    #[test]
+    fn typed_text_stays_whole_until_it_exceeds_capacity() {
+        let text = "Well, keep my wording.\n\nAnd keep this paragraph!";
+        assert_eq!(
+            super::text_chunks(text, text.chars().count(), |_| 1),
+            [text]
+        );
+        // Live speech still uses its sentence boundaries.
+        assert_eq!(
+            translation_segment_pairs_for_text_with_lang(text, "en").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn text_chunks_pack_multiple_sentences_before_splitting() {
+        let text = "First sentence. Second sentence. Third sentence. Last sentence.";
+        assert_eq!(
+            super::text_chunks(text, 33, |_| 1),
+            [
+                "First sentence. Second sentence.",
+                "Third sentence. Last sentence."
+            ]
+        );
+        assert_eq!(
+            super::text_chunks("Value 3.14 is exact. Next.", 20, |_| 1),
+            ["Value 3.14 is exact.", "Next."]
+        );
+    }
+
+    #[test]
+    fn oversized_sentences_use_words_then_unicode_boundaries_without_loss() {
+        let words = "alpha beta gamma delta";
+        assert_eq!(
+            super::text_chunks(words, 11, |_| 1),
+            ["alpha beta", "gamma delta"]
+        );
+        let text = "这是没有标点的较长文字🙂再试一下";
+        let chunks = super::text_chunks(text, 12, |_| 3);
+        assert!(chunks.iter().all(|text| text.chars().count() <= 4));
+        assert_eq!(chunks.concat(), text);
+        assert!(super::text_chunks("", 12, |_| 1).is_empty());
+        assert!(super::text_chunks("text", 0, |_| 1).is_empty());
+    }
 
     #[test]
     fn standalone_words_are_not_mistaken_for_suffix_fragments() {

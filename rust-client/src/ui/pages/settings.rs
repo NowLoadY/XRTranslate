@@ -1,11 +1,13 @@
 use crate::ui::components::{self, SubNavItem, section, sub_sidebar};
 use eframe::egui;
 mod avatar;
+mod models;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum SettingsSection {
     #[default]
     GeneralAppearance,
+    Models,
     Plugins,
     BackendServer,
     Avatar,
@@ -31,6 +33,11 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             id: SettingsSection::GeneralAppearance,
             icon: "",
             label: crate::i18n::tr(app.ui_language, "General"),
+        },
+        SubNavItem {
+            id: SettingsSection::Models,
+            icon: "",
+            label: crate::i18n::tr(app.ui_language, "Models"),
         },
         SubNavItem {
             id: SettingsSection::Plugins,
@@ -64,6 +71,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             SettingsSection::GeneralAppearance => {
                                 render_general_appearance_section(app, ui);
                             }
+                            SettingsSection::Models => models::render(app, ui),
                             SettingsSection::Avatar => {
                                 if avatar::render(ui, &mut app.avatar_appearance, app.ui_language) {
                                     app.save_settings();

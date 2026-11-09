@@ -33,9 +33,7 @@ use tokio::{
 };
 use tracing::{Instrument, info, warn};
 use xrtranslate_config::{AppConfig, RuntimeLayout};
-use xrtranslate_engine::{
-    RevisableTranscript, RouteEpoch, translation_segment_pairs_for_text_with_lang,
-};
+use xrtranslate_engine::{RevisableTranscript, RouteEpoch};
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
 use xrtranslate_prompt::{AsrPromptContext, PromptExecutionTrace, PromptMode, PromptNodeGraph};
 use xrtranslate_protocol::{
@@ -2217,11 +2215,6 @@ async fn run_inference_worker(
                     additional_scope.close().await;
                 }
                 let job_queue_elapsed = job.enqueued_at.elapsed();
-                let (asr_tokens, translation_tokens) = inference.prompt_context_token_budgets();
-                let context_budgets = ContextBudgets {
-                    asr_tokens,
-                    translation_tokens,
-                };
                 let (routed_source, routed_target) = if job.translation_options.asr_only {
                     let source = if job.source_language == "auto" {
                         xrtranslate_engine::language::detect_text_language(&job.text)
@@ -2241,6 +2234,32 @@ async fn run_inference_worker(
                     (new_src.to_string(), new_tgt.to_string())
                 } else {
                     (job.source_language.clone(), job.target_language.clone())
+                };
+                let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
+                let (asr_tokens, _) = inference.prompt_context_token_budgets();
+                let translation_tokens = match inference.text_input_budget(
+                    &prompt_graph_for_turn,
+                    &routed_source,
+                    &routed_target,
+                ) {
+                    Ok(budget) if budget > 0 => budget,
+                    budget => {
+                        let message = budget.err().map_or_else(
+                            || "The translation prompt leaves no room for input text".to_owned(),
+                            |error| error.to_string(),
+                        );
+                        let _ = events
+                            .send(InferenceEvent::Error {
+                                generation: job.generation,
+                                message,
+                            })
+                            .await;
+                        continue;
+                    }
+                };
+                let context_budgets = ContextBudgets {
+                    asr_tokens,
+                    translation_tokens,
                 };
                 // Do not reconfigure adaptive_route here: routed_source is already resolved
                 // to a concrete language and passing it to configure() would clear adaptive state.
@@ -2268,8 +2287,17 @@ async fn run_inference_worker(
                         continue;
                     }
                 };
-                let segments =
-                    translation_segment_pairs_for_text_with_lang(&job.text, &routed_source);
+                let segments = xrtranslate_engine::text_processing::text_chunks(
+                    &job.text,
+                    translation_tokens.saturating_mul(3),
+                    xrtranslate_prompt::token_weight,
+                )
+                .into_iter()
+                .map(|text| xrtranslate_engine::TranslationSegmentPair {
+                    source_text: text.to_owned(),
+                    translation_text: text.to_owned(),
+                })
+                .collect();
                 let mut recognized = RecognizedOutput {
                     source_text: job.text.clone(),
                     segments,
@@ -2418,7 +2446,6 @@ async fn run_inference_worker(
                 let history_speaker_id = history_speaker;
                 let history_source_language = source_language.clone();
                 let history_target_language = target_language.clone();
-                let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let turn_id_for_end = job.turn_id.clone();
                 let asr_revision = job.revision;
                 let translation_events = events.clone();

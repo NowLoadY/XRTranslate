@@ -8,6 +8,9 @@ use eframe::egui;
 pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub preparing_text: bool,
+    pub text_input_budget: Option<usize>,
+    pub can_copy_text: bool,
+    pub recognition_input: Option<&'a xrtranslate_client_core::services::RecognitionInput>,
     pub microphone_sync_enabled: bool,
     pub lyrics_available: bool,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
@@ -20,6 +23,13 @@ pub struct OscPageContext<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum OscUiAction {
     ClearHostHistory,
+    CopyTranslation,
+    DismissTranslationCopy,
+    CopyRecognition,
+    CollectRecognition {
+        enabled: bool,
+        text: String,
+    },
     SetMicrophoneSyncEnabled(bool),
     SetSpeakerNumberVisible(bool),
     ApplySettings,

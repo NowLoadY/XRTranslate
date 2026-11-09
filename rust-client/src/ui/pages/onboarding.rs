@@ -89,16 +89,7 @@ pub fn render_onboarding_fullscreen(
                 return;
             }
             ui.set_width((page_rect.width() - 2.0 * margin as f32).min(720.0));
-            Frame::new()
-                .fill(Color32::from_white_alpha(96))
-                .stroke(Stroke::new(1.0, theme::border()))
-                .corner_radius(theme::container_radius(18))
-                .shadow(egui::Shadow {
-                    offset: [0, 3],
-                    blur: 12,
-                    spread: 0,
-                    color: Color32::from_black_alpha(18),
-                })
+            theme::floating_frame(theme::container_radius(18))
                 .inner_margin(Margin::symmetric(16, footer_margin_y))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());

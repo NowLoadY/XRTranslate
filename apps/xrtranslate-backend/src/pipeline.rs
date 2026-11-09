@@ -1162,6 +1162,21 @@ impl NativeInference {
         )
     }
 
+    pub(crate) fn text_input_budget(
+        &self,
+        graph: &PromptNodeGraph,
+        source: &str,
+        target: &str,
+    ) -> Result<usize, xrtranslate_prompt::PromptGraphError> {
+        graph.translation_input_budget(
+            self.translation.prompt_profile(),
+            source,
+            target,
+            self.translation_context_window_tokens,
+            self.translation_max_output_tokens,
+        )
+    }
+
     pub(crate) async fn transcribe_stream<F, Fut>(
         &self,
         audio: tokio::sync::mpsc::Receiver<Vec<u8>>,

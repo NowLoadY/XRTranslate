@@ -21,6 +21,7 @@ impl crate::XRTranslateApp {
                 }
                 "text.compose" => {
                     let capabilities = self.language_capabilities().for_text();
+                    let state = self.text_input_state();
                     let action = self.plugin_host.composer(id).render(
                         ui,
                         id.as_str(),
@@ -28,32 +29,45 @@ impl crate::XRTranslateApp {
                         ComposerContext {
                             language: self.ui_language,
                             capabilities,
-                            preparing: self.text_translation.preparing_host(),
+                            preparing: state.preparing,
+                            input_budget: state.input_budget,
+                            can_copy: state.can_copy,
+                            recognition: state.recognition.as_ref(),
                             translation_enabled: enabled,
                             allow_direct: true,
                             direct_enabled: enabled,
                             show_languages: true,
                         },
                     );
-                    let accepted = match action {
+                    match action {
                         Some(TextAction::Translate {
                             text,
                             source_lang,
                             target_lang,
-                        }) => self.submit_text_translation(
-                            &text,
-                            Some(source_lang),
-                            Some(target_lang),
-                            None,
-                        ),
-                        Some(TextAction::Direct(text)) => self
-                            .plugin_host
-                            .ui_action(id, json!({"id":"text.compose","value":text}))
-                            .is_ok(),
-                        None => false,
-                    };
-                    if accepted {
-                        self.plugin_host.composer(id).text.clear();
+                        }) => {
+                            self.submit_text_translation(
+                                &text,
+                                Some(source_lang),
+                                Some(target_lang),
+                                None,
+                            );
+                        }
+                        Some(TextAction::Direct(text)) => {
+                            if self
+                                .plugin_host
+                                .ui_action(id, json!({"id":"text.compose","value":text}))
+                                .is_ok()
+                            {
+                                self.plugin_host.composer(id).text.clear();
+                            }
+                        }
+                        Some(TextAction::Copy) => self.copy_text_translation(ui.ctx()),
+                        Some(TextAction::DismissCopy) => self.dismiss_text_result(),
+                        Some(TextAction::CopyRecognition) => self.copy_recognized_text(ui.ctx()),
+                        Some(TextAction::CollectRecognition { enabled, text }) => {
+                            self.collect_recognition(enabled, text);
+                        }
+                        None => {}
                     }
                 }
                 _ => {
@@ -340,7 +354,7 @@ impl crate::XRTranslateApp {
                 } if name == "text.action" => {
                     let result = serde_json::from_value(arguments)
                         .map_err(|e| e.to_string())
-                        .and_then(|action| self.plugin_text_action(action));
+                        .and_then(|action| self.handle_text_action(action, ctx));
                     self.plugin_host.reply(&plugin, id, result);
                 }
                 Message::Call {
@@ -456,7 +470,8 @@ impl crate::XRTranslateApp {
                     }
                 }
                 Message::Event { name, .. } if name == "ui.back" => {
-                    if matches!(self.navigation.page, crate::ui::Page::Plugin(id) if id.as_str() == plugin) {
+                    if matches!(self.navigation.page, crate::ui::Page::Plugin(id) if id.as_str() == plugin)
+                    {
                         self.navigation.back();
                         self.save_settings();
                     }
@@ -569,12 +584,7 @@ impl crate::XRTranslateApp {
             }),
         );
         let services = xrtranslate_client_core::services::Capabilities {
-            text: xrtranslate_client_core::services::TextState {
-                preparing: self.text_translation.preparing_host(),
-                asr_only: self.asr_only,
-                additional_target: self.additional_target_lang.clone(),
-                microphone_sync: self.microphone_sync_enabled,
-            },
+            text: self.text_input_state(),
             source_language: self.source_lang.clone(),
             target_language: self.target_lang.clone(),
             capture: self.capture_source,
@@ -753,42 +763,5 @@ impl crate::XRTranslateApp {
         self.audio_tasks.insert(index, task);
         self.release_unused_inputs();
         result
-    }
-}
-
-impl crate::XRTranslateApp {
-    fn plugin_text_action(
-        &mut self,
-        action: xrtranslate_client_core::services::TextAction,
-    ) -> xrtranslate_plugin::Result {
-        use xrtranslate_client_core::services::TextAction;
-        match action {
-            TextAction::Clear => self.clear_history(),
-            TextAction::Submit { text } => {
-                if !self.submit_text_translation(&text, None, None, None) {
-                    return Err("Text translation is unavailable".into());
-                }
-            }
-            TextAction::Language {
-                source,
-                target,
-                asr_only,
-            } => {
-                self.select_language_options(
-                    &source,
-                    &target,
-                    self.additional_target_lang.clone().as_deref(),
-                    asr_only,
-                )
-                .ok_or("Language route is unavailable")?;
-                self.source_lang = source;
-                self.target_lang = target;
-                self.asr_only = asr_only;
-                self.apply_language_route();
-            }
-            TextAction::MicrophoneSync { enabled } => self.set_microphone_sync_enabled(enabled),
-        }
-        self.refresh_plugin_context();
-        Ok(Value::Null)
     }
 }

@@ -42,6 +42,12 @@ impl App {
     fn action(&mut self, action: OscUiAction, context: &mut Context) -> Result<(), String> {
         let host_action = match action {
             OscUiAction::ClearHostHistory => Some(TextAction::Clear),
+            OscUiAction::CopyTranslation => Some(TextAction::Copy),
+            OscUiAction::DismissTranslationCopy => Some(TextAction::DismissCopy),
+            OscUiAction::CopyRecognition => Some(TextAction::CopyRecognition),
+            OscUiAction::CollectRecognition { enabled, text } => {
+                Some(TextAction::CollectRecognition { enabled, text })
+            }
             OscUiAction::SetMicrophoneSyncEnabled(enabled) => {
                 Some(TextAction::MicrophoneSync { enabled })
             }
@@ -253,9 +259,8 @@ impl Plugin for App {
         let output = self.output.as_mut()?;
         if let Some(result) = self.submit.as_ref().and_then(Request::poll) {
             self.submit = None;
-            match result {
-                Ok(_) => output.draft_input_mut().clear(),
-                Err(error) => Self::notice(context, error),
+            if let Err(error) = result {
+                Self::notice(context, error);
             }
         }
         if let Some(error) = output.manager().take_error()
@@ -289,6 +294,9 @@ impl surface::UiPlugin for App {
             OscPageContext {
                 language: services.language,
                 preparing_text: services.text.preparing || self.submit.is_some(),
+                text_input_budget: services.text.input_budget,
+                can_copy_text: services.text.can_copy && self.submit.is_none(),
+                recognition_input: services.text.recognition.as_ref(),
                 microphone_sync_enabled: services.text.microphone_sync,
                 lyrics_available: self.lyrics_available,
                 languages: services.languages,

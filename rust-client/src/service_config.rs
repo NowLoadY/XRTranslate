@@ -10,11 +10,15 @@ struct TextModelContract {
     supports_ask: bool,
     supports_chat: bool,
     input_budget: usize,
+    context_tokens: u32,
+    output_tokens: u32,
 }
 
 impl TextModelContract {
     fn resolve(provider: xrtranslate_config::NativeProviderConfig) -> Option<Self> {
         Some(Self {
+            context_tokens: provider.runtime.context_window_tokens,
+            output_tokens: provider.runtime.max_tokens,
             profile: provider.translation_prompt_profile().ok()?,
             supports_ask: provider.supports_ask().ok()?,
             supports_chat: provider.supports_chat().ok()?,
@@ -50,6 +54,14 @@ struct ServiceCategory {
     key: &'static str,
     selected_provider: String,
     providers: Vec<ProviderCard>,
+}
+
+pub(crate) struct ModelContextControl {
+    pub role: &'static str,
+    pub section: &'static str,
+    pub provider: String,
+    pub label: String,
+    pub window: xrtranslate_config::ModelContextWindow,
 }
 
 #[derive(Clone)]
@@ -104,6 +116,115 @@ pub struct ServiceConfigEditor {
 }
 
 impl ServiceConfigEditor {
+    pub(crate) fn model_contexts(&self) -> Vec<ModelContextControl> {
+        let mut controls = Vec::new();
+        let mut add = |role, section, provider: &str, settings: &Value| {
+            let Some(window) =
+                xrtranslate_config::model_context_window(section, provider, settings)
+            else {
+                return;
+            };
+            if controls.iter().any(|control: &ModelContextControl| {
+                control.section == section
+                    && control.provider == provider
+                    && control.window.model == window.model
+            }) {
+                return;
+            }
+            let label = xrtranslate_assets::ModelAssetId::from_config_key(&window.model)
+                .map(|id| xrtranslate_assets::manifest_for(id).label.to_owned())
+                .unwrap_or_else(|| window.model.clone());
+            controls.push(ModelContextControl {
+                role,
+                section,
+                provider: provider.to_owned(),
+                label,
+                window,
+            });
+        };
+        for (section, role) in [
+            ("asr", "Speech Recognition Model"),
+            ("translation", "Translation Model"),
+        ] {
+            if let Some(provider) = self.document[section]["provider"].as_str() {
+                add(
+                    role,
+                    section,
+                    provider,
+                    &self.document[section]["providers"][provider],
+                );
+            }
+        }
+        if let Some(selection) = self.agent_selection()
+            && let Some(config) = xrtranslate_config::AppConfig::from_value(self.document.clone())
+                .ok()
+                .and_then(|config| config.with_text_model(&selection).ok())
+        {
+            add(
+                "Agent",
+                "translation",
+                &selection.provider,
+                &config.raw["translation"]["providers"][&selection.provider],
+            );
+        }
+        controls
+    }
+
+    pub(crate) fn set_model_context(
+        &mut self,
+        control: &ModelContextControl,
+        value: Option<u32>,
+    ) -> Result<(), String> {
+        if !(control.window.minimum..=control.window.maximum)
+            .contains(&value.unwrap_or(control.window.default))
+        {
+            return Err("Context length is outside the supported range".into());
+        }
+        let provider = self
+            .categories
+            .iter_mut()
+            .find(|category| category.key == control.section)
+            .and_then(|category| {
+                category
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.name == control.provider)
+            })
+            .ok_or("Model provider is unavailable")?;
+        let mut overrides = provider
+            .fields
+            .iter()
+            .find(|field| field.name == "context_windows")
+            .map(|field| serde_json::from_str::<Map<String, Value>>(&field.value))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        match value.filter(|value| *value != control.window.default) {
+            Some(value) => {
+                overrides.insert(control.window.model.clone(), Value::from(value));
+            }
+            None => {
+                overrides.remove(&control.window.model);
+            }
+        }
+        let encoded = serde_json::to_string(&overrides).map_err(|error| error.to_string())?;
+        if let Some(field) = provider
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "context_windows")
+        {
+            field.value = encoded;
+        } else {
+            provider.fields.push(ConfigField {
+                name: "context_windows".into(),
+                value: encoded,
+                kind: JsonFieldKind::Json,
+            });
+        }
+        self.dirty = true;
+        self.save_draft()
+    }
+
     pub fn default_audio_preprocessing(&self) -> xrtranslate_protocol::AudioPreprocessing {
         if self
             .document
@@ -197,6 +318,24 @@ impl ServiceConfigEditor {
     pub(crate) fn agent_input_budget(&self) -> usize {
         self.agent_contract()
             .map_or(0, |contract| contract.input_budget)
+    }
+
+    pub(crate) fn translation_input_budget(
+        &self,
+        graph: &xrtranslate_prompt::PromptNodeGraph,
+        source: &str,
+        target: &str,
+    ) -> Option<usize> {
+        let contract = self.translation_contract()?;
+        graph
+            .translation_input_budget(
+                contract.profile,
+                source,
+                target,
+                contract.context_tokens,
+                contract.output_tokens,
+            )
+            .ok()
     }
 
     fn agent_contract(&self) -> Option<TextModelContract> {
@@ -1458,6 +1597,16 @@ mod tests {
         assert_eq!(state.model, "qwen-plus");
         assert!(editor.agent_available());
         assert!(editor.agent_input_budget() > 28_000);
+        let controls = editor.model_contexts();
+        assert_eq!(controls.len(), 3);
+        let agent = controls
+            .iter()
+            .find(|control| control.role == "Agent")
+            .unwrap();
+        assert_eq!(agent.window.model, "qwen-plus");
+        assert_eq!(agent.window.default, 32768);
+        assert_eq!(agent.window.minimum, 2048 + 128);
+        assert_eq!(editor.document["translation"], expected);
         editor.select_agent_model("qwen-mt-plus".into());
         assert_eq!(
             editor.onboarding_provider_state("agent").unwrap().model,
@@ -1466,5 +1615,6 @@ mod tests {
         editor.set_agent_follows_translation(true);
         assert!(!editor.agent_available());
         assert!(editor.document["agent"]["model"].is_null());
+        assert_eq!(editor.model_contexts().len(), 2);
     }
 }

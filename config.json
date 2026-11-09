@@ -9,7 +9,6 @@
       "openai": {},
       "qwen3-gguf": {
         "asr_prompt_mode": "context_bias",
-        "context_window_tokens": 4800,
         "max_tokens": 128,
         "model_asset": "qwen3-asr-gguf",
         "parallel_slots": 1,
@@ -477,7 +476,6 @@
     "providers": {
       "ChatGPT Account": {},
       "hunyuan": {
-        "context_window_tokens": 2048,
         "max_tokens": 256,
         "model": "Hy-MT2",
         "model_asset": "hy-mt2",

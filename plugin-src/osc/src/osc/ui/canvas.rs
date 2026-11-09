@@ -130,6 +130,9 @@ pub fn render_bottom_input_bar(
             language: context.language,
             capabilities: context.languages,
             preparing: context.preparing_text,
+            input_budget: context.text_input_budget,
+            can_copy: context.can_copy_text,
+            recognition: context.recognition_input,
             translation_enabled: true,
             allow_direct: true,
             direct_enabled: plugin.draft.enabled,
@@ -143,6 +146,12 @@ pub fn render_bottom_input_bar(
             actions.push(super::OscUiAction::TranslateInput { text });
         }
         Some(TextAction::Direct(text)) => actions.push(super::OscUiAction::DirectInput(text)),
+        Some(TextAction::Copy) => actions.push(super::OscUiAction::CopyTranslation),
+        Some(TextAction::DismissCopy) => actions.push(super::OscUiAction::DismissTranslationCopy),
+        Some(TextAction::CopyRecognition) => actions.push(super::OscUiAction::CopyRecognition),
+        Some(TextAction::CollectRecognition { enabled, text }) => {
+            actions.push(super::OscUiAction::CollectRecognition { enabled, text });
+        }
         None => {}
     }
 }

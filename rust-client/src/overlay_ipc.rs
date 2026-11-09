@@ -58,6 +58,14 @@ pub struct OverlayControls {
     pub auto_input_enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComposerState {
+    pub text: xrtranslate_client_core::services::TextState,
+    pub source_language: String,
+    pub target_language: String,
+    pub languages: xrtranslate_engine::language::LanguageCapabilities,
+}
+
 /// Screen coordinates use physical pixels, including negative monitor origins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayRegion {
@@ -71,6 +79,7 @@ pub struct OverlayRegion {
 pub enum OverlayCommand {
     Language(crate::i18n::UiLanguage),
     Controls(OverlayControls),
+    Composer(ComposerState),
     Subtitles(OverlayState),
     Ocr(Option<OcrOverlayState>),
     Companion(crate::ui::components::avatar::Presentation),
@@ -84,6 +93,7 @@ pub enum OverlayEvent {
     MicrophoneEnabled(bool),
     SystemAudioEnabled(bool),
     AutoInputEnabled(bool),
+    Text(xrtranslate_client_core::services::TextAction),
     CloseRequested,
     Failed(String),
     OcrEnabled(bool),

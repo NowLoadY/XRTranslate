@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+/// Conservative application baseline for models without a catalogue-specific default.
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 8_192;
+
 mod bundled;
 mod catalog;
 mod install;

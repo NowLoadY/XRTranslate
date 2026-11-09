@@ -206,6 +206,9 @@ pub struct TtsCapabilities {
 #[serde(deny_unknown_fields)]
 pub struct RemoteModelManifest {
     pub model: String,
+    /// Application default, kept separate from persistent user overrides.
+    #[serde(default)]
+    pub default_context_window_tokens: Option<u32>,
     /// A service-managed profile has a stable catalogue key, not a selectable
     /// upstream model version. Its connector must not send this key as a model ID.
     #[serde(default)]

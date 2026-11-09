@@ -6,10 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod context_window;
 mod language;
 mod models;
 mod remote;
 
+pub use context_window::{
+    ModelContextWindow, context_model_id, default_context_window, model_context_window,
+};
 pub use remote::{RemoteTtsConfig, apply_remote_defaults, release_config_document};
 pub use xrtranslate_assets::remote::AsrPromptMode;
 
@@ -401,6 +405,9 @@ fn load_user_config_document_with_legacy(
         source,
     })?;
     let mut document: Value = serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
+    // Normalize shipped legacy fields before overlaying user choices. A base
+    // model's context value must never migrate onto a newly selected model.
+    apply_remote_defaults(&mut document);
     let override_path = RuntimeLayout::user_config_path(&project_root);
     let migrate_from = legacy_path
         .as_ref()
@@ -691,26 +698,12 @@ impl AppConfig {
     /// the backend constructs the corresponding local or remote adapter.
     pub fn native_model_route(&self) -> Result<NativeModelRouteConfig, DefaultGgufValidationError> {
         let mut issues = Vec::new();
-        let asr = active_native_provider(
-            &self.asr.provider,
-            &self.asr.providers,
-            "asr",
-            LocalModelRuntimeConfig {
-                context_window_tokens: 2_048,
-                max_tokens: 128,
-                parallel_slots: 1,
-            },
-            &mut issues,
-        );
+        let asr =
+            active_native_provider(&self.asr.provider, &self.asr.providers, "asr", &mut issues);
         let translation = active_native_provider(
             &self.translation.provider,
             &self.translation.providers,
             "translation",
-            LocalModelRuntimeConfig {
-                context_window_tokens: 2_048,
-                max_tokens: 256,
-                parallel_slots: 2,
-            },
             &mut issues,
         );
         let llama_server_path = self.model_manager.llama_server_path.trim();
@@ -772,23 +765,15 @@ impl AppConfig {
         let asr_runtime = provider_runtime_config(
             &self.asr.providers,
             "qwen3-gguf",
+            "asr",
             "asr.providers.qwen3-gguf",
-            LocalModelRuntimeConfig {
-                context_window_tokens: 2_048,
-                max_tokens: 128,
-                parallel_slots: 1,
-            },
             &mut issues,
         );
         let translation_runtime = provider_runtime_config(
             &self.translation.providers,
             "hunyuan",
+            "translation",
             "translation.providers.hunyuan",
-            LocalModelRuntimeConfig {
-                context_window_tokens: 2_048,
-                max_tokens: 256,
-                parallel_slots: 2,
-            },
             &mut issues,
         );
 
@@ -1111,11 +1096,18 @@ impl Default for SpeakerConfig {
 fn provider_runtime_config(
     providers: &ProviderConfigs,
     provider: &str,
+    section: &str,
     path: &str,
-    defaults: LocalModelRuntimeConfig,
     issues: &mut Vec<String>,
 ) -> LocalModelRuntimeConfig {
-    let object = providers.get(provider).and_then(Value::as_object);
+    let settings = providers.get(provider).unwrap_or(&Value::Null);
+    let object = settings.as_object();
+    if settings
+        .get("context_windows")
+        .is_some_and(|value| !value.is_object())
+    {
+        issues.push(format!("{path}.context_windows must be an object"));
+    }
     // Online context capacity is independent of the local runtime's memory limit.
     let context_maximum = match object
         .and_then(|provider| provider.get("transport"))
@@ -1125,7 +1117,12 @@ fn provider_runtime_config(
         Some(_) => 1_048_576,
     };
     let mut value = |field: &str, default: u32, minimum: u32, maximum: u32| {
-        let Some(raw) = object.and_then(|provider| provider.get(field)) else {
+        let raw = if field == "context_window_tokens" {
+            context_window::context_window_override(settings)
+        } else {
+            object.and_then(|provider| provider.get(field))
+        };
+        let Some(raw) = raw else {
             return default;
         };
         let Some(raw) = raw.as_u64().and_then(|value| u32::try_from(value).ok()) else {
@@ -1143,12 +1140,22 @@ fn provider_runtime_config(
     let runtime = LocalModelRuntimeConfig {
         context_window_tokens: value(
             "context_window_tokens",
-            defaults.context_window_tokens,
+            default_context_window(section, provider, settings),
             256,
             context_maximum,
         ),
-        max_tokens: value("max_tokens", defaults.max_tokens, 16, 4_096),
-        parallel_slots: value("parallel_slots", u32::from(defaults.parallel_slots), 1, 16) as u16,
+        max_tokens: value(
+            "max_tokens",
+            if section == "asr" { 128 } else { 256 },
+            16,
+            4_096,
+        ),
+        parallel_slots: value(
+            "parallel_slots",
+            if section == "asr" { 1 } else { 2 },
+            1,
+            16,
+        ) as u16,
     };
     if runtime.max_tokens.saturating_add(128) > runtime.context_window_tokens {
         issues.push(format!(
@@ -1756,7 +1763,6 @@ fn active_native_provider(
     selected_provider: &str,
     providers: &ProviderConfigs,
     section: &str,
-    defaults: LocalModelRuntimeConfig,
     issues: &mut Vec<String>,
 ) -> Option<NativeProviderConfig> {
     let provider = selected_provider.trim();
@@ -1839,7 +1845,7 @@ fn active_native_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let runtime = provider_runtime_config(providers, provider, &path, defaults, issues);
+    let runtime = provider_runtime_config(providers, provider, section, &path, issues);
     let (connector, capabilities) = remote::resolve(section, object, &transport, &path, issues);
     let vocabulary_weight = object
         .and_then(|provider| provider.get("vocabulary_weight"))

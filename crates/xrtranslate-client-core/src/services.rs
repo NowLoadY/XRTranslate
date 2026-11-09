@@ -62,19 +62,40 @@ pub struct Capabilities {
     pub text: TextState,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TextState {
     pub preparing: bool,
     pub asr_only: bool,
     pub additional_target: Option<String>,
     pub microphone_sync: bool,
+    #[serde(default)]
+    pub input_budget: Option<usize>,
+    #[serde(default)]
+    pub can_copy: bool,
+    #[serde(default)]
+    pub recognition: Option<RecognitionInput>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecognitionInput {
+    pub active: bool,
+    pub revision: u64,
+    pub text: String,
+    pub can_copy: bool,
 }
 
 /// The same application actions used by the translation page.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum TextAction {
     Clear,
+    Copy,
+    DismissCopy,
+    CopyRecognition,
+    CollectRecognition {
+        enabled: bool,
+        text: String,
+    },
     Submit {
         text: String,
     },
