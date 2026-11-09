@@ -8,7 +8,7 @@ use crate::{
     ui::notifications::Notifications,
 };
 use eframe::egui;
-use xrtranslate_engine::language::{LanguageCapabilities, Script, SupportedLanguage};
+use xrtranslate_engine::language::{LanguageCapabilities, SupportedLanguage};
 
 #[derive(Clone, Copy)]
 pub(super) enum Step {
@@ -142,7 +142,7 @@ fn prompt(row: &Translation, step: Step) -> Option<String> {
     let target = SupportedLanguage::parse(&row.entry.target_lang)?;
     match step {
         Step::Sentence => Some(format!(
-            "Write one natural sentence in {} using <word> exactly, with the meaning of <meaning> ({}). Output only the sentence.\n\n<word>{}</word>\n<meaning>{}</meaning>",
+            "Write one natural sentence in {} using <word> naturally, adapting its form as needed, with the meaning of <meaning> ({}). Output only the sentence.\n\n<word>{}</word>\n<meaning>{}</meaning>",
             target.name(),
             source.name(),
             row.entry.translated,
@@ -188,10 +188,6 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
     let word = normalize(&entry.translated);
     let script =
         SupportedLanguage::parse(&entry.target_lang).and_then(|language| language.script());
-    let separate_words = matches!(
-        script,
-        Some(Script::Latin | Script::Cyrillic | Script::Devanagari)
-    );
     if word.is_empty()
         || text.chars().count() > 600
         || text.lines().filter(|line| !line.trim().is_empty()).count() > 1
@@ -210,14 +206,10 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
         .iter()
         .any(|marker| sentence.contains(marker))
         || xrtranslate_engine::sentence_end_offsets(text).len() > 1
-        || !sentence.match_indices(&word).any(|(at, _)| {
-            !separate_words
-                || (!sentence[..at].ends_with(char::is_alphabetic)
-                    && !sentence[at + word.len()..].starts_with(char::is_alphabetic))
-        })
     {
         return false;
     }
+    // Natural grammar can inflect or separate the words, so literal inclusion is not required.
     let rest = sentence.replace(&word, "");
     // The example must add language around the word, rather than merely echo it.
     if !rest.chars().any(char::is_alphabetic) {
@@ -299,6 +291,56 @@ mod tests {
                     .unwrap()
                     .starts_with(&format!("Translate this {language} sentence into Chinese."))
             );
+        }
+    }
+
+    #[test]
+    fn examples_allow_modifiers_and_inflections() {
+        for (target_lang, translated, sentence) in [
+            (
+                "en",
+                "a tutorial",
+                "I found a helpful tutorial online to learn how to cook pasta.",
+            ),
+            (
+                "en",
+                "a tutorial",
+                "These tutorials helped me learn to cook.",
+            ),
+            ("en", "study", "She studied biology at university."),
+            ("en", "go", "We went to the park yesterday."),
+            ("fr", "un cheval", "Les chevaux courent dans le champ."),
+            ("ja", "食べる", "昨日は友達と寿司を食べました。"),
+        ] {
+            let mut row = word();
+            row.entry.target_lang = target_lang.into();
+            row.entry.translated = translated.into();
+            assert!(
+                valid_sentence(sentence, &row.entry),
+                "{translated}: {sentence}"
+            );
+        }
+    }
+
+    #[test]
+    fn examples_still_reject_obviously_unusable_output() {
+        let mut row = word();
+        row.entry.target_lang = "en".into();
+        row.entry.translated = "a tutorial".into();
+        for text in [
+            "",
+            "...",
+            "A tutorial.",
+            "\"a tutorial\"",
+            "这是一个有用的教程。",
+            "这个 a tutorial 很有帮助。",
+            "<word>a tutorial</word>",
+            "Write one natural sentence using a tutorial.",
+            "Output only the sentence: I found a tutorial.",
+            "```I found a tutorial.```",
+            "I found a tutorial. It was helpful.",
+        ] {
+            assert!(!valid_sentence(text, &row.entry), "{text}");
         }
     }
 
