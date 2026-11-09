@@ -34,7 +34,8 @@ def main():
     config = json.loads((Path(__file__).resolve().parent.parent / 'config.json').read_text(encoding='utf-8'))
     manager = config['model_manager']
     if args.runtime_archive:
-        asset = next(a for a in manager['onnxruntime']['downloads']
+        runtime = manager['onnxruntime']
+        asset = next(a for a in runtime['downloads'] + runtime['cpu_downloads']
                      if a['name'] == args.runtime_archive and a['target'] == args.target)
         download(asset, args.cache / Path(asset['name']).name)
         return

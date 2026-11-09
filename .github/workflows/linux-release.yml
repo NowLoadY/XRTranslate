@@ -136,7 +136,9 @@ jobs:
       - name: Prepare pinned release resources
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache target/release-resources/linux-x86_64/downloads
+        run: |
+          python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache target/release-resources/linux-x86_64/downloads
+          python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache target/release-resources/linux-x86_64 --runtime-archive onnxruntime-linux-x64-1.28.0.tgz
 
       - name: Export the SDK and build plugin packages independently
         run: |
