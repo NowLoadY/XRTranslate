@@ -179,8 +179,12 @@ async fn prepare_resources(
         &ModelAssetsConfig::default().resolve_selected(output),
     )?;
     let client = DownloadClient::new("XRTranslate-build")?;
+    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let mut included = std::collections::HashSet::new();
     for asset in config.model_manager.resolved_bundled_models() {
+        if asset.target.as_deref().is_some_and(|value| value != target) {
+            continue;
+        }
         if !included.insert(asset.relative_path.clone()) {
             continue;
         }
