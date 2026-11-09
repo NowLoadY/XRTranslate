@@ -5,7 +5,9 @@ use crate::ui::{
 };
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
-pub use xrtranslate_client_core::ui::layout::selection_grid as grid;
+pub use xrtranslate_client_core::ui::layout::{
+    selection_grid as grid, selection_grid_contents as grid_contents,
+};
 
 pub struct SelectionCard<'a> {
     pub id: egui::Id,

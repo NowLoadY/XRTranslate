@@ -262,8 +262,34 @@ pub fn selection_grid(
     count: usize,
     height: f32,
     preferred_width: f32,
+    card: impl FnMut(&mut egui::Ui, usize, f32),
+) {
+    selection_grid_inner(ui, count, preferred_width, Some((id, height)), card);
+}
+
+/// Card rows inside a page-owned scroll area, sized by their actual contents.
+pub fn selection_grid_contents(
+    ui: &mut egui::Ui,
+    id: &str,
+    count: usize,
+    preferred_width: f32,
+    card: impl FnMut(&mut egui::Ui, usize, f32),
+) {
+    ui.push_id(id, |ui| {
+        selection_grid_inner(ui, count, preferred_width, None, card);
+    });
+}
+
+fn selection_grid_inner(
+    ui: &mut egui::Ui,
+    count: usize,
+    preferred_width: f32,
+    scroll: Option<(&str, f32)>,
     mut card: impl FnMut(&mut egui::Ui, usize, f32),
 ) {
+    if count == 0 {
+        return;
+    }
     let width = (ui.available_width() - 32.0).max(1.0);
     let gap = 24.0;
     let columns = (((width + gap) / preferred_width).floor() as usize).clamp(1, 4);
@@ -276,22 +302,25 @@ pub fn selection_grid(
     ui.add_space(24.0);
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = gap;
-        egui::ScrollArea::vertical().id_salt(id).show_rows(
-            ui,
-            height,
-            count.div_ceil(columns),
-            |ui, rows| {
-                for row in rows {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        ui.spacing_mut().item_spacing.y = inner_spacing;
-                        ui.add_space(left);
-                        for index in row * columns..((row + 1) * columns).min(count) {
-                            card(ui, index, card_width);
-                        }
-                    });
-                }
-            },
-        );
+        let mut render_rows = |ui: &mut egui::Ui, rows: std::ops::Range<usize>| {
+            for row in rows {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    ui.spacing_mut().item_spacing.y = inner_spacing;
+                    ui.add_space(left);
+                    for index in row * columns..((row + 1) * columns).min(count) {
+                        card(ui, index, card_width);
+                    }
+                });
+            }
+        };
+        let rows = count.div_ceil(columns);
+        if let Some((id, height)) = scroll {
+            egui::ScrollArea::vertical()
+                .id_salt(id)
+                .show_rows(ui, height, rows, render_rows);
+        } else {
+            render_rows(ui, 0..rows);
+        }
     });
 }

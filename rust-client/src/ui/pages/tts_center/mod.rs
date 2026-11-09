@@ -94,179 +94,186 @@ pub fn render(
         &mut controller.catalog.query,
         tr(language, "Search voices"),
     );
-    if !controller.status.preset_voices.is_empty() {
-        let mut selected = None;
-        let query = controller.catalog.query.trim().to_lowercase();
-        let voices: Vec<_> = controller
-            .status
-            .preset_voices
-            .iter()
-            .filter(|voice| {
-                query.is_empty()
-                    || voice.to_lowercase().contains(&query)
-                    || tr_dynamic(
-                        language,
-                        xrtranslate_assets::remote::preset_voice_label(voice),
-                    )
-                    .to_lowercase()
-                    .contains(&query)
-            })
-            .cloned()
-            .collect();
-        selection_card::grid(
-            ui,
-            "tts_presets",
-            voices.len(),
-            220.0,
-            280.0,
-            |ui, index, width| {
-                let voice = &voices[index];
-                let active = controller.status.ready
-                    && controller.status.selection.preset.as_ref() == Some(voice);
-                if selection_card::show(
+    egui::ScrollArea::vertical()
+        .id_salt("tts_voice_list")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if !controller.status.preset_voices.is_empty() {
+                let mut selected = None;
+                let query = controller.catalog.query.trim().to_lowercase();
+                let voices: Vec<_> = controller
+                    .status
+                    .preset_voices
+                    .iter()
+                    .filter(|voice| {
+                        query.is_empty()
+                            || voice.to_lowercase().contains(&query)
+                            || tr_dynamic(
+                                language,
+                                xrtranslate_assets::remote::preset_voice_label(voice),
+                            )
+                            .to_lowercase()
+                            .contains(&query)
+                    })
+                    .cloned()
+                    .collect();
+                selection_card::grid_contents(
                     ui,
-                    SelectionCard {
-                        id: egui::Id::unique(("tts_preset", voice)),
-                        title: tr_dynamic(
-                            language,
-                            xrtranslate_assets::remote::preset_voice_label(voice),
-                        )
-                        .as_ref(),
-                        avatar: voice,
-                        width,
-                        height: 200.0,
-                        selected: active,
-                        enabled: configured && !controller.busy(),
-                        action: tr(language, if active { "In use" } else { "Use voice" }),
-                    },
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            let playing = controller.previewing.as_deref()
-                                == Some(format!("preset:{voice}").as_str());
-                            if ui
-                                .add_enabled_ui(configured && !controller.busy(), |ui| {
-                                    components::icon_button(
-                                        ui,
-                                        tr(
-                                            language,
-                                            if playing { "Stop" } else { "Preview voice" },
-                                        ),
-                                        xrtranslate_client_core::ui::icon!("music.svg"),
-                                    )
-                                    .on_hover_text(preview::phrase(voice).1)
-                                })
-                                .inner
-                                .clicked()
-                            {
-                                action = Some(Action::PreviewPreset(voice.clone()));
-                            }
-                            if controller.requested_voice.as_ref() == Some(voice)
-                                && controller.busy()
-                            {
-                                ui.spinner();
-                            }
-                        });
-                    },
-                ) && !active
-                {
-                    selected = Some(voice.clone());
-                }
-            },
-        );
-        if let Some(voice) = selected {
-            controller.select_preset(voice);
-        }
-    }
-    if controller.status.supports_cloning {
-        ui.add_space(8.0);
-        controller.catalog.filter_if_changed(language);
-        let mut selected_id = None;
-        selection_card::grid(
-            ui,
-            "tts_voice_cards",
-            controller.catalog.visible.len(),
-            300.0,
-            280.0,
-            |ui, index, width| {
-                let card = &controller.catalog.cards[controller.catalog.visible[index]];
-                let reference = builtin(&card.id);
-                let requested = controller.requested_voice.as_deref() == Some(&card.id);
-                let preparing = requested && controller.busy();
-                let error = requested.then_some(controller.error.as_deref()).flatten();
-                let selected = configured
-                    && controller.status.ready
-                    && controller.status.selection.voice_id.as_deref() == Some(&card.id);
-                if selection_card::show(
-                    ui,
-                    SelectionCard {
-                        id: egui::Id::unique(("tts_voice", &card.id)),
-                        title: reference
-                            .map_or(card.name.as_str(), |voice| tr(language, voice.name)),
-                        avatar: &card.id,
-                        width,
-                        height: 300.0,
-                        selected,
-                        enabled: configured && !controller.busy(),
-                        action: tr(
-                            language,
-                            if preparing {
-                                "Creating voice…"
-                            } else if error.is_some() {
-                                "Retry"
-                            } else if selected {
-                                "In use"
-                            } else {
-                                "Use voice"
+                    "tts_presets",
+                    voices.len(),
+                    280.0,
+                    |ui, index, width| {
+                        let voice = &voices[index];
+                        let active = controller.status.ready
+                            && controller.status.selection.preset.as_ref() == Some(voice);
+                        if selection_card::show(
+                            ui,
+                            SelectionCard {
+                                id: egui::Id::unique(("tts_preset", voice)),
+                                title: tr_dynamic(
+                                    language,
+                                    xrtranslate_assets::remote::preset_voice_label(voice),
+                                )
+                                .as_ref(),
+                                avatar: voice,
+                                width,
+                                height: 200.0,
+                                selected: active,
+                                enabled: configured && !controller.busy(),
+                                action: tr(language, if active { "In use" } else { "Use voice" }),
                             },
-                        ),
-                    },
-                    |ui| {
-                        let description = reference.map_or(card.description.as_str(), |voice| {
-                            tr(language, voice.description)
-                        });
-                        ui.allocate_ui(egui::vec2(ui.available_width(), 64.0), |ui| {
-                            faded_scroll_text::show(
-                                ui,
-                                description,
-                                egui::FontId::proportional(13.0),
-                                ui.visuals().text_color(),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            let playing = controller.previewing.as_deref() == Some(&card.id);
-                            let label =
-                                tr(language, if playing { "Stop" } else { "Preview voice" });
-                            let preview = ui
-                                .add_enabled_ui(!controller.catalog.busy(), |ui| {
-                                    components::icon_button(
-                                        ui,
-                                        label,
-                                        xrtranslate_client_core::ui::icon!("music.svg"),
-                                    )
-                                })
-                                .inner;
-                            if preview.clicked() {
-                                action = Some(Action::Preview(card.id.clone()));
-                            }
-                            ui.weak(format!("{:.1} s", card.duration_ms as f64 / 1000.0));
-                            if preparing {
-                                ui.spinner();
-                            }
-                        });
-                        if let Some(reference) = reference {
-                            ui.hyperlink_to(reference.credit, reference.source_url);
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    let playing = controller.previewing.as_deref()
+                                        == Some(format!("preset:{voice}").as_str());
+                                    if ui
+                                        .add_enabled_ui(configured && !controller.busy(), |ui| {
+                                            components::icon_button(
+                                                ui,
+                                                tr(
+                                                    language,
+                                                    if playing { "Stop" } else { "Preview voice" },
+                                                ),
+                                                xrtranslate_client_core::ui::icon!("music.svg"),
+                                            )
+                                            .on_hover_text(preview::phrase(voice).1)
+                                        })
+                                        .inner
+                                        .clicked()
+                                    {
+                                        action = Some(Action::PreviewPreset(voice.clone()));
+                                    }
+                                    if controller.requested_voice.as_ref() == Some(voice)
+                                        && controller.busy()
+                                    {
+                                        ui.spinner();
+                                    }
+                                });
+                            },
+                        ) && !active
+                        {
+                            selected = Some(voice.clone());
                         }
                     },
-                ) && !selected
-                {
-                    selected_id = Some(card.id.clone());
+                );
+                if let Some(voice) = selected {
+                    controller.select_preset(voice);
                 }
-            },
-        );
-        if let Some(id) = selected_id {
-            controller.select(Some(id));
-        }
-    }
+            }
+            if controller.status.supports_cloning {
+                ui.add_space(8.0);
+                controller.catalog.filter_if_changed(language);
+                let mut selected_id = None;
+                selection_card::grid_contents(
+                    ui,
+                    "tts_voice_cards",
+                    controller.catalog.visible.len(),
+                    280.0,
+                    |ui, index, width| {
+                        let card = &controller.catalog.cards[controller.catalog.visible[index]];
+                        let reference = builtin(&card.id);
+                        let requested = controller.requested_voice.as_deref() == Some(&card.id);
+                        let preparing = requested && controller.busy();
+                        let error = requested.then_some(controller.error.as_deref()).flatten();
+                        let selected = configured
+                            && controller.status.ready
+                            && controller.status.selection.voice_id.as_deref() == Some(&card.id);
+                        if selection_card::show(
+                            ui,
+                            SelectionCard {
+                                id: egui::Id::unique(("tts_voice", &card.id)),
+                                title: reference
+                                    .map_or(card.name.as_str(), |voice| tr(language, voice.name)),
+                                avatar: &card.id,
+                                width,
+                                height: 300.0,
+                                selected,
+                                enabled: configured && !controller.busy(),
+                                action: tr(
+                                    language,
+                                    if preparing {
+                                        "Creating voice…"
+                                    } else if error.is_some() {
+                                        "Retry"
+                                    } else if selected {
+                                        "In use"
+                                    } else {
+                                        "Use voice"
+                                    },
+                                ),
+                            },
+                            |ui| {
+                                let description = reference
+                                    .map_or(card.description.as_str(), |voice| {
+                                        tr(language, voice.description)
+                                    });
+                                ui.allocate_ui(egui::vec2(ui.available_width(), 64.0), |ui| {
+                                    faded_scroll_text::show(
+                                        ui,
+                                        description,
+                                        egui::FontId::proportional(13.0),
+                                        ui.visuals().text_color(),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    let playing =
+                                        controller.previewing.as_deref() == Some(&card.id);
+                                    let label = tr(
+                                        language,
+                                        if playing { "Stop" } else { "Preview voice" },
+                                    );
+                                    let preview = ui
+                                        .add_enabled_ui(!controller.catalog.busy(), |ui| {
+                                            components::icon_button(
+                                                ui,
+                                                label,
+                                                xrtranslate_client_core::ui::icon!("music.svg"),
+                                            )
+                                        })
+                                        .inner;
+                                    if preview.clicked() {
+                                        action = Some(Action::Preview(card.id.clone()));
+                                    }
+                                    ui.weak(format!("{:.1} s", card.duration_ms as f64 / 1000.0));
+                                    if preparing {
+                                        ui.spinner();
+                                    }
+                                });
+                                if let Some(reference) = reference {
+                                    ui.hyperlink_to(reference.credit, reference.source_url);
+                                }
+                            },
+                        ) && !selected
+                        {
+                            selected_id = Some(card.id.clone());
+                        }
+                    },
+                );
+                if let Some(id) = selected_id {
+                    controller.select(Some(id));
+                }
+            }
+        });
     let busy = controller.busy() || controller.catalog.busy();
     if controller.status.supports_cloning
         && let Some(draft) = &mut controller.draft
