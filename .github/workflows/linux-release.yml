@@ -138,8 +138,6 @@ jobs:
           bash plugin-src/build.sh "$RUNNER_TEMP/xrtranslate-sdk" "$RUNNER_TEMP/xrtranslate-plugins" --target-dir "$GITHUB_WORKSPACE/target" --locked
 
       - name: Build the standard Linux release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export XRTRANSLATE_RELEASE_DIR="$GITHUB_WORKSPACE/dist/$PACKAGE_NAME"

@@ -62,6 +62,8 @@ if ($Release) {
 }
 
 Write-Host 'Preparing the application...'
+. (Join-Path $projectRoot 'scripts/windows-build-env.ps1')
+Initialize-WindowsSpeechLibraries -ProjectRoot $projectRoot
 & $cargo @buildArguments
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

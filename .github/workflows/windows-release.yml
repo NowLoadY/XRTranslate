@@ -135,20 +135,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'SDK export failed.' }
           & .\plugin-src\build.ps1 -Sdk $sdk -Output "$env:RUNNER_TEMP\xrtranslate-plugins" -TargetDirectory "$env:GITHUB_WORKSPACE\target" -Locked
 
-      - name: Prepare native speech libraries
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $lock = Get-Content Cargo.lock -Raw
-          $match = [regex]::Match($lock, '(?m)^name = "sherpa-onnx-sys"\r?\nversion = "([^"]+)"')
-          if (-not $match.Success) { throw 'Cannot determine the locked speech library version.' }
-          $version = $match.Groups[1].Value
-          $cache = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-prebuilt'
-          New-Item -ItemType Directory -Force -Path $cache | Out-Null
-          & gh release download "v$version" --repo k2-fsa/sherpa-onnx --pattern "sherpa-onnx-v$version-win-x64-static-MT-Release-lib.tar.bz2" --dir $cache --skip-existing
-          if ($LASTEXITCODE -ne 0) { throw 'Native speech library download failed.' }
-          "SHERPA_ONNX_ARCHIVE_DIR=$cache" >> $env:GITHUB_ENV
-
       - name: Build the standard Windows package
         run: |
           & .\build_release.ps1 -Output "dist\$env:PACKAGE_NAME" -PluginsDirectory "$env:RUNNER_TEMP\xrtranslate-plugins"

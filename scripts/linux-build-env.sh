@@ -80,7 +80,7 @@ prepare_linux_sherpa() {
   if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" || -n "${SHERPA_ONNX_ARCHIVE_DIR:-}" ]]; then
     return 0
   fi
-  local root="$1" version arch name cache archive
+  local root="$1" version arch name archive
   version="$(awk '$0 == "name = \"sherpa-onnx-sys\"" {found=1; next}
     found && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' "${root}/Cargo.lock")"
   [[ -n "${version}" ]] || { printf '%s\n' 'sherpa-onnx-sys is missing from Cargo.lock.' >&2; return 1; }
@@ -90,18 +90,10 @@ prepare_linux_sherpa() {
     *) return 0 ;; # Let the crate report unsupported targets.
   esac
   name="sherpa-onnx-v${version}-linux-${arch}-static-lib"
-  cache="${root}/target/sherpa-onnx-prebuilt"
-  archive="${cache}/${name}.tar.bz2"
-  if [[ -d "${cache}/${name}/lib" || -f "${archive}" ]]; then return 0; fi
-  mkdir -p "${cache}"
-  printf 'Downloading sherpa-onnx %s.\n' "${version}" >&2
-  # curl supports SOCKS proxies; the crate's built-in downloader does not.
-  if ! curl --fail --location --retry 3 --connect-timeout 15 --output "${archive}.part" \
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2"; then
-    command -v gh >/dev/null || return 1
-    gh release download "v${version}" --repo k2-fsa/sherpa-onnx \
-      --pattern "${name}.tar.bz2" --output "${archive}.part" --clobber || return
+  archive="${root}/third_party/sherpa-onnx/${name}.tar.bz2"
+  if [[ ! -f "${archive}" ]]; then
+    printf 'Missing bundled speech libraries. Restore this file from the repository: %s\n' "${archive}" >&2
+    return 1
   fi
-  tar -tjf "${archive}.part" >/dev/null || return
-  mv -- "${archive}.part" "${archive}"
+  export SHERPA_ONNX_ARCHIVE_DIR="${root}/third_party/sherpa-onnx"
 }

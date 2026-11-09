@@ -132,6 +132,8 @@ $VcRuntimeDirectory = Resolve-VcRuntimeDirectory -Directory $VcRuntimeDirectory
 Write-Host "Using app-local Visual C++ runtime from redistributable files: $VcRuntimeDirectory"
 
 if (-not $ValidateOnly) {
+    . (Join-Path $projectRoot 'scripts/windows-build-env.ps1')
+    Initialize-WindowsSpeechLibraries -ProjectRoot $projectRoot
     $buildArguments = @(
         'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
         '--package', 'rust-client',

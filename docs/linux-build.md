@@ -39,10 +39,8 @@ checkout without local submodule work, run `git submodule update --init XR-Corpu
 after pulling. Preserve any local submodule work before deliberately switching
 revisions. For a fresh clone, use `git clone --recurse-submodules`.
 
-The scripts download Sherpa's official native libraries with curl, using the
-version resolved in `Cargo.lock` and the current proxy settings. They share the
-crate's `target/sherpa-onnx-prebuilt/` cache. `cargo clean` removes this cache, so
-the next build downloads it again; Cargo's source cache remains available.
+The required speech libraries are included in `third_party/sherpa-onnx`.
+Clearing the build cache does not require downloading them again.
 Set `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` to supply matching local
 libraries or an official archive instead.
 

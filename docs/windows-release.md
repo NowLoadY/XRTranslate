@@ -28,6 +28,10 @@ files, matching previous Windows releases. It uploads this ZIP using GitHub's
 automatic workflow token. It does not create a Release or edit its title,
 notes, or other platform assets.
 
+The required speech libraries are included in `third_party/sherpa-onnx` and
+are also used by the source launcher. Clearing the build cache does not
+require downloading them again.
+
 Before uploading, the Windows job runs the packaged backend, installer and
 updater with `--version`, starts the packaged XR-Corpus service, and checks its
 health/version and seeded vocabulary graph through local HTTP requests. The
