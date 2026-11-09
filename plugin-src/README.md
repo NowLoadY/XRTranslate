@@ -1,8 +1,8 @@
 # XRTranslate plugins
 
 This is an independent Cargo workspace. It can be kept in its own repository or
-copied outside the XRTranslate checkout without changing its source paths. The
-host's workspace and build scripts do not compile these packages.
+copied outside the XRTranslate checkout without changing its source paths.
+Regular host builds do not compile these packages.
 
 Download an XRTranslate SDK bundle, or export one from a host source checkout:
 
@@ -27,11 +27,8 @@ built. Linux `scripts/run-linux.sh` uses this to update public plugins automatic
 before launching, without exporting a separate SDK copy.
 
 Copy completed plugin directories into the application's `plugins/` folder.
-For a distributable application package, pass their parent directory to
-`build_release.ps1 -PluginsDirectory`, or set `XRTRANSLATE_PLUGINS_DIR` when
-running `scripts/build-linux-release.sh`. These inputs are ready-to-use plugin
-packages, not plugin source directories. The Linux release script builds the
-public plugins automatically when no package directory is supplied.
+The Windows and Linux release scripts build and include the current public
+plugins automatically. Locally installed and private plugins are not included.
 
 Independent host builds do not rebuild plugins. Rebuild a plugin when changing that
 plugin, or when deliberately adopting an incompatible SDK interface. New optional

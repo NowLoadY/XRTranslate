@@ -8,8 +8,6 @@ param(
     [string]$OnnxRuntimeCpu,
     # Visual Studio VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
     [string]$VcRuntimeDirectory,
-    # Optional prebuilt plugin packages; their sources are built independently.
-    [string]$PluginsDirectory,
     # Validate existing release inputs without building, downloading, or staging.
     [switch]$ValidateOnly
 )
@@ -257,28 +255,31 @@ $packageArguments = @(
     '--vc-runtime-dir', $VcRuntimeDirectory,
     '--output', $Output
 )
-if ($PluginsDirectory) {
-    foreach ($directory in Get-ChildItem -LiteralPath $PluginsDirectory -Directory) {
-        if (Test-Path -LiteralPath (Join-Path $directory.FullName 'plugin.json')) {
-            $packageArguments += @('--plugin-directory', $directory.FullName)
-        }
-    }
-}
 if ($IncludeModels) {
     $packageArguments += '--include-models'
 }
 if ($ValidateOnly) {
-    $packageArguments += '--check'
+    Write-Host 'Validating existing native release inputs (no build or download)...'
+    & $packagerPath @packageArguments --check
+    exit $LASTEXITCODE
 }
 
-if ($ValidateOnly) {
-    Write-Host 'Validating existing native release inputs (no build or download)...'
-} else {
+$pluginPackages = Join-Path ([System.IO.Path]::GetTempPath()) "xrtranslate-release-plugins-$([guid]::NewGuid())"
+$pluginPackages = (New-Item -ItemType Directory -Path $pluginPackages).FullName
+try {
+    & (Join-Path $projectRoot 'plugin-src/build.ps1') -Sdk $projectRoot -Output $pluginPackages -TargetDirectory (Join-Path $projectRoot 'target') -Locked
+    $packages = @(Get-ChildItem -LiteralPath $pluginPackages -Directory | Where-Object {
+        Test-Path -LiteralPath (Join-Path $_.FullName 'plugin.json')
+    })
+    if ($packages.Count -eq 0) { throw 'No public plugin packages were built.' }
+    foreach ($directory in $packages) {
+        $packageArguments += @('--plugin-directory', $directory.FullName)
+    }
     Write-Host 'Preparing the native release package...'
-}
-& $packagerPath @packageArguments
-if ($LASTEXITCODE -ne 0 -or $ValidateOnly) {
-    exit $LASTEXITCODE
+    & $packagerPath @packageArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Release packaging failed.' }
+} finally {
+    Remove-Item -LiteralPath $pluginPackages -Recurse -Force
 }
 
 Write-Host "Release directory is ready: $Output"

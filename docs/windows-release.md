@@ -21,7 +21,9 @@ same default build as a local Windows release:
 ```
 
 Release builds require Python 3 and the GitHub CLI (`gh`). The script prepares
-resources once, reuses its download cache, and builds the standard native binaries. Optional offline GGUF models are not included. The workflow creates
+resources once, reuses its download cache, and builds the application and current
+public plugins. Locally installed and private plugins are not included. Optional
+offline GGUF models are not included. The workflow creates
 `XRTranslate-v0.3.5-win-x64.zip` with the directory's contents directly at the
 ZIP root: `XRTranslate-v0.3.5.exe`, `bin/`, `config.json`, and the other package
 files, matching previous Windows releases. It uploads this ZIP using GitHub's

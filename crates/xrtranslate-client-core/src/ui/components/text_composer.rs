@@ -123,21 +123,42 @@ impl TextComposer {
             radius as f32,
             crate::ui::theme::border(),
             |ui| {
-                if self.mode == TextMode::Translate
-                    && let Some(budget) = context.input_budget
-                {
+                let input_budget = context
+                    .input_budget
+                    .filter(|_| self.mode == TextMode::Translate);
+                if input_budget.is_some() || focused {
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), 16.0),
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            context_settings = ui
-                                .link(
-                                    egui::RichText::new(tr(context.language, "Settings"))
-                                        .size(11.0),
-                                )
-                                .on_hover_text(tr(context.language, "Context length"))
-                                .clicked();
-                            context_indicator(ui, &self.text, budget, context.language);
+                            if let Some(budget) = input_budget {
+                                context_settings = ui
+                                    .link(
+                                        egui::RichText::new(tr(context.language, "Settings"))
+                                            .size(11.0),
+                                    )
+                                    .on_hover_text(tr(context.language, "Context length"))
+                                    .clicked();
+                                context_indicator(ui, &self.text, budget, context.language);
+                            }
+                            if focused {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(tr(
+                                                    context.language,
+                                                    "Enter to send · Shift+Enter for a new line",
+                                                ))
+                                                .size(11.0)
+                                                .color(theme::text_weak()),
+                                            )
+                                            .truncate(),
+                                        );
+                                    },
+                                );
+                            }
                         },
                     );
                 }
@@ -271,10 +292,6 @@ impl TextComposer {
                                         edited |= self.text != text;
                                         self.text = text;
                                     }
-                                    response.on_hover_text(tr(
-                                        context.language,
-                                        "Enter to send · Shift+Enter for a new line",
-                                    ));
                                 });
                             });
                     },

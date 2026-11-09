@@ -42,11 +42,10 @@ cargo "${cargo_args[@]}"
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
-PLUGIN_DIR="${XRTRANSLATE_PLUGINS_DIR:-${ROOT_DIR}/target/release-plugins}"
-if [[ -z "${XRTRANSLATE_PLUGINS_DIR:-}" ]]; then
-  bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${PLUGIN_DIR}" \
-    --target-dir "${ROOT_DIR}/target" --locked
-fi
+PLUGIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xrtranslate-release-plugins.XXXXXX")"
+trap 'rm -rf -- "$PLUGIN_DIR"' EXIT
+bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${PLUGIN_DIR}" \
+  --target-dir "${ROOT_DIR}/target" --locked
 
 # Use distributable defaults; private configuration and installed large models stay local.
 target/release/xrtranslate-installer --config config.json \
@@ -55,13 +54,12 @@ target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
   prepare-resources --output "${RESOURCE_DIR}" --cache "${RESOURCE_DIR}/downloads"
 
 plugin_args=()
-if [[ -d "${PLUGIN_DIR}" ]]; then
-  for directory in "${PLUGIN_DIR}"/*; do
-    [[ -f "${directory}/plugin.json" ]] || continue
-    plugin_args+=(--plugin-directory "${directory}")
-  done
-else
-  printf '%s\n' 'Plugin package directory does not exist.' >&2
+for directory in "${PLUGIN_DIR}"/*; do
+  [[ -f "${directory}/plugin.json" ]] || continue
+  plugin_args+=(--plugin-directory "${directory}")
+done
+if [[ ${#plugin_args[@]} -eq 0 ]]; then
+  printf '%s\n' 'No public plugin packages were built.' >&2
   exit 2
 fi
 

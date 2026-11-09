@@ -86,9 +86,8 @@ resources are cached and reused on subsequent builds.
 The output directory must not already exist. Set `XRTRANSLATE_RELEASE_DIR` to
 another path when keeping an earlier package and its runtime data.
 
-The release script builds and includes the public Linux plugins automatically.
-To use an existing set of plugin packages instead, set `XRTRANSLATE_PLUGINS_DIR`
-to their parent directory. An empty directory produces a host-only package.
+The release script builds and includes the current public Linux plugins
+automatically. Locally installed and private plugins are not included.
 
 The release script prepares the three basic ONNX models and CPU ONNX core
 through the shared verified resource installer. It packages those fixed

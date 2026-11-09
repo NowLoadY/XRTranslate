@@ -129,20 +129,11 @@ jobs:
           # No fallback: changed resource definitions must fetch their corresponding assets.
           key: windows-resources-v1-${{ runner.arch }}-${{ hashFiles('build_release.ps1', 'scripts/prepare-release-cache.py', 'config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**') }}
 
-      - name: Export the SDK and build plugin packages independently
-        run: |
-          & cargo build --locked --release -p xrtranslate-plugin --features host
-          if ($LASTEXITCODE -ne 0) { throw 'SDK build tool failed.' }
-          $sdk = Join-Path $env:RUNNER_TEMP 'xrtranslate-sdk'
-          & .\target\release\xrt-plugin.exe sdk . $sdk
-          if ($LASTEXITCODE -ne 0) { throw 'SDK export failed.' }
-          & .\plugin-src\build.ps1 -Sdk $sdk -Output "$env:RUNNER_TEMP\xrtranslate-plugins" -TargetDirectory "$env:GITHUB_WORKSPACE\target" -Locked
-
       - name: Build the standard Windows package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          & .\build_release.ps1 -Output "dist\$env:PACKAGE_NAME" -PluginsDirectory "$env:RUNNER_TEMP\xrtranslate-plugins"
+          & .\build_release.ps1 -Output "dist\$env:PACKAGE_NAME"
           if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }
 
       - name: Smoke test the packaged executables and corpus service
