@@ -131,38 +131,6 @@ if (-not $ValidateOnly) {
 $VcRuntimeDirectory = Resolve-VcRuntimeDirectory -Directory $VcRuntimeDirectory
 Write-Host "Using app-local Visual C++ runtime from redistributable files: $VcRuntimeDirectory"
 
-if (-not $ValidateOnly) {
-    . (Join-Path $projectRoot 'scripts/windows-build-env.ps1')
-    Initialize-WindowsSpeechLibraries -ProjectRoot $projectRoot
-    $buildArguments = @(
-        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
-        '--package', 'rust-client',
-        '--package', 'xrtranslate-backend',
-        '--package', 'xrtranslate-installer',
-        '--package', 'xrtranslate-updater',
-        '--package', 'xrtranslate-account-login',
-        '--package', 'xrtranslate-packager',
-        '--package', 'xrtranslate-plugin',
-        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
-    )
-
-    Write-Host 'Building native release binaries...'
-    & $cargo @buildArguments
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    Write-Host 'Preparing verified base ONNX models from the shared resource catalogue...'
-    & $installerPath --config $configPath prepare-resources --output $projectRoot --cache (Join-Path $runtimeAssetCache 'downloads')
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-}
 
 function Export-ZipEntry {
     param(
@@ -193,117 +161,73 @@ function Export-ZipEntry {
     }
 }
 
-function Get-OnnxCpuSourceArchive {
-    $releaseConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    $matchingDownloads = @($releaseConfig.model_manager.onnxruntime.downloads | Where-Object {
-        $_.name -eq $onnxCpuSourceArchive -and $_.target -eq 'windows-x86_64'
-    })
-    if ($matchingDownloads.Count -ne 1) {
-        throw "Expected exactly one Windows ONNX core source archive in config.json: $onnxCpuSourceArchive"
-    }
-    $download = $matchingDownloads[0]
-    $archivePath = Join-Path $runtimeAssetCache $download.name
-    Write-Host 'Fetching the verified ONNX Runtime source archive for its CPU core and license files...'
-    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $archivePath | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw "ONNX Runtime archive download failed with exit code $LASTEXITCODE"
-    }
-    return [pscustomobject]@{
-        Path = $archivePath
-        Root = [System.IO.Path]::GetFileNameWithoutExtension($download.name)
-    }
+$explicitOnnxCore = -not [string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)
+if (-not $explicitOnnxCore) {
+    $OnnxRuntimeCpu = Join-Path $runtimeAssetCache 'onnxruntime\cpu\onnxruntime.dll'
 }
-
-$onnxArchive = $null
-if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
-    $candidatePaths = @()
-
-    # 1. Search in runtime asset cache (.temp/runtime-assets)
-    if (Test-Path -LiteralPath $runtimeAssetCache -PathType Container) {
-        $cachedCores = Get-ChildItem -LiteralPath $runtimeAssetCache -Filter 'onnxruntime.dll' -File -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Length -eq $expectedOnnxBytes }
-        foreach ($c in $cachedCores) {
-            $candidatePaths += $c.FullName
-        }
-    }
-
-    # 2. Search in development runtime directory (runtime/onnxruntime/...)
-    $devRuntimeDir = Join-Path $projectRoot 'runtime\onnxruntime'
-    if (Test-Path -LiteralPath $devRuntimeDir -PathType Container) {
-        $devCores = @(
-            (Join-Path $devRuntimeDir 'cpu\onnxruntime.dll'),
-            (Join-Path $devRuntimeDir 'cuda-13\onnxruntime.dll'),
-            (Join-Path $devRuntimeDir 'cuda-12\onnxruntime.dll')
-        )
-        foreach ($p in $devCores) {
-            if (Test-Path -LiteralPath $p -PathType Leaf) {
-                $candidatePaths += $p
-            }
-        }
-    }
-
-    foreach ($cand in $candidatePaths) {
-        if ((Get-Item -LiteralPath $cand).Length -eq $expectedOnnxBytes) {
-            $OnnxRuntimeCpu = $cand
-            break
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
-        if ($ValidateOnly) {
-            throw 'Validation requires an existing verified ONNX Runtime CPU core. Pass -OnnxRuntimeCpu <onnxruntime.dll>. -ValidateOnly never downloads files.'
-        }
-        $onnxArchive = Get-OnnxCpuSourceArchive
-        $OnnxRuntimeCpu = Join-Path $runtimeAssetCache 'onnxruntime\cpu\onnxruntime.dll'
-        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/lib/onnxruntime.dll" -OutFile $OnnxRuntimeCpu -ExpectedBytes $expectedOnnxBytes
-    }
-    Write-Host "Using verified ONNX Runtime core (universal CPU engine): $OnnxRuntimeCpu"
-}
-
 $OnnxRuntimeCpu = [System.IO.Path]::GetFullPath($OnnxRuntimeCpu)
-if (-not (Test-Path -LiteralPath $OnnxRuntimeCpu -PathType Leaf)) {
-    throw "ONNX Runtime CPU core was not found: $OnnxRuntimeCpu"
+if ($explicitOnnxCore -and (
+    -not (Test-Path -LiteralPath $OnnxRuntimeCpu -PathType Leaf) -or
+    (Get-Item -LiteralPath $OnnxRuntimeCpu).Length -ne $expectedOnnxBytes
+)) {
+    throw "The supplied ONNX Runtime core is missing or has an unexpected size: $OnnxRuntimeCpu"
 }
 
-# Resolve LICENSE and ThirdPartyNotices.txt
-$onnxLicensesDir = Join-Path $projectRoot '.temp\runtime-assets\licenses\onnxruntime'
-$candidateLicensePaths = @(
-    (Join-Path (Split-Path (Split-Path $OnnxRuntimeCpu -Parent) -Parent) 'LICENSE'),
-    (Join-Path (Split-Path $OnnxRuntimeCpu -Parent) 'LICENSE'),
-    (Join-Path $onnxLicensesDir 'LICENSE')
+if (-not $ValidateOnly) {
+    & python (Join-Path $projectRoot 'scripts/prepare-release-cache.py') --target windows-x86_64 --cache $runtimeAssetCache --runtime-archive $onnxCpuSourceArchive
+    if ($LASTEXITCODE -ne 0) { throw 'Release resource preparation failed.' }
+}
+
+$onnxRuntimeLicense = Join-Path $runtimeAssetCache 'licenses\onnxruntime\LICENSE'
+$onnxRuntimeNotices = Join-Path $runtimeAssetCache 'licenses\onnxruntime\ThirdPartyNotices.txt'
+$onnxArchiveRoot = [System.IO.Path]::GetFileNameWithoutExtension($onnxCpuSourceArchive)
+$runtimeFiles = @(
+    @{ Entry = 'lib/onnxruntime.dll'; Path = $OnnxRuntimeCpu; Bytes = $expectedOnnxBytes },
+    @{ Entry = 'LICENSE'; Path = $onnxRuntimeLicense; Bytes = $expectedLicenseBytes },
+    @{ Entry = 'ThirdPartyNotices.txt'; Path = $onnxRuntimeNotices; Bytes = $expectedNoticesBytes }
 )
-$candidateNoticePaths = @(
-    (Join-Path (Split-Path (Split-Path $OnnxRuntimeCpu -Parent) -Parent) 'ThirdPartyNotices.txt'),
-    (Join-Path (Split-Path $OnnxRuntimeCpu -Parent) 'ThirdPartyNotices.txt'),
-    (Join-Path $onnxLicensesDir 'ThirdPartyNotices.txt')
-)
-
-$onnxRuntimeLicense = $candidateLicensePaths | Where-Object {
-    (Test-Path -LiteralPath $_ -PathType Leaf) -and
-    ((Get-Item -LiteralPath $_).Length -eq $expectedLicenseBytes)
-} | Select-Object -First 1
-
-$onnxRuntimeNotices = $candidateNoticePaths | Where-Object {
-    (Test-Path -LiteralPath $_ -PathType Leaf) -and
-    ((Get-Item -LiteralPath $_).Length -eq $expectedNoticesBytes)
-} | Select-Object -First 1
-
-if ($null -eq $onnxRuntimeLicense -or $null -eq $onnxRuntimeNotices) {
+foreach ($file in $runtimeFiles) {
+    if ((Test-Path -LiteralPath $file.Path -PathType Leaf) -and
+        (Get-Item -LiteralPath $file.Path).Length -eq $file.Bytes) {
+        continue
+    }
     if ($ValidateOnly) {
-        throw 'Validation requires verified ONNX Runtime LICENSE and ThirdPartyNotices.txt beside the core or in .temp/runtime-assets/licenses/onnxruntime. -ValidateOnly never downloads files.'
+        throw "Required release resource is missing or has an unexpected size: $($file.Path). -ValidateOnly never downloads or extracts files."
     }
-    if ($null -eq $onnxArchive) {
-        $onnxArchive = Get-OnnxCpuSourceArchive
+    Export-ZipEntry -ArchivePath (Join-Path $runtimeAssetCache $onnxCpuSourceArchive) -EntryPath "$onnxArchiveRoot/$($file.Entry)" -OutFile $file.Path -ExpectedBytes $file.Bytes
+}
+Write-Host "Using verified ONNX Runtime core: $OnnxRuntimeCpu"
+
+if (-not $ValidateOnly) {
+    . (Join-Path $projectRoot 'scripts/windows-build-env.ps1')
+    Initialize-WindowsSpeechLibraries -ProjectRoot $projectRoot
+    $buildArguments = @(
+        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
+        '--package', 'rust-client',
+        '--package', 'xrtranslate-backend',
+        '--package', 'xrtranslate-installer',
+        '--package', 'xrtranslate-updater',
+        '--package', 'xrtranslate-account-login',
+        '--package', 'xrtranslate-packager',
+        '--package', 'xrtranslate-plugin',
+        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
+    )
+
+    Write-Host 'Building native release binaries...'
+    & $cargo @buildArguments
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
     }
-    if ($null -eq $onnxRuntimeLicense) {
-        $targetLic = Join-Path $onnxLicensesDir 'LICENSE'
-        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/LICENSE" -OutFile $targetLic -ExpectedBytes $expectedLicenseBytes
-        $onnxRuntimeLicense = $targetLic
+
+    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
     }
-    if ($null -eq $onnxRuntimeNotices) {
-        $targetNot = Join-Path $onnxLicensesDir 'ThirdPartyNotices.txt'
-        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedBytes $expectedNoticesBytes
-        $onnxRuntimeNotices = $targetNot
+
+    Write-Host 'Preparing verified base ONNX models from the shared resource catalogue...'
+    & $installerPath --config $configPath prepare-resources --output $projectRoot --cache (Join-Path $runtimeAssetCache 'downloads')
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
     }
 }
 

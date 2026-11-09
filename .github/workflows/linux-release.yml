@@ -125,20 +125,12 @@ jobs:
       - name: Cache fixed release resources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          # The installer reuses extracted models; the fetch helper reuses this
-          # small archive. Do not cache config.json or the old speaker release ZIP.
+          # Cache only verified resources and their reusable download archives.
           path: |
             target/release-resources/linux-x86_64/models
             target/release-resources/linux-x86_64/downloads/*.zip
             target/release-resources/linux-x86_64/onnxruntime-linux-x64-*.tgz
-          key: resources-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-${{ hashFiles('config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**', 'scripts/build-linux-release.sh') }}
-
-      - name: Prepare pinned release resources
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache target/release-resources/linux-x86_64/downloads
-          python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache target/release-resources/linux-x86_64 --runtime-archive onnxruntime-linux-x64-1.28.0.tgz
+          key: resources-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-${{ hashFiles('config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**', 'scripts/build-linux-release.sh', 'scripts/prepare-release-cache.py') }}
 
       - name: Export the SDK and build plugin packages independently
         run: |
@@ -148,6 +140,8 @@ jobs:
           bash plugin-src/build.sh "$RUNNER_TEMP/xrtranslate-sdk" "$RUNNER_TEMP/xrtranslate-plugins" --target-dir "$GITHUB_WORKSPACE/target" --locked
 
       - name: Build the standard Linux release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export XRTRANSLATE_RELEASE_DIR="$GITHUB_WORKSPACE/dist/$PACKAGE_NAME"

@@ -127,16 +127,7 @@ jobs:
             .temp/runtime-assets/licenses/onnxruntime/LICENSE
             .temp/runtime-assets/licenses/onnxruntime/ThirdPartyNotices.txt
           # No fallback: changed resource definitions must fetch their corresponding assets.
-          key: windows-resources-v1-${{ runner.arch }}-${{ hashFiles('build_release.ps1', 'config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**') }}
-
-      - name: Prepare pinned release resources
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python scripts/prepare-release-cache.py --target windows-x86_64 --cache .temp/runtime-assets/downloads
-          if ($LASTEXITCODE -ne 0) { throw 'Release resource preparation failed.' }
-          python scripts/prepare-release-cache.py --target windows-x86_64 --cache .temp/runtime-assets --runtime-archive onnxruntime-win-x64-gpu_cuda13-1.28.0.zip
-          if ($LASTEXITCODE -ne 0) { throw 'Release runtime preparation failed.' }
+          key: windows-resources-v1-${{ runner.arch }}-${{ hashFiles('build_release.ps1', 'scripts/prepare-release-cache.py', 'config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**') }}
 
       - name: Export the SDK and build plugin packages independently
         run: |
@@ -148,6 +139,8 @@ jobs:
           & .\plugin-src\build.ps1 -Sdk $sdk -Output "$env:RUNNER_TEMP\xrtranslate-plugins" -TargetDirectory "$env:GITHUB_WORKSPACE\target" -Locked
 
       - name: Build the standard Windows package
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           & .\build_release.ps1 -Output "dist\$env:PACKAGE_NAME" -PluginsDirectory "$env:RUNNER_TEMP\xrtranslate-plugins"
           if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }

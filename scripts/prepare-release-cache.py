@@ -29,21 +29,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
     parser.add_argument('--cache', required=True, type=Path)
-    parser.add_argument('--runtime-archive')
+    parser.add_argument('--runtime-archive', required=True)
     args = parser.parse_args()
     config = json.loads((Path(__file__).resolve().parent.parent / 'config.json').read_text(encoding='utf-8'))
     manager = config['model_manager']
-    if args.runtime_archive:
-        runtime = manager['onnxruntime']
-        asset = next(a for a in runtime['downloads'] + runtime['cpu_downloads']
-                     if a['name'] == args.runtime_archive and a['target'] == args.target)
-        download(asset, args.cache / Path(asset['name']).name)
-        return
+    runtime = manager['onnxruntime']
+    matches = [a for a in runtime['downloads'] + runtime['cpu_downloads']
+               if a['name'] == args.runtime_archive and a['target'] == args.target]
+    if len(matches) != 1:
+        parser.error(f'Expected one {args.target} runtime archive: {args.runtime_archive}')
     for asset in manager['bundled_models']:
-        if asset.get('target', args.target) != args.target or not asset.get('archive_path'):
+        if asset.get('target') not in (None, args.target) or not asset.get('archive_path'):
             continue
-        destination = args.cache / (Path(asset['name']).name + '.zip')
+        destination = args.cache / 'downloads' / (Path(asset['name']).name + '.zip')
         download(asset, destination)
+    download(matches[0], args.cache / Path(matches[0]['name']).name)
 
 
 if __name__ == '__main__':

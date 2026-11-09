@@ -20,8 +20,8 @@ same default build as a local Windows release:
 .\build_release.ps1 -Output dist\XRTranslate-v0.3.5-win-x64
 ```
 
-The script prepares the standard native binaries and verified runtime/model
-resources. Optional offline GGUF models are not included. The workflow creates
+Release builds require Python 3 and the GitHub CLI (`gh`). The script prepares
+resources once, reuses its download cache, and builds the standard native binaries. Optional offline GGUF models are not included. The workflow creates
 `XRTranslate-v0.3.5-win-x64.zip` with the directory's contents directly at the
 ZIP root: `XRTranslate-v0.3.5.exe`, `bin/`, `config.json`, and the other package
 files, matching previous Windows releases. It uploads this ZIP using GitHub's
@@ -45,11 +45,10 @@ Release are serialized without cancelling an active build. The workflow logs
 the exact source commit and leaves the published tag unchanged.
 
 Successful runs cache Cargo registry/Git downloads, `target/release`, and the
-downloaded VAD and speaker ONNX models plus the extracted ONNX CPU core and
-licenses.
+downloaded model/runtime archives, the VAD and speaker ONNX models, and the
+extracted ONNX CPU core and licenses.
 GTCRN and its license are embedded in the packager and always written to the package.
-Redundant model archives and the large ONNX GPU source ZIP are excluded; the
-cached files let subsequent runs skip those downloads. Configuration, credentials,
+Cached resources let subsequent runs skip those downloads. Configuration, credentials,
 user databases and staged release packages are not cached.
 
 Build caches are isolated by Windows runner image, architecture, Rust toolchain,

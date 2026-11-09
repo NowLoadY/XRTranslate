@@ -75,6 +75,9 @@ the linker files along with the MPV runtime.
 
 ## Build a local release
 
+Release builds also require Python 3 and the GitHub CLI (`gh`). Downloaded
+resources are cached and reused on subsequent builds.
+
 ```sh
 ./scripts/build-linux-release.sh
 ./dist/linux-x86_64/xrtranslate
@@ -148,8 +151,8 @@ the fixed models/ONNX archive. Build caches account for the runner image, Rust
 version, lockfiles, build declarations and source revision. Resource caches
 change when their declarations or preparation script change. Every run still
 executes the locked Cargo builds, creates a fresh package and runs validation.
-Caches exclude release packages, generated configuration and redundant model
-download archives.
+Caches include reusable model/runtime download archives and exclude release
+packages and generated configuration.
 
 ## Audio capture
 

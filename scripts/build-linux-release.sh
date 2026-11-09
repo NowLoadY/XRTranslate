@@ -25,6 +25,15 @@ fi
 source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
+RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
+python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache "${RESOURCE_DIR}" \
+  --runtime-archive onnxruntime-linux-x64-1.28.0.tgz
+ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
+tar -xzf "${ONNX_DIR}.tgz" -C "${RESOURCE_DIR}" \
+  onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0 \
+  onnxruntime-linux-x64-1.28.0/LICENSE \
+  onnxruntime-linux-x64-1.28.0/ThirdPartyNotices.txt
+
 cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager -p xrtranslate-plugin --features xrtranslate-backend/managed-ort,xrtranslate-plugin/host --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
@@ -39,23 +48,11 @@ if [[ -z "${XRTRANSLATE_PLUGINS_DIR:-}" ]]; then
     --target-dir "${ROOT_DIR}/target" --locked
 fi
 
-RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
-mkdir -p "${RESOURCE_DIR}"
 # Use distributable defaults; private configuration and installed large models stay local.
 target/release/xrtranslate-installer --config config.json \
   export-defaults --output "${RESOURCE_DIR}/config.json"
 target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
   prepare-resources --output "${RESOURCE_DIR}" --cache "${RESOURCE_DIR}/downloads"
-
-ONNX_ARCHIVE="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0.tgz"
-cargo run --locked --release -p xrtranslate-download --example fetch -- \
-  https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz \
-  9125960 "${ONNX_ARCHIVE}"
-tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
-  onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0 \
-  onnxruntime-linux-x64-1.28.0/LICENSE \
-  onnxruntime-linux-x64-1.28.0/ThirdPartyNotices.txt
-ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
 
 plugin_args=()
 if [[ -d "${PLUGIN_DIR}" ]]; then
