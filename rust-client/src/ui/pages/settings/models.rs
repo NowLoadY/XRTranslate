@@ -39,11 +39,22 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         } else {
                             None
                         };
-                        if let Some(value) = changed
-                            && let Err(error) =
-                                app.service_config.set_model_context(&control, value)
-                        {
-                            app.notifications.error("", &error);
+                        if let Some(value) = changed {
+                            match app.service_config.set_model_context(&control, value) {
+                                Ok(()) => {
+                                    #[cfg(not(target_os = "android"))]
+                                    {
+                                        app.pending_model_restart = Some(response.id);
+                                    }
+                                }
+                                Err(error) => {
+                                    #[cfg(not(target_os = "android"))]
+                                    {
+                                        app.pending_model_restart = None;
+                                    }
+                                    app.notifications.error("", &error);
+                                }
+                            }
                         }
                     });
                 });

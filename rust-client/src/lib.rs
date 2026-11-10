@@ -603,6 +603,10 @@ enum PendingResourceDeletion {
 }
 
 struct XRTranslateApp {
+    #[cfg(not(target_os = "android"))]
+    restart_requested: Arc<AtomicBool>,
+    #[cfg(not(target_os = "android"))]
+    pending_model_restart: Option<egui::Id>,
     #[cfg(windows)]
     tray: Option<desktop_lifecycle::Tray>,
     pending_file_dialogs: Vec<(
@@ -1750,6 +1754,10 @@ impl Default for XRTranslateApp {
 
         let prompt_provider = service_config.translation_prompt_profile().target();
         let mut app = Self {
+            #[cfg(not(target_os = "android"))]
+            restart_requested: Arc::default(),
+            #[cfg(not(target_os = "android"))]
+            pending_model_restart: None,
             #[cfg(windows)]
             tray: None,
             pending_file_dialogs: Vec::new(),
@@ -1959,6 +1967,16 @@ impl XRTranslateApp {
     }
 
     fn render_modal_layer(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_os = "android"))]
+        if let Some(id) = self.pending_model_restart
+            && !ctx.memory(|memory| memory.has_focus(id))
+            && !ctx.is_being_dragged(id)
+            && !self.modal_dialog.open
+            && self.last_error.is_none()
+        {
+            self.pending_model_restart = None;
+            self.modal_dialog = ui::modal::ModalDialog::restart_required(self.ui_language);
+        }
         if !self.modal_dialog.open
             && let Some(error) = self.last_error.as_deref()
             && ui::components::error_dialog(
@@ -1975,6 +1993,10 @@ impl XRTranslateApp {
         match modal_action {
             Some(ui::modal::ModalAction::DownloadUpdate) => self.download_update(),
             Some(ui::modal::ModalAction::InstallUpdate) => self.install_update_and_restart(),
+            Some(ui::modal::ModalAction::RestartApplication) => {
+                #[cfg(not(target_os = "android"))]
+                self.restart(ctx);
+            }
             Some(ui::modal::ModalAction::ConfirmResourceDeletion) => {
                 self.confirm_pending_resource_deletion()
             }
@@ -3267,6 +3289,18 @@ impl XRTranslateApp {
         if let Err(error) = self.app_update_manager.download(self.project_root()) {
             self.notify_error("Could not complete the update. Please try again.", error);
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn restart(&mut self, ctx: &egui::Context) {
+        self.save_settings();
+        self.restart_requested.store(true, Ordering::Relaxed);
+        #[cfg(windows)]
+        if let Some(tray) = &mut self.tray {
+            tray.exit(ctx);
+            return;
+        }
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
     }
 
     #[cfg(target_os = "android")]
@@ -5842,7 +5876,11 @@ pub fn run() -> eframe::Result<()> {
         }
         options
     };
-    eframe::run_native(
+    #[cfg(not(target_os = "android"))]
+    let restart_requested = Arc::new(AtomicBool::new(false));
+    #[cfg(not(target_os = "android"))]
+    let restart_signal = restart_requested.clone();
+    let result = eframe::run_native(
         "XRTranslate",
         options,
         Box::new(move |cc| {
@@ -5907,6 +5945,10 @@ pub fn run() -> eframe::Result<()> {
             ui_director::egui::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
+            #[cfg(not(target_os = "android"))]
+            {
+                app.restart_requested = restart_signal;
+            }
             #[cfg(windows)]
             match desktop_lifecycle::Tray::new(cc, &app_icon, app.ui_language) {
                 Ok(tray) => app.tray = Some(tray),
@@ -5939,7 +5981,21 @@ pub fn run() -> eframe::Result<()> {
             app.window_backdrop = window_backdrop;
             Ok(Box::new(app))
         }),
-    )
+    );
+    #[cfg(not(target_os = "android"))]
+    if result.is_ok() && restart_requested.load(Ordering::Relaxed) {
+        // Release the old window, application and single-instance lock first.
+        #[cfg(windows)]
+        drop(_instance);
+        let executable =
+            std::env::current_exe().map_err(|error| eframe::Error::AppCreation(error.into()))?;
+        let mut command = std::process::Command::new(executable);
+        command.args(std::env::args_os().skip(1));
+        child_process::hide_console(&mut command)
+            .spawn()
+            .map_err(|error| eframe::Error::AppCreation(error.into()))?;
+    }
+    result
 }
 
 #[cfg(windows)]

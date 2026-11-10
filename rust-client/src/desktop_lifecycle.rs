@@ -129,12 +129,17 @@ impl Tray {
         })
     }
 
+    pub fn exit(&mut self, ctx: &egui::Context) {
+        self.exiting = true;
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+    }
+
     pub fn update(&mut self, ctx: &egui::Context, language: UiLanguage) {
         if self.language != language {
             self.exit.set_text(i18n::tr(language, "Exit"));
             self.language = language;
         }
-        for action in self.actions.try_iter() {
+        while let Ok(action) = self.actions.try_recv() {
             match action {
                 Action::Show => {
                     for command in [
@@ -145,10 +150,7 @@ impl Tray {
                         ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
                     }
                 }
-                Action::Exit => {
-                    self.exiting = true;
-                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                }
+                Action::Exit => self.exit(ctx),
             }
         }
         if !self.exiting && ctx.input(|input| input.viewport().close_requested()) {

@@ -42,6 +42,7 @@ pub struct ModalDialog {
 pub enum ModalAction {
     DownloadUpdate,
     InstallUpdate,
+    RestartApplication,
     ConfirmResourceDeletion,
 }
 
@@ -64,6 +65,21 @@ impl Default for ModalDialog {
 }
 
 impl ModalDialog {
+    pub fn restart_required(language: crate::i18n::UiLanguage) -> Self {
+        Self {
+            open: true,
+            pages: vec![ModalPage::new(
+                crate::i18n::tr(language, "Saved"),
+                crate::i18n::tr(language, "Restart XRTranslate to apply changes."),
+            )],
+            ok_label: crate::i18n::tr(language, "Restart now").into(),
+            show_cancel_button: true,
+            cancel_label: crate::i18n::tr(language, "Later").into(),
+            ok_action: Some(ModalAction::RestartApplication),
+            ..Self::default()
+        }
+    }
+
     pub fn update_available(version: &str, language: crate::i18n::UiLanguage) -> Self {
         Self {
             open: true,
