@@ -178,7 +178,7 @@ pub async fn sign_in(
             profile_id
                 .map(|id| state.profile(id).cloned().ok_or(Error::LoginRequired))
                 .transpose()?,
-            state.context.pending_client.clone(),
+            state.context.pending_client,
         )
     };
     let listener = TcpListener::bind("127.0.0.1:0")

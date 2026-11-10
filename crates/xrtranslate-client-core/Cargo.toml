@@ -25,6 +25,7 @@ xrtranslate-engine = { path = "../xrtranslate-engine" }
 xrtranslate-protocol = { path = "../xrtranslate-protocol" }
 xrtranslate-prompt = { path = "../xrtranslate-prompt" }
 xrtranslate-download = { path = "../xrtranslate-download" }
+xrtranslate-config = { path = "../xrtranslate-config" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -109,8 +109,7 @@ impl ModelAssetsConfig {
         include_default_assets: bool,
     ) -> ResolvedModelAssets {
         let project_root = project_root.as_ref().to_path_buf();
-        let models_directory = resolve_from_project_root(
-            &project_root,
+        let models_directory = crate::distribution::data_root(&project_root).join(
             self.models_directory
                 .as_deref()
                 .unwrap_or_else(|| Path::new("models")),
@@ -141,7 +140,7 @@ impl ModelAssetsConfig {
                     None
                 };
                 let directory = configured_directory
-                    .map(|path| resolve_from_project_root(&project_root, path))
+                    .map(|path| crate::distribution::data_root(&project_root).join(path))
                     .unwrap_or_else(|| models_directory.join(manifest.relative_directory));
                 ResolvedModelAsset::new(manifest, directory)
             })
@@ -186,6 +185,11 @@ fn catalog_asset(catalog: &[ResolvedModelAsset], id: ModelAssetId) -> &ResolvedM
 pub fn resolve_from_project_root(project_root: &Path, configured_path: &Path) -> PathBuf {
     if configured_path.is_absolute() {
         configured_path.to_path_buf()
+    } else if ["runtime", "models", "plugins"]
+        .iter()
+        .any(|directory| configured_path.starts_with(directory))
+    {
+        crate::distribution::data_root(project_root).join(configured_path)
     } else {
         project_root.join(configured_path)
     }

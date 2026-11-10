@@ -1529,7 +1529,7 @@ mod tests {
                 if serve_host_info {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut bytes = [0; 1024];
-                    stream.read(&mut bytes).await.unwrap();
+                    assert!(stream.read(&mut bytes).await.unwrap() > 0);
                     let body = json!({"NAME":"VRChat-test", "OSC_PORT":9000}).to_string();
                     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                 }

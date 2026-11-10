@@ -221,8 +221,25 @@ pub fn configure_dll_search_paths() {
     }
 }
 
+/// One writable destination, also shared by independently built media plugins.
+pub fn runtime_install_directory() -> PathBuf {
+    #[cfg(windows)]
+    let host = HOST_RUNTIME_DIRECTORY.get().cloned();
+    #[cfg(not(windows))]
+    let host: Option<PathBuf> = None;
+    let root = host
+        .or_else(|| std::env::current_exe().ok()?.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let data = xrtranslate_config::data_root(&root);
+    if data != root {
+        data.join("runtime/playback")
+    } else {
+        root.join("resources/bin")
+    }
+}
+
 pub fn runtime_bin_directories() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs = vec![runtime_install_directory()];
     #[cfg(windows)]
     if let Some(directory) = HOST_RUNTIME_DIRECTORY.get() {
         dirs.push(directory.join("resources/bin"));

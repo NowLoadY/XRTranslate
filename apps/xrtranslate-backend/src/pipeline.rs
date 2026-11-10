@@ -1072,9 +1072,7 @@ impl NativeInference {
         audio: bool,
     ) -> Result<Self, String> {
         let asr = if audio {
-            let asr_http = model_plan
-                .asr_http_client()
-                .map_err(|error| error.to_string())?;
+            let asr_http = model_plan.asr_http_client()?;
             let asr = model_plan
                 .asr_adapter(asr_http)
                 .map_err(|error| error.to_string())?;
@@ -1082,9 +1080,7 @@ impl NativeInference {
         } else {
             None
         };
-        let translation_http = model_plan
-            .translation_http_client()
-            .map_err(|error| error.to_string())?;
+        let translation_http = model_plan.translation_http_client()?;
         let translation = model_plan
             .translation_adapter(translation_http)
             .map_err(|error| error.to_string())?;
@@ -1171,13 +1167,32 @@ impl NativeInference {
         target: &str,
         text: &str,
     ) -> Result<(Self, usize), xrtranslate_prompt::PromptGraphError> {
+        // Budget the same language names that translate_segment_streaming
+        // renders; short codes otherwise underestimate near-full requests.
+        let route = translation_route(source, target);
         let budget = graph.text_translation_budget(
             self.translation.prompt_profile(),
-            source,
-            target,
+            &route.source,
+            &route.target,
             self.translation_context_window_tokens,
             self.translation_max_output_tokens,
         )?;
+        if budget.input_tokens == 0 {
+            // Text tasks reject zero capacity before inference. Use the same
+            // diagnostic as speech, including the actual prompt/style and a
+            // dynamically sized context recommendation.
+            let mut options = TranslationOptions::new(route.source, route.target);
+            options.prompt_graph = graph.clone();
+            options.context_window_tokens = self.translation_context_window_tokens;
+            options.max_tokens = self.translation_max_output_tokens;
+            if let Err(error) = xrtranslate_inference::build_translation_messages(
+                self.translation.prompt_profile(),
+                text,
+                &options,
+            ) {
+                return Err(xrtranslate_prompt::PromptGraphError::new(error.to_string()));
+            }
+        }
         // Reuse the same adapters and scheduler; only this text request's output
         // allowance changes. Audio sessions keep their configured limits.
         let mut request = self.clone();
@@ -1627,8 +1642,10 @@ impl NativeInference {
                 Ok(translated) => break translated,
                 Err(error)
                     if !output_retried
-                        && (error.is_rejected_output() || error.is_output_limit()
-                            || (error.is_context_limit() && options.prompt_context.has_reference_context())) =>
+                        && (error.is_rejected_output()
+                            || error.is_output_limit()
+                            || (error.is_context_limit()
+                                && options.prompt_context.has_reference_context())) =>
                 {
                     if error.is_output_limit() {
                         options.max_tokens = expanded_output_budget(

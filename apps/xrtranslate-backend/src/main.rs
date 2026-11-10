@@ -1200,7 +1200,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             pipeline.reset();
                             if save_separated_audio {
                                 let result = if configured_workload == InferenceWorkload::Offline {
-                                    pipeline.save_separated_audio(&state.project_root.join("runtime/media-audio"))
+                                    pipeline.save_separated_audio(&xrtranslate_config::data_root(&state.project_root).join("runtime/media-audio"))
                                 } else {
                                     Err("Audio stems require a finite recording".into())
                                 };

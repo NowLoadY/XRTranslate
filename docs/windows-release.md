@@ -24,10 +24,11 @@ Release builds require Python 3 and the GitHub CLI (`gh`). The script prepares
 resources once, reuses its download cache, and builds the application and current
 public plugins. Locally installed and private plugins are not included. Optional
 offline GGUF models are not included. The workflow creates
-`XRTranslate-v0.3.5-win-x64.zip` with the directory's contents directly at the
-ZIP root: `XRTranslate-v0.3.5.exe`, `bin/`, `config.json`, and the other package
-files, matching previous Windows releases. It uploads this ZIP using GitHub's
-automatic workflow token. It does not create a Release or edit its title,
+`XRTranslate-v0.3.5-win-x64-setup.exe`, using the runner's Inno Setup compiler.
+With **compatibility_zip** enabled, it also creates
+`XRTranslate-v0.3.5-win-x64.zip` with the same layout as previous Windows releases.
+The selected packages are uploaded using GitHub's automatic workflow token.
+The workflow does not create a Release or edit its title,
 notes, or other platform assets.
 
 The required speech libraries are included in `third_party/sherpa-onnx` and
@@ -42,7 +43,13 @@ then stops its service. Every file in the ZIP is checked against the verified
 release directory by size and SHA-256 before upload. It does not test GPU models
 or full speech inference.
 
-Rerunning replaces only the identically named Windows ZIP. Runs for the same
+Publish the setup executable as the main Windows download. Keep **compatibility_zip**
+enabled for a transition release newer than all previously published ZIP-only
+versions. Retain that release and its ZIP permanently; later releases may disable
+this option. Existing portable
+copies upgrade in place and keep their settings, models and plugin data.
+
+Rerunning replaces only the selected Windows ZIP and setup executable. Runs for the same
 Release are serialized without cancelling an active build. The workflow logs
 the exact source commit and leaves the published tag unchanged.
 
@@ -62,8 +69,72 @@ when resource configuration or preparation code changes, so those changes fetch
 the corresponding assets again. A first run or an evicted cache downloads and
 builds normally; cache hits do not skip the package smoke tests.
 
+## Windows distribution
+
+Build the release directory once, then choose a distribution format:
+
+```powershell
+$package = 'dist\XRTranslate-v0.4.4-win-x64'
+.\build_release.ps1 -Output $package
+.\scripts\build-windows-distribution.ps1 -Package $package -Format Setup
+```
+
+Setup requires Inno Setup 6.6 or newer (`-Iscc` can specify its compiler).
+It installs for the current Windows user, registers XRTranslate in Installed
+Apps, and reuses the registered location for upgrades. New installations keep
+settings, downloads and personal plugins in the Windows user profile; portable
+copies upgraded in place retain their existing data location. The installer only
+replaces its own files.
+
+For Microsoft Store, supply the exact identity from Partner Center:
+
+```powershell
+.\scripts\build-windows-distribution.ps1 -Package $package -Format Msix `
+  -IdentityName '<Partner Center identity name>' `
+  -Publisher '<Partner Center publisher ID>' `
+  -PublisherDisplayName '<Partner Center publisher name>'
+```
+
+This uses the Windows SDK's MakeAppx to validate and create an unsigned MSIX
+for Store submission. Local sideloading requires signing with a trusted
+certificate matching that identity. Store installation and updates remain
+under Windows control.
+
+Platform-managed distributions use their platform's updates and shortcuts.
+Separately installed plugins use the same `plugins/<plugin-id>/` layout.
+
+The standalone installer creates one Start Menu entry. Closing the window keeps
+XRTranslate in the notification area; its menu provides **Exit**. Opening the
+application again restores the running window.
+
+Production standalone installers need trusted Authenticode signing before
+publication. Building an installer alone does not remove SmartScreen warnings.
+
 ## Running from source
 
 `start_rust_client.cmd` and `start_rust_client.ps1` build and run Release by default,
 including the backend and plugins, matching the Linux source launcher. For an
 explicit development build, use `.\start_rust_client.ps1 -Release:$false`.
+Launchers always build current bundled plugin sources before starting, and stop
+if a build fails. They do not download or update independently installed plugins.
+
+## Manual cleanup
+
+Run `clean.cmd` from the checkout to preview removable files and their sizes.
+Nothing is deleted until you add `-Apply`:
+
+```bat
+clean.cmd
+clean.cmd -Apply
+clean.cmd -Scope All
+clean.cmd -Scope All -Apply
+```
+
+The default keeps the Release build cache. `-Scope All` also clears it, so the
+next build takes longer. `-Scope Build` selects build caches only;
+`-Scope Packages` selects temporary staged packages only.
+
+Cleanup preserves `dist`, project data, installed plugins, downloaded models,
+tool/download caches, and unrecognized temporary files. Temporary package copies
+include their bundled resources; copies with runtime data are kept. Close any
+running builds and applications using the listed paths before applying cleanup.

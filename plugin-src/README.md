@@ -30,9 +30,12 @@ The SDK path may also be a host source checkout with its `xrt-plugin` tool alrea
 built. The Windows and Linux development launchers build and update public plugins
 before starting the app. Other installed plugins are kept as they are.
 
-Copy completed plugin directories into the application's `plugins/` folder.
+Copy completed plugin directories into the folder opened by Settings → Plugins.
 The Windows and Linux release scripts build and include the current public
 plugins automatically. Locally installed and private plugins are not included.
+Bundled plugin version numbers stay fixed; compatibility is declared by the
+minimum supported host version. Independent plugin releases do not have to
+match the host version.
 
 Independent host builds do not rebuild plugins. Rebuild a plugin when changing that
 plugin, or when deliberately adopting an incompatible SDK interface. New optional

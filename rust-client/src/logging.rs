@@ -27,7 +27,9 @@ impl LogPolicy {
         file_name: &str,
     ) -> Self {
         let directory = if storage.log_dir.as_os_str().is_empty() {
-            project_root.join("runtime").join("logs")
+            xrtranslate_config::data_root(project_root)
+                .join("runtime")
+                .join("logs")
         } else {
             RuntimeLayout::for_project_root(project_root).resolve_configured_path(storage.log_dir)
         };

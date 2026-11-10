@@ -184,7 +184,7 @@ pub struct AudioStudioRepository {
 impl AudioStudioRepository {
     pub fn open(project_root: &Path) -> Self {
         Self {
-            path: project_root.join(AUDIO_STUDIO_SETTINGS_PATH),
+            path: xrtranslate_config::data_root(project_root).join(AUDIO_STUDIO_SETTINGS_PATH),
         }
     }
 

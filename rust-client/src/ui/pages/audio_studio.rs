@@ -1401,8 +1401,6 @@ fn render_node(
                 2.0
             } else if strongest_risk.is_some() {
                 1.5
-            } else if node.bypassed {
-                1.0
             } else {
                 1.0
             },

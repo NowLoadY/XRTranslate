@@ -30,6 +30,8 @@ mod backend;
 mod child_process;
 mod client_settings;
 pub(crate) mod contributors;
+#[cfg(windows)]
+mod desktop_lifecycle;
 mod desktop_shortcut;
 mod director_audio;
 #[cfg(test)]
@@ -601,6 +603,8 @@ enum PendingResourceDeletion {
 }
 
 struct XRTranslateApp {
+    #[cfg(windows)]
+    tray: Option<desktop_lifecycle::Tray>,
     pending_file_dialogs: Vec<(
         file_dialog::FileRequest,
         Box<dyn FnOnce(&mut XRTranslateApp, std::path::PathBuf)>,
@@ -1746,6 +1750,8 @@ impl Default for XRTranslateApp {
 
         let prompt_provider = service_config.translation_prompt_profile().target();
         let mut app = Self {
+            #[cfg(windows)]
+            tray: None,
             pending_file_dialogs: Vec::new(),
             audio_system,
             devices,
@@ -3279,7 +3285,9 @@ impl XRTranslateApp {
                 return;
             }
         };
-        self.first_run = true;
+        if matches!(install, app_update::AppUpdateInstall::Portable { .. }) {
+            self.first_run = true;
+        }
         let _ = self.save_settings();
         self.stop();
         self.backend_start_deadline = None;
@@ -5136,6 +5144,10 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        if let Some(tray) = &mut self.tray {
+            tray.update(ctx, self.ui_language);
+        }
         if let Some(provider) = self.account_connections.poll(&self.project_root(), ctx) {
             self.backend_manager.invalidate_runtime();
             // Return from this app's explicit login flow, including a minimized
@@ -5709,7 +5721,7 @@ impl eframe::App for XRTranslateApp {
 
 #[cfg(windows)]
 fn cleanup_runtime_cache() {
-    let cache_dir = std::path::Path::new("runtime/cache");
+    let cache_dir = xrtranslate_config::data_root(&backend::project_root()).join("runtime/cache");
     if let Ok(entries) = std::fs::read_dir(cache_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -5728,6 +5740,30 @@ pub fn run() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
     if let Some(index) = args.iter().position(|arg| arg == "--control") {
         std::process::exit(ui_director::cli::run(args[index + 1..].to_vec()));
+    }
+    #[cfg(windows)]
+    let _instance = if args
+        .iter()
+        .any(|arg| arg == "--overlay" || arg == "--avatar-render")
+    {
+        None
+    } else {
+        match desktop_lifecycle::Instance::acquire()
+            .map_err(|error| eframe::Error::AppCreation(error.into()))?
+        {
+            Some(instance) => Some(instance),
+            None => return Ok(()),
+        }
+    };
+    #[cfg(windows)]
+    {
+        let root = backend::project_root();
+        xrtranslate_config::Distribution::read(&root)
+            .map_err(|error| eframe::Error::AppCreation(error.into()))?;
+        if root.join("release-manifest.json").is_file() {
+            std::env::set_current_dir(&root)
+                .map_err(|error| eframe::Error::AppCreation(error.into()))?;
+        }
     }
     #[cfg(not(target_os = "android"))]
     logging::init();
@@ -5815,8 +5851,12 @@ pub fn run() -> eframe::Result<()> {
                 use winit::platform::windows::WindowExtWindows;
                 // egui sets ICON_SMALL; Windows uses ICON_BIG for the taskbar and Alt+Tab.
                 window.set_taskbar_icon(Some(
-                    winit::window::Icon::from_rgba(app_icon.rgba, app_icon.width, app_icon.height)
-                        .expect("embedded application icon must be valid RGBA"),
+                    winit::window::Icon::from_rgba(
+                        app_icon.rgba.clone(),
+                        app_icon.width,
+                        app_icon.height,
+                    )
+                    .expect("embedded application icon must be valid RGBA"),
                 ));
                 window.set_skip_taskbar(false);
             }
@@ -5867,6 +5907,11 @@ pub fn run() -> eframe::Result<()> {
             ui_director::egui::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
+            #[cfg(windows)]
+            match desktop_lifecycle::Tray::new(cc, &app_icon, app.ui_language) {
+                Ok(tray) => app.tray = Some(tray),
+                Err(error) => log::warn!("Cannot create system tray icon: {error}"),
+            }
             #[cfg(not(all(target_os = "linux", feature = "mpv")))]
             let video_display = None;
             #[cfg(all(target_os = "linux", feature = "mpv"))]

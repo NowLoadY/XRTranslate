@@ -241,7 +241,7 @@ fn load_image(
         // A content-addressed local copy survives moves/deletions of the
         // selected file and never overwrites a previously selected image.
         let hash = Sha256::digest(&bytes);
-        let directory = project_root.join("runtime/backgrounds");
+        let directory = xrtranslate_config::data_root(project_root).join("runtime/backgrounds");
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Unable to create background image folder: {error}"))?;
         let target = directory.join(format!("{hash:x}-{max_side}.png"));

@@ -71,11 +71,19 @@ impl NativeProviderPlan {
         let mut route = config
             .native_model_route()
             .map_err(|error| error.to_string())?;
-        let accounts = xrtranslate_connections::AccountStore::for_project_root(project_root);
+        let accounts = xrtranslate_connections::AccountStore::for_project_root(
+            xrtranslate_config::data_root(project_root),
+        );
         for provider in [&route.asr, &route.translation] {
-            if let Some(account) = provider.connector.and_then(|connector| connector.account_provider()) {
+            if let Some(account) = provider
+                .connector
+                .and_then(|connector| connector.account_provider())
+            {
                 if accounts.status(account) != xrtranslate_connections::AccountStatus::Connected {
-                    return Err(format!("{}: sign in using Account login on the Welcome Page", account.id()));
+                    return Err(format!(
+                        "{}: sign in using Account login on the Welcome Page",
+                        account.id()
+                    ));
                 }
             }
         }

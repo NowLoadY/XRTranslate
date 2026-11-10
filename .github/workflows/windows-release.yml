@@ -11,6 +11,11 @@ on:
         description: Optional full commit SHA to rebuild this release; otherwise use the tag
         required: false
         type: string
+      compatibility_zip:
+        description: Include the compatibility ZIP for older clients
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -188,6 +193,7 @@ jobs:
           }
 
       - name: Zip the contents in the standard release layout
+        if: ${{ inputs.compatibility_zip }}
         run: |
           $directory = Join-Path $env:GITHUB_WORKSPACE "dist\$env:PACKAGE_NAME"
           $archivePath = "$directory.zip"
@@ -216,9 +222,16 @@ jobs:
             $archive.Dispose()
           }
 
-      - name: Upload only the Windows ZIP to the existing release
+      - name: Build the registered Windows installer
+        run: |
+          & .\scripts\build-windows-distribution.ps1 -Package "dist\$env:PACKAGE_NAME" -Format Setup
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed.' }
+
+      - name: Upload the Windows packages to the existing release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          & gh release upload $env:RELEASE_TAG "dist\$env:PACKAGE_NAME.zip" --repo $env:GITHUB_REPOSITORY --clobber
+          $assets = @("dist\$env:PACKAGE_NAME-setup.exe")
+          if ('${{ inputs.compatibility_zip }}' -eq 'true') { $assets += "dist\$env:PACKAGE_NAME.zip" }
+          & gh release upload $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

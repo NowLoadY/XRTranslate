@@ -28,6 +28,8 @@ impl From<&str> for Text {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
+    /// Optional release metadata. Compatibility depends only on min_host_version.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
     pub min_host_version: String,
     pub title: Text,
@@ -65,8 +67,8 @@ impl Manifest {
             relative_path(icon)?;
         }
         semver::Version::parse(&self.min_host_version).map_err(|error| error.to_string())?;
-        if self.title.get("en").is_empty() || self.version.is_empty() {
-            return Err("Plugin name and version are required".into());
+        if self.title.get("en").is_empty() {
+            return Err("Plugin name is required".into());
         }
         let mut names = std::collections::HashSet::new();
         for tool in &self.tools {

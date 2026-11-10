@@ -132,6 +132,7 @@ pub(crate) struct Host {
     root: PathBuf,
     directory: PathBuf,
     executables: Option<PathBuf>,
+    packaged_directory: Option<PathBuf>,
     next_scan: std::time::Instant,
     scan: Option<std::sync::mpsc::Receiver<Scan>>,
     navigation_changed: bool,
@@ -191,7 +192,9 @@ impl Host {
             sessions: Sessions::default(),
             playback: playback::Players::default(),
             root: runtime.runtime_root().join("plugins"),
-            directory: root.join("plugins"),
+            directory: xrtranslate_config::data_root(&root).join("plugins"),
+            packaged_directory: (xrtranslate_config::data_root(&root) != root)
+                .then(|| root.join("plugins")),
             #[cfg(target_os = "android")]
             executables: Some(crate::android::native_library_directory()),
             #[cfg(not(target_os = "android"))]
@@ -218,30 +221,48 @@ impl Host {
     pub fn refresh(&mut self, ctx: &egui::Context) {
         if self.scan.is_none() && std::time::Instant::now() >= self.next_scan {
             let directory = self.directory.clone();
+            let packaged_directory = self.packaged_directory.clone();
             let executables = self.executables.clone();
             self.scan = Some(self.io.submit(
                 move || {
-                    xrtranslate_plugin::directory::discover(&directory, executables.as_deref()).map(
-                        |entries| {
-                            entries
+                    let mut entries = xrtranslate_plugin::directory::discover(
+                        &directory,
+                        executables.as_deref(),
+                    )?;
+                    if let Some(directory) = packaged_directory {
+                        let user_ids: std::collections::HashSet<_> = entries
+                            .iter()
+                            .filter_map(|(_, manifest)| {
+                                manifest.as_ref().ok().map(|manifest| manifest.id.clone())
+                            })
+                            .collect();
+                        entries.extend(
+                            xrtranslate_plugin::directory::discover(&directory, None)?
                                 .into_iter()
-                                .map(|(directory, manifest)| {
-                                    let entry = manifest.map(|manifest| {
-                                        let modified = std::fs::metadata(
-                                            executables
-                                                .as_deref()
-                                                .unwrap_or(&directory)
-                                                .join(&manifest.executable),
-                                        )
-                                        .ok()
-                                        .and_then(|m| m.modified().ok());
-                                        (manifest, modified)
-                                    });
-                                    (directory, entry)
-                                })
-                                .collect()
-                        },
-                    )
+                                .filter(|(_, manifest)| {
+                                    manifest
+                                        .as_ref()
+                                        .map_or(true, |manifest| !user_ids.contains(&manifest.id))
+                                }),
+                        );
+                    }
+                    Ok(entries
+                        .into_iter()
+                        .map(|(directory, manifest)| {
+                            let entry = manifest.map(|manifest| {
+                                let modified = std::fs::metadata(
+                                    executables
+                                        .as_deref()
+                                        .unwrap_or(&directory)
+                                        .join(&manifest.executable),
+                                )
+                                .ok()
+                                .and_then(|m| m.modified().ok());
+                                (manifest, modified)
+                            });
+                            (directory, entry)
+                        })
+                        .collect())
                 },
                 Some(ctx.clone()),
             ));
@@ -901,7 +922,7 @@ impl ui_director::ToolProvider for Host {
         let string = |key: &str| args[key].as_str().ok_or_else(|| format!("Missing {key}"));
         match call.name.as_str() {
             "plugins.list" => Ok(
-                json!({"directory":self.directory,"plugins":self.installed.iter().map(|(id,p)| json!({"id":id,"title":p.manifest.title,"version":p.manifest.version,"enabled":p.settings.enabled,"running":p.process.is_some(),"error":p.error})).collect::<Vec<_>>(),"error":self.error}),
+                json!({"directory":self.directory,"plugins":self.installed.iter().map(|(id,p)| json!({"id":id,"title":p.manifest.title,"enabled":p.settings.enabled,"running":p.process.is_some(),"error":p.error})).collect::<Vec<_>>(),"error":self.error}),
             ),
             "plugins.enable" => {
                 self.set_enabled(

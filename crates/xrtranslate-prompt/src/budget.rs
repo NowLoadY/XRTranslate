@@ -13,6 +13,28 @@ impl PromptRender {
             .sum::<usize>()
             .saturating_add(64)
     }
+
+    /// Size a window for this rendered request, including any selected reference
+    /// context and the caller's output allowance. Leave proportional headroom
+    /// for the heuristic tokenizer and small changes in subsequent inputs;
+    /// rounding to 256 tokens avoids suggesting an unnecessarily large power of two.
+    pub fn context_window_recommendation(&self, output_tokens: u32) -> ContextWindowRecommendation {
+        let required_tokens = self
+            .estimated_tokens()
+            .saturating_add(output_tokens as usize);
+        let with_headroom = required_tokens.saturating_add(required_tokens.div_ceil(5));
+        ContextWindowRecommendation {
+            required_tokens,
+            recommended_tokens: with_headroom.div_ceil(256).saturating_mul(256),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextWindowRecommendation {
+    pub required_tokens: usize,
+    /// An estimate for the request, not a claim about the model's supported maximum.
+    pub recommended_tokens: usize,
 }
 
 #[derive(Clone, Copy, Debug)]

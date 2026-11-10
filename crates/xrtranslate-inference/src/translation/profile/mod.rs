@@ -2,9 +2,14 @@ mod bilingual;
 mod chat_messages;
 mod contextual;
 mod output;
+#[cfg(test)]
+mod tests;
 
 use serde_json::{Value, json};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptMessage, PromptNodeGraph, PromptTarget};
+use xrtranslate_prompt::{
+    PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeGraph, PromptTarget,
+    estimated_tokens,
+};
 
 use crate::InferenceError;
 
@@ -87,6 +92,7 @@ fn render_prompt(
     let input_limit = options
         .context_window_tokens
         .saturating_sub(options.max_tokens) as usize;
+    let mut recommendation = None;
     let execution = loop {
         let execution = graph
             .render_with_trace(
@@ -100,17 +106,26 @@ fn render_prompt(
                 field: "prompt_graph",
                 message: error.to_string(),
             })?;
+        // Retain the complete request's requirement before dropping optional
+        // references, so the suggestion can also preserve the selected context.
+        let recommendation = *recommendation.get_or_insert_with(|| {
+            execution
+                .render
+                .context_window_recommendation(options.max_tokens)
+        });
         if execution.render.estimated_tokens() <= input_limit {
             break execution;
         }
         if !context.reduce_reference_context() {
             return Err(InferenceError::InvalidConfiguration {
                 field: "context_window_tokens",
-                message: format!(
-                    "The translation prompt and current input need about {} tokens, with {} reserved for output; the model window is {}. Shorten the input or prompt, or increase the model context window.",
-                    execution.render.estimated_tokens(),
-                    options.max_tokens,
-                    options.context_window_tokens,
+                message: context_window_diagnostic(
+                    graph,
+                    target,
+                    source_text,
+                    options,
+                    &execution,
+                    recommendation.recommended_tokens,
                 ),
             });
         }
@@ -120,4 +135,67 @@ fn render_prompt(
         trace: execution.trace,
         context,
     })
+}
+
+fn context_window_diagnostic(
+    graph: &PromptNodeGraph,
+    target: PromptTarget,
+    source_text: &str,
+    options: &TranslationOptions,
+    execution: &PromptExecution,
+    recommended_tokens: usize,
+) -> String {
+    let input_limit = options
+        .context_window_tokens
+        .saturating_sub(options.max_tokens) as usize;
+    // A minimal nonempty input uses the same rendering contract as a real
+    // request. Inspect the active mode/target, not saved but inactive styles.
+    let prompt_too_long = graph
+        .render(
+            target,
+            "x",
+            &options.source_language,
+            &options.target_language,
+            &options.prompt_context.without_reference_context(),
+        )
+        .is_ok_and(|prompt| prompt.estimated_tokens() > input_limit);
+    let (cause, alternative) = if prompt_too_long {
+        (
+            "The active translation prompt/style is too long even for a short input.",
+            "shorten the active style or prompt in Prompt Studio",
+        )
+    } else {
+        (
+            "The current input is too long for the space left by the active translation prompt/style.",
+            "split or shorten the current input, or shorten the active style in Prompt Studio",
+        )
+    };
+    let style = graph
+        .translation_style
+        .as_ref()
+        .and_then(|style| execution.trace.node(&style.node_id))
+        .filter(|node| !node.output.trim().is_empty())
+        .map(|node| {
+            format!(
+                " Active style: about {} tokens.",
+                estimated_tokens(&node.output)
+            )
+        })
+        .unwrap_or_default();
+    let required = execution
+        .render
+        .context_window_recommendation(options.max_tokens);
+    format!(
+        "{cause} Current text: about {} tokens.{style} After removing optional reference context, \
+         this request still needs about {} input + {} output = {} tokens; the configured window is {}. \
+         Suggested context length for this full request: {recommended_tokens} tokens \
+         (including the selected reference context and 20% headroom). \
+         If supported by the model, set Settings > Models > Translation Model > Context length \
+         to {recommended_tokens} and restart XRTranslate; otherwise {alternative} or use a model with a larger context window.",
+        estimated_tokens(source_text.trim()),
+        execution.render.estimated_tokens(),
+        options.max_tokens,
+        required.required_tokens,
+        options.context_window_tokens,
+    )
 }

@@ -80,6 +80,10 @@ fn process_exists(pid: u32) -> bool {
 }
 
 fn apply_update(source: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
+    if xrtranslate_config::Distribution::read(target)? != xrtranslate_config::Distribution::Portable
+    {
+        return Err("Use the installation platform to update this application.".into());
+    }
     require_directory(source, "source")?;
     require_directory(target, "target")?;
     let source_entries = source_entries(source)?;

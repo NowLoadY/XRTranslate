@@ -12,6 +12,8 @@ fn main() {
         }
         let mut resource = winres::WindowsResource::new();
         resource.set_icon("resources/branding/xrtranslate-logo.ico");
+        resource.set("FileDescription", "XRTranslate");
+        resource.set("ProductName", "XRTranslate");
         resource
             .compile()
             .expect("cannot embed XRTranslate application icon");

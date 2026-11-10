@@ -143,10 +143,7 @@ pub fn prepare_bundled_runtime() -> Result<(), String> {
     else {
         return Ok(());
     };
-    let target = directories
-        .iter()
-        .find(|directory| directory.is_dir())
-        .unwrap_or(&directories[0]);
+    let target = super::runtime_install_directory();
     let file = fs::File::open(&archive).map_err(|error| error.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
     let size = zip
@@ -160,8 +157,8 @@ pub fn prepare_bundled_runtime() -> Result<(), String> {
         return Ok(());
     }
     drop(zip);
-    fs::create_dir_all(target).map_err(|error| error.to_string())?;
-    extract_mpv_zip(&archive, target)
+    fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    extract_mpv_zip(&archive, &target)
 }
 
 async fn download_and_install_mpv(
@@ -195,13 +192,9 @@ async fn download_and_install_mpv(
 
     let _ = sender.send(Event::Extracting);
 
-    // Extract to target bin directories
-    for bin_dir in super::runtime_bin_directories() {
-        let _ = fs::create_dir_all(&bin_dir);
-        if bin_dir.is_dir() {
-            extract_mpv_zip(&complete_path, &bin_dir)?;
-        }
-    }
+    let bin_dir = super::runtime_install_directory();
+    fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
+    extract_mpv_zip(&complete_path, &bin_dir)?;
 
     let _ = fs::remove_dir_all(&temp_dir);
 

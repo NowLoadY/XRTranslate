@@ -1,6 +1,7 @@
 # Plugin SDK
 
-A plugin is a directory under the application's `plugins/` folder:
+A plugin is a directory in the folder opened by Settings → Plugins, or in the
+application's `plugins/` folder:
 
 ```text
 XRTranslate/
@@ -41,6 +42,9 @@ capabilities preserve existing behavior. Require a newer host
 only when using a capability introduced there. Build one directory per target
 OS/architecture. Optional `requires` lists capability names; missing cooperation
 is reported locally, without installing dependencies or involving other plugins.
+`version` is optional release metadata and never controls compatibility. Keep a
+fixed value when supporting older hosts that require the field; bundled plugins
+do not need to change it with each application release.
 
 Application releases include a plugin only when its manifest explicitly sets
 `"bundle_with_host": true`. The default is separate distribution. This setting

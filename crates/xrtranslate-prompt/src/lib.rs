@@ -13,7 +13,7 @@ mod schema;
 mod template;
 mod translation_style;
 
-pub use budget::TextTranslationBudget;
+pub use budget::{ContextWindowRecommendation, TextTranslationBudget};
 pub use context::{
     AsrPromptContext, ContextFacts, PromptTurn, SurroundingSource, TaskContext,
     TranslationPromptBlock, TranslationPromptContext, estimated_tokens, token_weight,

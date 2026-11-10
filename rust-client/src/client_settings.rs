@@ -170,7 +170,7 @@ impl Default for ClientSettings {
 
 impl ClientSettings {
     pub fn load(project_root: &Path) -> Self {
-        let runtime_dir = project_root.join("runtime");
+        let runtime_dir = xrtranslate_config::data_root(project_root).join("runtime");
         let settings_path = runtime_dir.join("rust-client-settings.json");
         let mut settings = std::fs::read_to_string(&settings_path)
             .ok()
@@ -192,7 +192,9 @@ impl ClientSettings {
             usage_guidelines_accepted: Option<bool>,
             usage_guidelines_agreed: Option<bool>,
         }
-        let path = project_root.join("runtime").join("app_state.json");
+        let path = xrtranslate_config::data_root(project_root)
+            .join("runtime")
+            .join("app_state.json");
         let Ok(contents) = std::fs::read_to_string(path) else {
             return;
         };
@@ -308,7 +310,7 @@ impl ClientSettings {
     }
 
     pub fn save(&self, project_root: &Path) -> Result<(), String> {
-        let directory = project_root.join("runtime");
+        let directory = xrtranslate_config::data_root(project_root).join("runtime");
         let _ = std::fs::create_dir_all(&directory);
         let path = directory.join("rust-client-settings.json");
         let normalized = self;

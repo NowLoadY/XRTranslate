@@ -179,7 +179,7 @@ impl AccountConnections {
             return None;
         }
         self.checked = Some(Instant::now());
-        let store = AccountStore::for_project_root(root);
+        let store = AccountStore::for_project_root(xrtranslate_config::data_root(root));
         for &provider in AccountProvider::ALL {
             let snapshot = store.snapshot(provider);
             let status = snapshot.status;
@@ -250,15 +250,12 @@ impl AccountConnections {
                     let mut command = std::process::Command::new(helper);
                     command
                         .arg(provider.id())
-                        .arg(root)
+                        .arg(xrtranslate_config::data_root(root))
                         .stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null());
                     #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        command.creation_flags(0x08000000); // no console window
-                    }
+                    crate::child_process::hide_console(&mut command);
                     self.child = Some(command.spawn().map_err(
                         |_| "Could not open or complete account login. Please try again.",
                     )?);
@@ -285,7 +282,7 @@ impl AccountConnections {
         } else {
             "Updating account connection…"
         };
-        let store = AccountStore::for_project_root(root);
+        let store = AccountStore::for_project_root(xrtranslate_config::data_root(root));
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancellation = cancelled.clone();
         let (sender, events) = mpsc::channel();

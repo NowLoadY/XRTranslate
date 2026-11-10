@@ -15,6 +15,7 @@ pub use context_window::{
     ModelContextWindow, context_model_id, default_context_window, model_context_window,
 };
 pub use remote::{RemoteTtsConfig, apply_remote_defaults, release_config_document};
+pub use xrtranslate_assets::distribution::{Distribution, data_root};
 pub use xrtranslate_assets::remote::AsrPromptMode;
 
 pub use models::InstalledModel;
@@ -180,13 +181,9 @@ impl RuntimeLayout {
         let runtime_root = match runtime_directory {
             Some(dir) => {
                 let dir = normalized_runtime_root(dir.as_ref());
-                if dir.is_absolute() {
-                    dir.to_path_buf()
-                } else {
-                    project_root.join(dir)
-                }
+                data_root(&project_root).join(dir)
             }
-            None => project_root.join(Self::DEFAULT_RUNTIME_DIRECTORY),
+            None => data_root(&project_root).join(Self::DEFAULT_RUNTIME_DIRECTORY),
         };
         Self {
             project_root,
@@ -238,8 +235,18 @@ impl RuntimeLayout {
 
     #[must_use]
     pub fn onnx_cpu_core_library(&self) -> PathBuf {
-        self.onnx_cpu_runtime_directory()
-            .join(Self::ONNX_CORE_LIBRARY)
+        let managed = self
+            .onnx_cpu_runtime_directory()
+            .join(Self::ONNX_CORE_LIBRARY);
+        let bundled = self
+            .project_root
+            .join("runtime/onnxruntime/cpu")
+            .join(Self::ONNX_CORE_LIBRARY);
+        if managed.is_file() || !bundled.is_file() {
+            managed
+        } else {
+            bundled
+        }
     }
 
     #[must_use]
@@ -297,12 +304,7 @@ impl RuntimeLayout {
     /// explicit absolute paths for existing manual installations.
     #[must_use]
     pub fn resolve_configured_path(&self, configured: impl AsRef<Path>) -> PathBuf {
-        let configured = configured.as_ref();
-        if configured.is_absolute() {
-            configured.to_path_buf()
-        } else {
-            self.project_root.join(configured)
-        }
+        xrtranslate_assets::resolve_from_project_root(&self.project_root, configured.as_ref())
     }
 
     /// Resolves the one shared managed executable name on Linux and Windows.
@@ -338,8 +340,7 @@ impl RuntimeLayout {
     /// settings. The updater preserves runtime on every supported platform.
     #[must_use]
     pub fn user_config_path(project_root: impl AsRef<Path>) -> PathBuf {
-        project_root
-            .as_ref()
+        data_root(project_root.as_ref())
             .join("runtime")
             .join("user-config.json")
     }

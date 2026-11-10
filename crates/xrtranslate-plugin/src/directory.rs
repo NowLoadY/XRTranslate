@@ -93,4 +93,25 @@ mod tests {
         }
         assert!(require_host(&manifest, "0.3.9").is_err());
     }
+
+    #[test]
+    fn plugin_release_version_is_optional_metadata() {
+        let mut manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "id":"example", "min_host_version":"0.4.0",
+            "title":{"en":"Example"}, "executable":"example.exe"
+        }))
+        .unwrap();
+        manifest.validate().unwrap();
+        assert!(
+            serde_json::to_value(&manifest)
+                .unwrap()
+                .get("version")
+                .is_none()
+        );
+        for version in ["", "0.1.0", "9.0.0"] {
+            manifest.version = version.into();
+            assert!(require_host(&manifest, "0.4.3").is_ok());
+            assert!(require_host(&manifest, "0.3.9").is_err());
+        }
+    }
 }

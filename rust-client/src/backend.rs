@@ -1,6 +1,6 @@
-use crate::logging::{LogPolicy, RotatingLog};
 #[cfg(windows)]
 use crate::child_process::KillOnCloseJob;
+use crate::logging::{LogPolicy, RotatingLog};
 use serde_json::Value;
 use std::{
     fs,
@@ -548,12 +548,34 @@ impl BackendProcesses {
 
     fn start_corpus(&mut self, manager: &BackendManager) -> Result<(), String> {
         let executable = manager.resolve_corpus_executable()?;
+        // Corpus is independently built; resolve paths through its existing config contract.
+        let mut config_path = manager.project_root.join("config.json");
+        if xrtranslate_config::data_root(&manager.project_root) != manager.project_root {
+            let config = load_project_config(&manager.project_root)?;
+            let layout = config.runtime_layout(&manager.project_root);
+            let mut corpus = config.prompt_context;
+            corpus.database_path = layout.resolve_configured_path(&corpus.database_path);
+            corpus.seed_database_path = layout.resolve_configured_path(&corpus.seed_database_path);
+            let mut integrations = config.integrations;
+            if let Some(path) = &mut integrations.vrcx.database_path {
+                *path = layout.resolve_configured_path(&*path);
+            }
+            let document =
+                serde_json::json!({"prompt_context": corpus, "integrations": integrations});
+            config_path = layout.runtime_root().join("corpus-config.json");
+            fs::create_dir_all(layout.runtime_root()).map_err(|error| error.to_string())?;
+            fs::write(
+                &config_path,
+                serde_json::to_vec(&document).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        }
         let mut command = Command::new(executable);
         command
             .current_dir(&manager.project_root)
             .stdin(Stdio::null())
             .arg("--config")
-            .arg(manager.project_root.join("config.json"));
+            .arg(config_path);
         let mirror_to_console = std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some();
         let capture_output = fs::create_dir_all(&manager.corpus_log_policy.directory).is_ok();
         if capture_output {
@@ -670,7 +692,6 @@ fn write_bounded_log(
     }
 }
 
-
 impl Drop for BackendManager {
     fn drop(&mut self) {
         self.shutdown();
@@ -684,6 +705,13 @@ pub(crate) fn project_root() -> PathBuf {
 
 #[cfg(not(target_os = "android"))]
 pub(crate) fn project_root() -> PathBuf {
+    // A packaged app owns its defaults regardless of the shortcut's working directory.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(root) = exe.parent()
+        && root.join("release-manifest.json").is_file()
+    {
+        return root.to_path_buf();
+    }
     for start in [std::env::current_dir().ok(), std::env::current_exe().ok()] {
         let Some(start) = start else {
             continue;

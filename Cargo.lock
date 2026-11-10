@@ -4158,6 +4158,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.1",
+ "serde",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4623,6 +4633,24 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "muda"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4340e89c178916e62879c5c36b7f699019369be413e496178a6983ce91b8bc03"
+dependencies = [
+ "crossbeam-channel",
+ "dpi",
+ "keyboard-types",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "png 0.18.1",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6902,7 +6930,7 @@ dependencies = [
 
 [[package]]
 name = "rust-client"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -6937,6 +6965,7 @@ dependencies = [
  "rosc",
  "rubato",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -6946,6 +6975,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "tray-icon",
  "ui-director",
  "unicode-segmentation",
  "uuid",
@@ -8753,6 +8783,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tray-icon"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f5cc5858ecf9574ddd8f0032a2ff7ffd6f7724d2b81e48b9374984b3fd6ddc9"
+dependencies = [
+ "crossbeam-channel",
+ "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png 0.18.1",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "tree_magic_mini"
 version = "3.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10491,7 +10540,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-account-login"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde_json",
  "tao",
@@ -10501,7 +10550,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-assets"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -10516,7 +10565,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-backend"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -10550,7 +10599,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-client-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -10584,6 +10633,7 @@ dependencies = [
  "uuid",
  "windows 0.60.0",
  "windows 0.62.2",
+ "xrtranslate-config",
  "xrtranslate-connections",
  "xrtranslate-download",
  "xrtranslate-engine",
@@ -10595,7 +10645,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-config"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -10607,7 +10657,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-connections"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -10627,7 +10677,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-denoise"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ndarray",
  "ort",
@@ -10636,7 +10686,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-download"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "httpdate",
  "reqwest",
@@ -10646,7 +10696,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-engine"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "audioadapter-buffers",
  "rubato",
@@ -10655,7 +10705,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-http"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "regex",
  "reqwest",
@@ -10667,7 +10717,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-inference"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -10699,7 +10749,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-installer"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "clap",
  "serde_json",
@@ -10712,7 +10762,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-packager"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "clap",
  "serde_json",
@@ -10742,7 +10792,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-prompt"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -10750,7 +10800,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-protocol"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -10760,7 +10810,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-separation"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ort",
  "rustfft",
@@ -10768,7 +10818,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-speaker"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ndarray",
  "ort",
@@ -10776,7 +10826,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-supervisor"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -10784,7 +10834,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-updater"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "clap",
  "serde_json",
@@ -10794,7 +10844,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-vad"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ndarray",
  "ort",

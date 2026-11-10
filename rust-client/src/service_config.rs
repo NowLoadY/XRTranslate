@@ -439,7 +439,9 @@ impl ServiceConfigEditor {
     }
 
     pub(crate) fn missing_account_connections(&self) -> bool {
-        let store = xrtranslate_connections::AccountStore::for_project_root(project_root());
+        let store = xrtranslate_connections::AccountStore::for_project_root(
+            xrtranslate_config::data_root(&project_root()),
+        );
         self.categories
             .iter()
             .map(|category| category.key)

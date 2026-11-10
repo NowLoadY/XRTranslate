@@ -54,7 +54,7 @@ pub(super) fn run_import(
     }
     // Explicit stream ids belong to MPV's track list. Use the same demuxer as
     // playback instead of guessing an equivalent id in another decoder.
-    let temp_wav = std::path::PathBuf::from(format!(
+    let temp_wav = xrtranslate_config::data_root(&crate::backend::project_root()).join(format!(
         "runtime/cache/mpv_decode_{}.wav",
         uuid::Uuid::new_v4(),
     ));

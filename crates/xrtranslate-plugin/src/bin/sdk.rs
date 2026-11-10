@@ -210,7 +210,7 @@ fn build(arguments: &[OsString]) -> Result<()> {
         source_packages(&sdk)?.into_iter().collect()
     };
     let sources = if selected.is_empty() {
-        vec![(source.clone(), output.clone())]
+        vec![(source.clone(), output)]
     } else {
         selected
             .iter()

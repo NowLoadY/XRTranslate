@@ -37,8 +37,8 @@ and repeat `--plugin <child-directory>`. They compile together and are packaged
 separately beneath `--output`. The repository's `plugin-src/build.ps1` and
 `build.sh` use this mode for the public plugins.
 
-Copy the completed package into the application's `plugins` directory to install
-it. The application does not compile plugins during startup.
+Copy the completed package into the folder opened by Settings → Plugins.
+The application does not compile plugins during startup.
 
 ## Compatibility
 
@@ -46,6 +46,8 @@ The SDK version and application version are separate. A routine application
 update does not require rebuilding installed plugins. Existing plugins continue
 using their supported capabilities; new optional capabilities do not invalidate
 them. Raise `min_host_version` only when a plugin needs a newer application feature.
+Plugin `version` is optional release information, never a compatibility check.
+Keep a fixed value if supporting older hosts that require this field.
 
 Plugins use the published message interface rather than sharing Rust objects
 with the host. They may use a different Rust compiler or UI toolkit. Dependency

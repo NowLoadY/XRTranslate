@@ -34,7 +34,7 @@ pub(crate) fn save_default_word(root: &Path, entry: vocabulary::Entry) -> Result
     if !vocabulary::can_save(&entry.source) || entry.translated.is_empty() {
         return Err("Select a word or short phrase to save.".into());
     }
-    let path = root.join("runtime/translation-history.sqlite3");
+    let path = xrtranslate_config::data_root(root).join("runtime/translation-history.sqlite3");
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let mut database = open_database(&path).map_err(|e| e.to_string())?;
     vocabulary::execute(
@@ -240,7 +240,7 @@ impl Archive {
             epoch: epoch.clone(),
             overflow: Arc::new(AtomicBool::new(false)),
         };
-        let path = root.join("runtime/translation-history.sqlite3");
+        let path = xrtranslate_config::data_root(root).join("runtime/translation-history.sqlite3");
         let vocabulary_revision = vocabulary_revision();
         let worker_revision = vocabulary_revision.clone();
         let worker = std::thread::Builder::new()

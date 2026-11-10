@@ -618,6 +618,15 @@ pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &
 
 fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     if !crate::app_update::AppUpdateManager::is_supported() {
+        match xrtranslate_config::Distribution::read(&app.project_root()) {
+            Ok(xrtranslate_config::Distribution::Store) => {
+                ui.weak("Microsoft Store");
+            }
+            Ok(xrtranslate_config::Distribution::Steam) => {
+                ui.weak("Steam");
+            }
+            _ => {}
+        }
         return;
     }
     use crate::app_update::AppUpdateState;

@@ -1,7 +1,8 @@
 # Plugins and host features
 
-Optional plugins are native child processes discovered under the application’s
-`plugins/` directory. Each directory contains `plugin.json` and an executable;
+Optional plugins are native child processes discovered in the user's `plugins/`
+folder, followed by the application's `plugins/` folder.
+Each plugin directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
 while running and checks only the declared minimum host version. Media,
 Meeting, Agent, Vocabulary, SteamVR, OSC, Avatar, screen translation, Lyrics,
@@ -25,6 +26,10 @@ It can move to a separate repository unchanged. The exported SDK supplies its
 dependencies and build tool; the host build accepts finished plugin packages.
 Plugins keep working across compatible host upgrades without being rebuilt.
 They use host services without depending on the host's Rust compiler or UI build.
+Only `min_host_version` controls compatibility. Plugin `version` is optional
+release metadata; bundled plugins keep a fixed value for older host compatibility
+and do not increment it with the host. Independent plugins choose their own
+release numbering.
 
 Installed manifests are the sole plugin page catalogue; no compiled plugin
 controllers or static navigation registry remain. The host retains shared screen
