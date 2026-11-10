@@ -1,7 +1,7 @@
 //! Build/distribute the SDK and build an independently checked-out plugin.
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs,
     io::{BufRead, BufReader},
@@ -163,6 +163,7 @@ fn export(root: &Path, destination: &Path) -> Result<()> {
 fn build(arguments: &[OsString]) -> Result<()> {
     let source =
         Path::new(arguments.first().ok_or("Missing plugin source directory")?).canonicalize()?;
+    let mut selected = Vec::new();
     let mut sdk = None;
     let mut output = None;
     let mut target = None;
@@ -175,6 +176,9 @@ fn build(arguments: &[OsString]) -> Result<()> {
     let mut args = arguments[1..].iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--plugin") => {
+                selected.push(args.next().ok_or("Missing plugin directory name")?.clone())
+            }
             Some("--sdk") => sdk = args.next().map(PathBuf::from),
             Some("--output") => output = args.next().map(PathBuf::from),
             Some("--target-dir") => target = args.next().map(PathBuf::from),
@@ -188,7 +192,8 @@ fn build(arguments: &[OsString]) -> Result<()> {
         }
     }
     let sdk = sdk.ok_or("Pass --sdk <SDK directory>")?.canonicalize()?;
-    let output = output.ok_or("Pass --output <plugin package directory>")?;
+    let output = std::path::absolute(output.ok_or("Pass --output <plugin package directory>")?)?;
+    let target = target.map(std::path::absolute).transpose()?;
     let packages: Vec<PathBuf> = if sdk.join("sdk.json").is_file() {
         let info: Value = serde_json::from_slice(&fs::read(sdk.join("sdk.json"))?)?;
         info["packages"]
@@ -204,23 +209,48 @@ fn build(arguments: &[OsString]) -> Result<()> {
     } else {
         source_packages(&sdk)?.into_iter().collect()
     };
-    let plugin: xrtranslate_plugin::Manifest =
-        serde_json::from_slice(&fs::read(source.join("plugin.json"))?)?;
-    plugin.validate()?;
-    let package = manifest(&source.join("Cargo.toml"))?;
-    let name = package["package"]["name"]
-        .as_str()
-        .ok_or("Plugin package name is missing")?;
+    let sources = if selected.is_empty() {
+        vec![(source.clone(), output.clone())]
+    } else {
+        selected
+            .iter()
+            .map(|name| {
+                if Path::new(name).components().count() != 1
+                    || Path::new(name).file_name() != Some(name.as_os_str())
+                {
+                    return Err("Pass a plugin directory name, not a path".into());
+                }
+                let path = source.join(name).canonicalize()?;
+                if path.parent() != Some(source.as_path()) {
+                    return Err("Selected plugins must be direct children of the workspace".into());
+                }
+                Ok((path, output.join(name)))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let mut plugins = BTreeMap::new();
+    for (directory, destination) in sources {
+        let plugin: xrtranslate_plugin::Manifest =
+            serde_json::from_slice(&fs::read(directory.join("plugin.json"))?)?;
+        plugin.validate()?;
+        let package = manifest(&directory.join("Cargo.toml"))?;
+        let name = package["package"]["name"]
+            .as_str()
+            .ok_or("Plugin package name is missing")?
+            .to_owned();
+        if plugins.insert(name, (directory, destination)).is_some() {
+            return Err("Duplicate plugin package".into());
+        }
+    }
     let mut command = Command::new("cargo");
     command
         .current_dir(&source)
         .args(["build", "--manifest-path"])
         .arg(source.join("Cargo.toml"))
-        .args([
-            "--package",
-            name,
-            "--message-format=json-render-diagnostics",
-        ]);
+        .arg("--message-format=json-render-diagnostics");
+    for name in plugins.keys() {
+        command.args(["--package", name]);
+    }
     if !debug {
         command.arg("--release");
     }
@@ -278,7 +308,7 @@ fn build(arguments: &[OsString]) -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let mut artifact = None;
+    let mut artifacts = BTreeMap::new();
     for line in BufReader::new(child.stdout.take().unwrap()).lines() {
         let line = line?;
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -288,20 +318,24 @@ fn build(arguments: &[OsString]) -> Result<()> {
             if let Some(text) = message["message"]["rendered"].as_str() {
                 eprint!("{text}");
             }
-        } else if message["reason"] == "compiler-artifact" && message["target"]["name"] == name {
-            artifact = message["executable"].as_str().map(PathBuf::from);
+        } else if message["reason"] == "compiler-artifact"
+            && let Some(name) = message["target"]["name"].as_str()
+            && plugins.contains_key(name)
+            && let Some(executable) = message["executable"].as_str()
+        {
+            artifacts.insert(name.to_owned(), PathBuf::from(executable));
         }
     }
     if !child.wait()?.success() {
         return Err("Plugin build failed".into());
     }
-    super::stage(
-        &source,
-        &artifact.ok_or("Plugin artifact was not produced")?,
-        &output,
-        true,
-    )?;
-    println!("Plugin package created at {}", output.display());
+    if plugins.keys().any(|name| !artifacts.contains_key(name)) {
+        return Err("Plugin artifact was not produced".into());
+    }
+    for (name, (directory, destination)) in plugins {
+        super::stage(&directory, &artifacts[&name], &destination, true)?;
+        println!("Plugin package created at {}", destination.display());
+    }
     Ok(())
 }
 
@@ -311,6 +345,6 @@ pub(super) fn run(args: &[OsString]) -> Result<()> {
     } else if args[0] == "build" {
         build(&args[1..])
     } else {
-        Err("Usage: xrt-plugin sdk <source-root> <output> | build <plugin-source> --sdk <SDK directory> --output <plugin directory> [--target-dir <cache>] [--features <features>] [--target <triple>] [--no-default-features] [--debug] [--offline] [--locked]".into())
+        Err("Usage: xrt-plugin sdk <source-root> <output> | build <plugin-source> --sdk <SDK directory> --output <plugin directory> [--plugin <workspace child> ...] [--target-dir <cache>] [--features <features>] [--target <triple>] [--no-default-features] [--debug] [--offline] [--locked]".into())
     }
 }

@@ -1,0 +1,3 @@
+[build]
+# Nested workspaces in this checkout share the repository's build cache.
+target-dir = "target"

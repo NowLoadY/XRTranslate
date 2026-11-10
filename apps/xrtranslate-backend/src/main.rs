@@ -3293,7 +3293,7 @@ async fn run_inference_worker(
         let sentence_readiness =
             sentence_gate.observe(job.revision, &recognized.segments, completed_sentences);
         stable_translation_cache.lock().await.retain(|key, output| {
-            key.turn_id == job.topic_turn_id
+            key.turn_id == memory_turn_id
                 && recognized
                     .segments
                     .get(key.segment_index.saturating_sub(1) as usize)

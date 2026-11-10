@@ -17,14 +17,16 @@ $builder = @('xrt-plugin.exe', "target/$profile/xrt-plugin.exe", 'target/release
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
     Select-Object -First 1
 if (-not $builder) { throw "SDK build tool not found in: $sdkRoot" }
-foreach ($directory in Get-ChildItem -LiteralPath $PSScriptRoot -Directory) {
-    if (-not (Test-Path -LiteralPath (Join-Path $directory.FullName 'plugin.json'))) { continue }
-    if ($Plugin -and $directory.Name -notin $Plugin) { continue }
-    $arguments = @('build', $directory.FullName, '--sdk', $sdkRoot, '--output', (Join-Path $outputRoot $directory.Name))
-    if ($TargetDirectory) { $arguments += @('--target-dir', [System.IO.Path]::GetFullPath($TargetDirectory)) }
-    if ($DebugBuild) { $arguments += '--debug' }
-    if ($Offline) { $arguments += '--offline' }
-    if ($Locked) { $arguments += '--locked' }
-    & $builder @arguments
-    if ($LASTEXITCODE -ne 0) { throw "Plugin build failed: $($directory.Name)" }
-}
+$arguments = @('build', $PSScriptRoot, '--sdk', $sdkRoot, '--output', $outputRoot)
+$selected = @(Get-ChildItem -LiteralPath $PSScriptRoot -Directory | Where-Object {
+    (Test-Path -LiteralPath (Join-Path $_.FullName 'plugin.json')) -and
+    (-not $Plugin -or $_.Name -in $Plugin)
+})
+if ($selected.Count -eq 0) { throw 'No plugin sources selected.' }
+foreach ($directory in $selected) { $arguments += @('--plugin', $directory.Name) }
+if ($TargetDirectory) { $arguments += @('--target-dir', [System.IO.Path]::GetFullPath($TargetDirectory)) }
+if ($DebugBuild) { $arguments += '--debug' }
+if ($Offline) { $arguments += '--offline' }
+if ($Locked) { $arguments += '--locked' }
+& $builder @arguments
+if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed.' }

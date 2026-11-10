@@ -22,6 +22,10 @@ an optional build cache. On Linux, use `bash build.sh /opt/xrtranslate-sdk
 ~/packages/xrtranslate-plugins` instead. The build tool in the SDK also supports
 building a single plugin directory directly.
 
+The scripts compile selected plugins together and then package each separately.
+Within the host checkout, Cargo uses the root `target/` cache even when invoked
+from a plugin directory. Standalone plugin checkouts use their own workspace cache.
+
 The SDK path may also be a host source checkout with its `xrt-plugin` tool already
 built. The Windows and Linux development launchers build and update public plugins
 before starting the app. Other installed plugins are kept as they are.

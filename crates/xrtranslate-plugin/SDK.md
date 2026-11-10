@@ -26,8 +26,16 @@ dependencies already cached by Cargo. Use `--locked` to reject lockfile changes
 in reproducible builds. Install Rust and the platform's usual
 native build prerequisites before building.
 
+Relative output and cache paths are resolved from the directory where you invoke
+the build tool.
+
 For host development, `--sdk` also accepts the host source checkout directly.
 Use its built `target/release/xrt-plugin` tool; no SDK export is needed.
+
+To build several plugins in one Cargo workspace, pass the workspace directory
+and repeat `--plugin <child-directory>`. They compile together and are packaged
+separately beneath `--output`. The repository's `plugin-src/build.ps1` and
+`build.sh` use this mode for the public plugins.
 
 Copy the completed package into the application's `plugins` directory to install
 it. The application does not compile plugins during startup.
