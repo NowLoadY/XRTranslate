@@ -1,15 +1,11 @@
-//! Independent plugin rendering, with a negotiated legacy fallback.
-#[cfg(windows)]
-mod windows;
-#[cfg(windows)]
-pub use windows::Host;
+//! Embedded pages share the host GPU on every platform. Plugins own layout and
+//! interaction; named callbacks carry parameters for the host's shared shaders.
+pub use xrtranslate_plugin::surface::serve;
 
-pub fn serve(plugin: impl xrtranslate_plugin::surface::UiPlugin) -> Result<(), String> {
-    #[cfg(windows)]
-    let renderer = Some(
-        Box::new(windows::Page::default()) as Box<dyn xrtranslate_plugin::surface::GpuRenderer>
-    );
-    #[cfg(not(windows))]
-    let renderer = None;
-    xrtranslate_plugin::surface::serve_with_renderer(plugin, renderer)
+pub fn paint(
+    plugin: &str,
+    paint: &xrtranslate_plugin::surface::Paint,
+) -> Option<eframe::egui::Shape> {
+    super::organic_border::surface_paint(plugin, paint)
+        .or_else(|| super::components::avatar::surface_paint(plugin, paint))
 }

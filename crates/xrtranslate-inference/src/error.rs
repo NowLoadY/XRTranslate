@@ -145,7 +145,29 @@ impl InferenceError {
         matches!(self, Self::RejectedOutput { .. })
     }
 
-    /// A larger generation budget may recover an output or context limit.
+    /// The provider rejected the input window, rather than exhausting output.
+    #[must_use]
+    pub fn is_context_limit(&self) -> bool {
+        let Self::HttpStatus {
+            status: 400,
+            body_preview,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(body_preview) else {
+            return false;
+        };
+        ["code", "type"].iter().any(|key| {
+            matches!(
+                body["error"][key].as_str(),
+                Some("exceed_context_size_error" | "context_length_exceeded")
+            )
+        })
+    }
+
+    /// A larger generation budget may recover an output limit.
     #[must_use]
     pub fn is_output_limit(&self) -> bool {
         matches!(self, Self::IncompleteCompletion { finish_reason, .. } if finish_reason == "length")

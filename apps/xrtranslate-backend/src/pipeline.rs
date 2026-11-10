@@ -1627,7 +1627,8 @@ impl NativeInference {
                 Ok(translated) => break translated,
                 Err(error)
                     if !output_retried
-                        && (error.is_rejected_output() || error.is_output_limit()) =>
+                        && (error.is_rejected_output() || error.is_output_limit()
+                            || (error.is_context_limit() && options.prompt_context.has_reference_context())) =>
                 {
                     if error.is_output_limit() {
                         options.max_tokens = expanded_output_budget(
@@ -1639,7 +1640,7 @@ impl NativeInference {
                     warn!(
                         %error,
                         max_tokens = options.max_tokens,
-                        "translation output was incomplete or invalid; regenerating current segment once without optional context"
+                        "translation exceeded its limits or failed validation; regenerating current segment once without optional context"
                     );
                     output_retried = true;
                     options.prompt_context = options.prompt_context.without_reference_context();

@@ -118,18 +118,19 @@ the process boundary. `icon` and `navigation_order` control page navigation. Opt
 plugin names.
 
 Only one frame is in flight per visible page; queued input is retained. Hidden
-pages receive `ui.visibility=false` and keep their background work. The client
-core's embedded adapter renders directly on the plugin's GPU on Windows. The
-host composites shared surfaces without receiving UI vertices or texture pixels.
-Custom WGPU callbacks run in the plugin renderer. Video continues to use the host
-playback service and appears underneath the page's subtitles and controls.
+pages receive `ui.visibility=false` and keep their background work. Embedded pages
+use the host GPU on all platforms, sharing its device, pipelines and output target.
+Named paint callbacks carry parameters for shared shaders; 3D geometry remains
+host-owned. Arbitrary local WGPU callbacks belong in an independent plugin window.
+Video uses host-owned texture IDs at its original draw position, preserving
+subtitles and controls without copying video pixels through the plugin pipe.
 
-The optional `d3d12_v1` frame contract is offered before the first draw. Older
-plugins ignore it and retain the drawing adapter; newer plugins use that adapter
-with older hosts or unsupported platforms. No Rust objects or compiler ABI cross
-the process boundary. The drawing adapter retains binary frames, unchanged-frame
-reuse and compressed texture deltas. Messages are bounded at 32 MiB and decoded
-textures at 128 MiB per frame.
+The drawing contract uses binary frames, unchanged-drawing reuse and losslessly
+compressed texture deltas. Named callbacks are decoded once per changed drawing
+set. No per-plugin GPU initialization or full-window pixel transfer is needed.
+Existing plugins use the same drawing contract when no optional shared GPU target
+is offered; older hosts retain the JSON frame encoding. Messages are bounded at
+32 MiB and decoded textures at 128 MiB per frame.
 
 For a game or another intensive custom renderer, a plugin may own its window and
 GPU instead. The [window example](../../examples/plugin-window) reuses SDK controls

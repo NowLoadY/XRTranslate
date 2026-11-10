@@ -52,45 +52,6 @@ pub struct Input {
     pub pixels_per_point: f32,
     pub style: egui::Style,
     pub options: Value,
-    #[serde(default, rename = "d3d12_v1", skip_serializing_if = "Option::is_none")]
-    pub shared_target: Option<SharedTarget>,
-}
-
-/// Versioned OS resource names, never Rust objects or process-local handles.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SharedTarget {
-    pub name: String,
-    pub adapter: u64,
-    pub size: [u32; 2],
-    pub slot: usize,
-    pub released: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SharedFrame {
-    pub name: String,
-    pub slot: usize,
-    pub ready: u64,
-}
-
-/// A local renderer owns its GPU and consumes egui output in the plugin process.
-pub trait GpuRenderer {
-    fn prepare(&mut self, target: &SharedTarget) -> std::result::Result<(), String>;
-    fn render(
-        &mut self,
-        input: &Input,
-        primitives: Vec<egui::ClippedPrimitive>,
-        textures: &mut egui::TexturesDelta,
-        submit: bool,
-    ) -> std::result::Result<(Option<SharedFrame>, Vec<Drawing>), String>;
-}
-
-/// The host composites shared GPU resources; older plugins use drawing commands.
-pub trait Compositor {
-    fn target(&mut self, size: [u32; 2]) -> std::result::Result<SharedTarget, String>;
-    fn accept(&mut self, frame: SharedFrame);
-    fn poll(&mut self, ctx: &egui::Context) -> bool;
-    fn paint(&self, ui: &egui::Ui);
 }
 
 #[derive(Debug)]
@@ -129,8 +90,6 @@ pub struct Frame {
     pub drawings: Vec<Drawing>,
     #[serde(default)]
     pub reuse_drawings: bool,
-    #[serde(default, rename = "d3d12_v1", skip_serializing_if = "Option::is_none")]
-    pub shared: Option<SharedFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_bounds: Option<ContentBounds>,
     #[serde(with = "textures")]
@@ -145,28 +104,21 @@ pub struct Frame {
 
 pub trait UiPlugin: Plugin {
     /// Return true when Back was handled inside the plugin's current page.
-    fn back(&mut self) -> bool { false }
+    fn back(&mut self) -> bool {
+        false
+    }
     /// Install the same shared fonts/theme/image loaders as the shell.
     fn configure_ui(&mut self, _context: &egui::Context, _options: &Value) {}
     fn ui(&mut self, ui: &mut egui::Ui, context: &mut Context);
 }
 
 pub fn serve(plugin: impl UiPlugin) -> std::result::Result<(), String> {
-    serve_with_renderer(plugin, None)
-}
-
-pub fn serve_with_renderer(
-    plugin: impl UiPlugin,
-    gpu: Option<Box<dyn GpuRenderer>>,
-) -> std::result::Result<(), String> {
     crate::serve(Page {
         plugin,
         context: egui::Context::default(),
         input: None,
         drawings: Vec::new(),
         rendering: Arc::new(AtomicBool::new(false)),
-        gpu,
-        gpu_started: false,
     })
 }
 struct Page<P> {
@@ -175,37 +127,16 @@ struct Page<P> {
     input: Option<Input>,
     drawings: Vec<Drawing>,
     rendering: Arc<AtomicBool>,
-    gpu: Option<Box<dyn GpuRenderer>>,
-    gpu_started: bool,
 }
 impl<P: UiPlugin> Page<P> {
     fn render(
         &mut self,
         input: Input,
         context: &mut Context,
-        submit: bool,
     ) -> std::result::Result<Frame, String> {
-        let mut local_gpu = false;
-        if let (Some(gpu), Some(target)) = (&mut self.gpu, &input.shared_target) {
-            match gpu.prepare(target) {
-                Ok(()) => {
-                    local_gpu = true;
-                    self.gpu_started = true;
-                }
-                Err(error) => {
-                    // Once textures belong to the GPU, don't silently switch to a
-                    // renderer missing the existing atlas and image resources.
-                    if self.gpu_started {
-                        return Err(error);
-                    }
-                    eprintln!("Shared plugin renderer unavailable: {error}");
-                    self.gpu = None;
-                }
-            }
-        }
         self.rendering.store(true, Ordering::Release);
         self.context
-            .data_mut(|data| data.insert_temp(egui::Id::unique("native_surface"), !local_gpu));
+            .data_mut(|data| data.insert_temp(egui::Id::unique("native_surface"), true));
         self.context.set_pixels_per_point(input.pixels_per_point);
         self.context
             .set_style_of(egui::Theme::Light, input.style.clone());
@@ -248,36 +179,24 @@ impl<P: UiPlugin> Page<P> {
         let primitives = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
-        let shared = if local_gpu {
-            let (shared, external) = self.gpu.as_mut().unwrap().render(
-                &input,
-                primitives,
-                &mut output.textures_delta,
-                submit,
-            )?;
-            drawings = external;
-            shared
-        } else {
-            for item in primitives {
-                match item.primitive {
-                    Primitive::Mesh(mesh) => drawings.push(Drawing::Mesh {
+        for item in primitives {
+            match item.primitive {
+                Primitive::Mesh(mesh) => drawings.push(Drawing::Mesh {
+                    clip: item.clip_rect,
+                    mesh: Arc::new(mesh),
+                }),
+                Primitive::Callback(callback) => {
+                    let paint = callback
+                        .callback
+                        .downcast_ref::<Paint>()
+                        .ok_or("Plugin used an unregistered GPU callback")?;
+                    drawings.push(Drawing::Paint {
                         clip: item.clip_rect,
-                        mesh: Arc::new(mesh),
-                    }),
-                    Primitive::Callback(callback) => {
-                        let paint = callback
-                            .callback
-                            .downcast_ref::<Paint>()
-                            .ok_or("Plugin used an unregistered GPU callback")?;
-                        drawings.push(Drawing::Paint {
-                            clip: item.clip_rect,
-                            paint: paint.clone(),
-                        });
-                    }
+                        paint: paint.clone(),
+                    });
                 }
             }
-            None
-        };
+        }
         let mut retained = input;
         retained.raw.events.clear();
         retained.raw.dropped_files.clear();
@@ -292,7 +211,6 @@ impl<P: UiPlugin> Page<P> {
         Ok(Frame {
             drawings,
             reuse_drawings,
-            shared,
             content_bounds: Some(content_bounds),
             textures: output
                 .textures_delta
@@ -335,7 +253,7 @@ impl<P: UiPlugin> Plugin for Page<P> {
         match name {
             "ui.render" => {
                 let input = serde_json::from_value(arguments).map_err(|e| e.to_string())?;
-                let frame = self.render(input, context, true)?;
+                let frame = self.render(input, context)?;
                 if context.binary_surfaces {
                     context.surface(&frame)?;
                     Ok(Value::Null)
@@ -357,8 +275,8 @@ impl<P: UiPlugin> Plugin for Page<P> {
                         cancelled: Arc::new(AtomicBool::new(false)),
                     })
                     .map_err(|e| e.to_string())?;
-                // Director commands update state without reusing a displayed GPU target.
-                let frame = self.render(input, context, false)?;
+                // Commands use the same layout and drawing path as ordinary input.
+                let frame = self.render(input, context)?;
                 self.context.request_repaint();
                 if context.binary_surfaces {
                     context.surface(&frame)?;

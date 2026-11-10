@@ -11,15 +11,13 @@ use std::{
 /// One pending frame bounds latency and memory; input events are never discarded.
 #[derive(Default)]
 pub struct Renderer {
-    pub gpu_unavailable: bool,
-    gpu_active: bool,
-    pub compositor: Option<Box<dyn super::Compositor>>,
     pending: Option<u64>,
     frame: Option<Frame>,
     input: Option<Input>,
     textures: HashMap<TextureId, TextureHandle>,
     drawings: Vec<Drawing>,
     texture_ids: Vec<Option<TextureId>>,
+    paint_callbacks: Vec<Option<egui::Shape>>,
     repaint_at: Option<Instant>,
     last_request: Option<Instant>,
     pointer: bool,
@@ -32,17 +30,6 @@ impl Renderer {
     }
 
     pub fn accept(&mut self, ctx: &egui::Context, mut frame: Frame) {
-        if let Some(shared) = frame.shared.take() {
-            if let Some(compositor) = &mut self.compositor {
-                self.gpu_active = true;
-                compositor.accept(shared);
-            }
-        } else if !self.gpu_active {
-            // Offer the shared target on the very first frame. This avoids
-            // switching renderers after the initial font/image upload.
-            self.gpu_unavailable = true;
-            self.compositor = None;
-        }
         for (id, deltas) in frame.textures.drain(..) {
             for delta in deltas {
                 if let Some(texture) = self.textures.get_mut(&id) {
@@ -72,6 +59,7 @@ impl Renderer {
         });
         if !frame.reuse_drawings {
             self.drawings = std::mem::take(&mut frame.drawings);
+            self.paint_callbacks.clear();
             self.texture_ids = self
                 .drawings
                 .iter()
@@ -225,7 +213,6 @@ impl Renderer {
             pixels_per_point: ui.ctx().pixels_per_point(),
             style: (**style).clone(),
             options,
-            shared_target: None,
         });
         if changed {
             self.repaint_after(ui.ctx(), Duration::ZERO);
@@ -242,27 +229,8 @@ impl Renderer {
         let due = self
             .last_request
             .map_or(due, |last| due.max(last + Duration::from_millis(16)));
-        let gpu_ready = self
-            .compositor
-            .as_mut()
-            .is_none_or(|gpu| gpu.poll(ui.ctx()));
-        if self.pending.is_none() && gpu_ready && now >= due {
+        if self.pending.is_none() && now >= due {
             let input = self.input.as_mut().unwrap();
-            if !self.gpu_unavailable
-                && let Some(gpu) = &mut self.compositor
-            {
-                let screen = input.raw.screen_rect.unwrap_or(input.rect);
-                let size = (screen.max.to_vec2() * input.pixels_per_point).ceil();
-                match gpu.target([size.x as u32, size.y as u32]) {
-                    Ok(target) => input.shared_target = Some(target),
-                    Err(error) if !self.gpu_active => {
-                        log::warn!("Shared plugin UI unavailable: {error}");
-                        self.gpu_unavailable = true;
-                        self.compositor = None;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
             self.pending = Some(process.request(
                 "ui.render",
                 serde_json::to_value(&*input).map_err(|e| e.to_string())?,
@@ -283,6 +251,16 @@ impl Renderer {
                 frame.feedback.clone(),
                 frame.feedback_until,
             );
+            if self.paint_callbacks.len() != self.drawings.len() {
+                self.paint_callbacks = self
+                    .drawings
+                    .iter()
+                    .map(|drawing| match drawing {
+                        Drawing::Paint { paint: command, .. } => paint(command),
+                        Drawing::Mesh { .. } => None,
+                    })
+                    .collect();
+            }
             for (index, drawing) in self.drawings.iter_mut().enumerate() {
                 match drawing {
                     Drawing::Mesh { clip, mesh } => {
@@ -303,21 +281,13 @@ impl Renderer {
                             .with_clip_rect(*clip)
                             .add(egui::Shape::mesh(mesh.clone()));
                     }
-                    Drawing::Paint {
-                        clip,
-                        paint: command,
-                    } => {
-                        if let Some(shape) = paint(command) {
-                            ui.painter().with_clip_rect(*clip).add(shape);
+                    Drawing::Paint { clip, .. } => {
+                        if let Some(shape) = &self.paint_callbacks[index] {
+                            ui.painter().with_clip_rect(*clip).add(shape.clone());
                         }
                     }
                 }
             }
-        }
-        if self.gpu_active
-            && let Some(gpu) = &self.compositor
-        {
-            gpu.paint(ui);
         }
         Ok(())
     }
@@ -331,7 +301,6 @@ mod tests {
         Frame {
             drawings: Vec::new(),
             reuse_drawings: false,
-            shared: None,
             content_bounds: None,
             textures: Vec::new(),
             free: Vec::new(),

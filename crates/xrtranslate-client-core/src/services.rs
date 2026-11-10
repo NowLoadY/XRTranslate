@@ -1,9 +1,10 @@
 //! Shared host capabilities used by native plugin controllers.
+use crate::i18n::UiLanguage;
 use crate::session_coordinator::{TranslationEvent, TranslationSessionOwner, TranslationTask};
-use crate::{i18n::UiLanguage, ui::components::AudioPreprocessingModels};
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use xrtranslate_plugin::{Client, Request};
+use xrtranslate_protocol::AudioPreprocessingModels;
 use xrtranslate_protocol::{AskError, AskRequest};
 
 /// A live task can contain both microphone and system-audio streams.

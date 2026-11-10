@@ -121,6 +121,39 @@ impl TranslationPromptContext {
         }
     }
 
+    /// Release optional facts in reverse selection priority. The current input
+    /// and the prompt itself are never changed to make room for references.
+    pub fn reduce_reference_context(&mut self) -> bool {
+        if !self.recent_turns.is_empty() {
+            self.recent_turns.remove(0);
+        } else if !self.terminology_rows.is_empty() {
+            self.terminology_rows.pop();
+        } else if let Some(source) = &mut self.surrounding_source {
+            let before = source.before.chars().count() / 2;
+            let after = source.after.chars().count() / 2;
+            source.before = source
+                .before
+                .chars()
+                .rev()
+                .take(before)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            source.after = source.after.chars().take(after).collect();
+            if before == 0 && after == 0 {
+                self.surrounding_source = None;
+            }
+        } else if self.previous_revision.take().is_none() {
+            if self.current_speaker_id.is_empty() && self.language_order.is_empty() {
+                return false;
+            }
+            self.current_speaker_id.clear();
+            self.language_order.clear();
+        }
+        true
+    }
+
     pub fn reference_text_for_quality_checks(&self) -> Option<String> {
         let values = self.reference_blocks_for_quality_checks();
         (!values.is_empty()).then(|| values.join("\n\n"))

@@ -38,6 +38,12 @@ See [Director CLI and Agent design](design/director-agent.md) for the shared too
 Rendering consumes focused state and emits domain actions. Persistence, network
 requests, and resource lifecycle remain with controllers or host capabilities.
 
+Embedded plugin pages use that same GPU renderer on every platform. Plugins send
+lossless drawings and texture deltas, retaining unchanged frames. Shared shader
+callbacks transmit instance parameters, not rendered images or duplicate geometry.
+The host owns pipelines and GPU textures; plugins own layout and interaction.
+Independent games or custom renderers keep their own windows and GPU resources.
+
 ## Layout and interaction
 
 `ui::layout` owns adaptive flow, control sizing, column stacking, and window-size

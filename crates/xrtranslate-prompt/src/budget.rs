@@ -1,7 +1,19 @@
 use crate::{
-    PromptGraphError, PromptNodeGraph, TranslationPromptContext, TranslationPromptProfile,
-    estimated_tokens,
+    PromptGraphError, PromptNodeGraph, PromptRender, TranslationPromptContext,
+    TranslationPromptProfile, estimated_tokens,
 };
+
+impl PromptRender {
+    /// Estimate the complete request, including message framing and a template
+    /// allowance. This is shared by input segmentation and final request fitting.
+    pub fn estimated_tokens(&self) -> usize {
+        self.messages
+            .iter()
+            .map(|message| estimated_tokens(&message.content) + 8)
+            .sum::<usize>()
+            .saturating_add(64)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct TextTranslationBudget {
@@ -52,13 +64,7 @@ impl PromptNodeGraph {
             target,
             &TranslationPromptContext::default(),
         )?;
-        let overhead = prompt
-            .messages
-            .iter()
-            .map(|message| estimated_tokens(&message.content) + 8)
-            .sum::<usize>()
-            .saturating_add(64)
-            .max(256);
+        let overhead = prompt.estimated_tokens().max(256);
         let available = (context_tokens as usize).saturating_sub(overhead);
         let output_tokens = (output_tokens as usize)
             .max(available.div_ceil(2))

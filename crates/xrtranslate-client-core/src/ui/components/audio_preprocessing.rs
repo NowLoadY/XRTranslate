@@ -5,72 +5,24 @@ use crate::{
 use eframe::egui;
 use xrtranslate_protocol::AudioPreprocessing;
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub enum AudioPreprocessingModelState {
-    #[default]
-    Missing,
-    Checking,
-    Queued,
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Paused {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Ready,
-    Failed(String),
-}
+pub use xrtranslate_protocol::{
+    AudioPreprocessingAction, AudioPreprocessingModelState, AudioPreprocessingModels,
+};
 
-impl AudioPreprocessingModelState {
-    fn progress(&self) -> Option<f32> {
-        match self {
-            Self::Downloading {
-                downloaded_bytes,
-                total_bytes,
-            }
-            | Self::Paused {
-                downloaded_bytes,
-                total_bytes,
-            } if *total_bytes > 0 => {
-                Some((*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32)
-            }
-            _ => None,
+fn model_progress(state: &AudioPreprocessingModelState) -> Option<f32> {
+    match state {
+        AudioPreprocessingModelState::Downloading {
+            downloaded_bytes,
+            total_bytes,
         }
-    }
-}
-
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct AudioPreprocessingModels {
-    pub gtcrn: AudioPreprocessingModelState,
-    pub vocal: AudioPreprocessingModelState,
-    pub can_delete: bool,
-    pub use_mirror: bool,
-}
-
-impl AudioPreprocessingModels {
-    pub fn state(&self, mode: AudioPreprocessing) -> Option<&AudioPreprocessingModelState> {
-        match mode {
-            AudioPreprocessing::None => None,
-            AudioPreprocessing::Gtcrn => Some(&self.gtcrn),
-            AudioPreprocessing::VocalSeparation => Some(&self.vocal),
+        | AudioPreprocessingModelState::Paused {
+            downloaded_bytes,
+            total_bytes,
+        } if *total_bytes > 0 => {
+            Some((*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32)
         }
+        _ => None,
     }
-
-    pub fn is_ready(&self, mode: AudioPreprocessing) -> bool {
-        self.state(mode)
-            .is_none_or(|state| matches!(state, AudioPreprocessingModelState::Ready))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum AudioPreprocessingAction {
-    Download(AudioPreprocessing),
-    Pause(AudioPreprocessing),
-    Resume(AudioPreprocessing),
-    Delete(AudioPreprocessing),
-    SetMirror(bool),
 }
 
 pub struct AudioPreprocessingResponse {
@@ -202,13 +154,10 @@ pub fn audio_preprocessing_selector(
         .iter()
         .find_map(|(value, label)| (*value == selected).then_some(*label))
         .unwrap_or(labels[1]);
-    let selected_label = models
-        .state(selected)
-        .and_then(|state| state.progress())
-        .map_or_else(
-            || selected_label.to_owned(),
-            |progress| format!("{selected_label} · {}", progress_percent(progress)),
-        );
+    let selected_label = models.state(selected).and_then(model_progress).map_or_else(
+        || selected_label.to_owned(),
+        |progress| format!("{selected_label} · {}", progress_percent(progress)),
+    );
     let before = *selection;
     let mut action = None;
     let mut response = ui
@@ -247,7 +196,7 @@ pub fn audio_preprocessing_selector(
                                                 label,
                                                 selected == value,
                                                 available,
-                                                state.progress(),
+                                                model_progress(state),
                                                 available
                                                     && matches!(
                                                         state,

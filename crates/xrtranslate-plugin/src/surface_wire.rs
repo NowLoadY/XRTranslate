@@ -65,7 +65,6 @@ mod tests {
                 },
             ],
             reuse_drawings: false,
-            shared: None,
             content_bounds: Some(crate::surface::ContentBounds {
                 occupied: vec![rect],
                 heading: Some(rect),

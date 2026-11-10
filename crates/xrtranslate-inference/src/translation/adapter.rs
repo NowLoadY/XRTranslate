@@ -233,7 +233,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                         source_text,
                         &text,
                         &prompt.messages,
-                        &options.prompt_context,
+                        &prompt.context,
                     )
                     .is_none();
                     let callback = if safe && !text.is_empty() && text != previous {
@@ -258,12 +258,9 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                 operation: "translation",
             });
         }
-        if let Some(reason) = translation_output_rejection(
-            source_text,
-            &text,
-            &prompt.messages,
-            &options.prompt_context,
-        ) {
+        if let Some(reason) =
+            translation_output_rejection(source_text, &text, &prompt.messages, &prompt.context)
+        {
             return Err(InferenceError::RejectedOutput {
                 operation: "translation",
                 reason,

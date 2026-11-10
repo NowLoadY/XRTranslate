@@ -102,6 +102,15 @@ selects supported reference capabilities, and combines task facts with retrieved
 terminology. Plugins do not maintain model-specific prompt variants. Optional
 context removal during recovery affects the request, not the owner's memory.
 
+Final translation delivery budgets the complete rendered graph, including style,
+message framing and the reserved output allowance. Earlier reference selection
+only bounds candidates; it cannot establish the final request size. If needed,
+delivery removes optional history, terminology and neighboring text while keeping
+the current source intact. A prompt and source that cannot fit on their own produce
+an actionable capacity error. Token counts remain estimates; a provider's typed
+context-limit rejection uses the existing single context-free regeneration, without
+changing the configured window or the stored conversation.
+
 ## Execution and validation
 
 Graphs are validated before activation. Typed connections, required inputs,

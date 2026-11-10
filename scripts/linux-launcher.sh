@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 CLIENT="${ROOT_DIR}/bin/rust-client"
+# Use the system EGL vendor registry, independent of the invoking shell.
+unset __EGL_VENDOR_LIBRARY_DIRS __EGL_VENDOR_LIBRARY_FILENAMES
 missing="$(LC_ALL=C ldd "${CLIENT}" | awk '/=> not found/ {print $1}' || true)"
 if [[ -z "${missing}" ]]; then
   exec "${CLIENT}" "$@"

@@ -321,10 +321,11 @@ impl CallbackTrait for OrganicBorderCallback {
 }
 
 /// Reuse the shell's existing shader for a plugin's shared controls.
-pub fn surface_paint(paint: &xrtranslate_plugin::surface::Paint) -> Option<egui::Shape> {
+pub fn surface_paint(plugin: &str, paint: &xrtranslate_plugin::surface::Paint) -> Option<egui::Shape> {
     if paint.name != "organic_border" {
         return None;
     }
-    let callback: OrganicBorderCallback = serde_json::from_value(paint.data.clone()).ok()?;
+    let mut callback: OrganicBorderCallback = serde_json::from_value(paint.data.clone()).ok()?;
+    callback.id = egui::Id::unique(("plugin", plugin, callback.id)).value();
     Some(egui_wgpu::Callback::new_paint_callback(paint.rect, callback).into())
 }

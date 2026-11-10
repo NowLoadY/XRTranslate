@@ -23,7 +23,7 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MASKED_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 const SAMPLES: u32 = 4;
 
-#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
 #[repr(C)]
 struct Instance {
     model: [[f32; 4]; 4],
@@ -621,19 +621,43 @@ pub fn install(
 pub(super) fn paint(painter: &egui::Painter, id: Id, rect: Rect, model: Model) {
     let mut callback = Draw::new(id.value(), rect, model);
     callback.opacity = painter.opacity();
-    painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+    if xrtranslate_plugin::surface::active(painter.ctx()) {
+        xrtranslate_plugin::surface::Paint {
+            rect,
+            name: "avatar".into(),
+            data: serde_json::to_value(&callback).expect("avatar draw parameters"),
+        }
+        .add(painter);
+    } else {
+        painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+    }
 }
 
+/// Geometry and pipelines remain in the host; only instance parameters cross IPC.
+pub fn surface_paint(
+    plugin: &str,
+    paint: &xrtranslate_plugin::surface::Paint,
+) -> Option<egui::Shape> {
+    if paint.name != "avatar" {
+        return None;
+    }
+    let mut callback: Draw = serde_json::from_value(paint.data.clone()).ok()?;
+    callback.id = Id::unique(("plugin", plugin, callback.id)).value();
+    Some(egui_wgpu::Callback::new_paint_callback(paint.rect, callback).into())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Draw {
     id: u64,
     rect: Rect,
     batches: Vec<Batch>,
     parts: Vec<Instance>,
+    #[serde(skip)]
     projection: Option<glam::Mat4>,
     opacity: f32,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Batch {
     geometry: Geometry,
     instances: std::ops::Range<u32>,

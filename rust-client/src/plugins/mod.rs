@@ -110,5 +110,5 @@ pub(crate) struct PluginPage {
     pub title: String,
     pub order: i32,
     pub group: String,
-    pub icon: Option<(String, Vec<u8>)>,
+    pub icon: Option<(String, std::sync::Arc<[u8]>)>,
 }

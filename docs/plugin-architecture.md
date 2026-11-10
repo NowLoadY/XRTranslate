@@ -32,10 +32,13 @@ capture/OCR, OSC transport and task services.
 
 `crates/xrtranslate-client-core` holds the existing UI components and neutral
 session/playback/file contracts once. The native Media, Meeting and Vocabulary
-pages reuse them through the SDK's embedded adapter. On Windows, plugins render
-their own UI and the host composites shared GPU surfaces. Older plugins and other
-platforms retain the compatible drawing adapter. UI and CLI invoke the same handlers.
-Video textures remain host-owned; video pixels do not travel through JSON. The
+pages reuse them through the SDK's embedded adapter. On every platform, plugins
+own layout and interaction while the host GPU draws their meshes and named shader
+callbacks. Binary frames reuse unchanged drawings and carry lossless texture deltas;
+embedded pages do not allocate a second GPU device or full-window render targets.
+Shared 3D callbacks carry instance parameters while geometry and pipelines stay
+in the host. UI and CLI invoke the same handlers. Video textures remain host-owned;
+video pixels never cross the plugin pipe. The
 host cancels a removed plugin's tasks and releases its playback resources.
 
 Embedded pages are one presentation option. Small panels can use host controls;
@@ -194,6 +197,14 @@ drain cleanly without becoming offline work. See [online audio](online-audio.md)
 The manifest owns identity, navigation and tools. Configuration belongs to the
 plugin; the host owns process enablement and resource cleanup.
 
+Directory scans and process launch/retirement run on one serial I/O worker.
+The host owns installed state and accepts completed launches before sending the
+current environment. Abandoned launches and shutdown cleanup stay on that worker.
+Navigation changes rebuild the page list; icons share immutable bytes, and tool
+definitions are reused until installed contributions change. Protocol writers
+sleep until output, cancellation or disconnection arrives; plugin task ticks
+remain separate from rendering.
+
 Each plugin owns activation, deactivation, cancellation, and worker cleanup.
 Enablement and active work are separate: work starts when the consuming
 capability needs it. Disabling removes unavailable navigation and either stops
@@ -239,9 +250,13 @@ the plugin owns playback selection and transcript following.
 The shared MPV backend owns its playback state snapshot and video worker.
 The native media plugin controls a resource allocated to its process by the host.
 UI reads consume observed state and playback actions are queued asynchronously.
-Video work stays bounded, and the worker completes before its target resources
-are retired. Hidden playback continues without holding UI graphics resources
-while waiting for the playback clock.
+Windows and Linux share one event-driven worker and one pending frame. The UI
+keeps its last texture while rendering proceeds asynchronously; a completed frame
+uses one GPU-local copy into that texture. Platform adapters own only the D3D11 /
+D3D12 or OpenGL / Vulkan external-resource handoff, with matching adapters and
+explicit GPU synchronization. Pixels never return to CPU memory. Hidden playback
+consumes update notifications without polling, and worker/GPU work completes
+before its resources are retired.
 
 VRChat OSC and ChilloutVR OSC are independent executable plugins built from
 the same library. They share composition, scheduling and UI; game profiles own packet

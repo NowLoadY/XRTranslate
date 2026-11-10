@@ -1,5 +1,6 @@
 //! Installed plugins contribute views and operations; this adapter supplies host services.
 mod datagram;
+mod io;
 mod models;
 mod operations;
 mod osc;
@@ -88,12 +89,13 @@ impl Default for Settings {
 }
 struct Installed {
     modified: Option<std::time::SystemTime>,
-    icon: Option<(String, Vec<u8>)>,
+    icon: Option<(String, Arc<[u8]>)>,
     directory: PathBuf,
     executable: PathBuf,
     manifest: Manifest,
     settings: Settings,
     process: Option<Process>,
+    starting: Option<std::sync::mpsc::Receiver<Result<Process, String>>>,
     error: Option<String>,
     page: ui::PageState,
     state: Value,
@@ -104,6 +106,14 @@ struct Inference {
     reply: crate::ask::Reply,
     cancel: Arc<AtomicBool>,
 }
+type Scan = Result<
+    Vec<(
+        PathBuf,
+        Result<(Manifest, Option<std::time::SystemTime>), String>,
+    )>,
+    String,
+>;
+
 pub(crate) struct Host {
     datagrams: datagram::Outputs,
     osc: osc::Control,
@@ -123,6 +133,8 @@ pub(crate) struct Host {
     directory: PathBuf,
     executables: Option<PathBuf>,
     next_scan: std::time::Instant,
+    scan: Option<std::sync::mpsc::Receiver<Scan>>,
+    navigation_changed: bool,
     models_root: PathBuf,
     resources: Option<(String, BTreeMap<String, PathBuf>)>,
     capabilities: Vec<String>,
@@ -136,6 +148,7 @@ pub(crate) struct Host {
     surface_requests: Vec<(String, u64, ui_director::egui::driver::Request)>,
     context_updated: std::time::Instant,
     pub error: Option<String>,
+    io: io::Worker,
 }
 impl Host {
     pub fn send_event(&self, plugin: &str, name: &str, value: Value) {
@@ -166,7 +179,7 @@ impl Host {
                 .and_then(|c| c.model_manager.models_directory.as_deref())
                 .unwrap_or(Path::new("models")),
         );
-        let mut host = Self {
+        Self {
             datagrams: Default::default(),
             osc: Default::default(),
             #[cfg(target_os = "android")]
@@ -184,6 +197,9 @@ impl Host {
             #[cfg(not(target_os = "android"))]
             executables: None,
             next_scan: std::time::Instant::now(),
+            scan: None,
+            navigation_changed: true,
+            io: io::Worker::new(),
             models_root,
             resources: None,
             capabilities: Vec::new(),
@@ -197,19 +213,45 @@ impl Host {
             surface_requests: Vec::new(),
             context_updated: std::time::Instant::now(),
             error: None,
-        };
-        host.refresh();
-        host
-    }
-    pub fn refresh(&mut self) {
-        if std::time::Instant::now() < self.next_scan {
-            return;
         }
+    }
+    pub fn refresh(&mut self, ctx: &egui::Context) {
+        if self.scan.is_none() && std::time::Instant::now() >= self.next_scan {
+            let directory = self.directory.clone();
+            let executables = self.executables.clone();
+            self.scan = Some(self.io.submit(
+                move || {
+                    xrtranslate_plugin::directory::discover(&directory, executables.as_deref()).map(
+                        |entries| {
+                            entries
+                                .into_iter()
+                                .map(|(directory, manifest)| {
+                                    let entry = manifest.map(|manifest| {
+                                        let modified = std::fs::metadata(
+                                            executables
+                                                .as_deref()
+                                                .unwrap_or(&directory)
+                                                .join(&manifest.executable),
+                                        )
+                                        .ok()
+                                        .and_then(|m| m.modified().ok());
+                                        (manifest, modified)
+                                    });
+                                    (directory, entry)
+                                })
+                                .collect()
+                        },
+                    )
+                },
+                Some(ctx.clone()),
+            ));
+        }
+        let Some(result) = self.scan.as_ref().and_then(|scan| scan.try_recv().ok()) else {
+            return;
+        };
+        self.scan = None;
         self.next_scan = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        let entries = match xrtranslate_plugin::directory::discover(
-            &self.directory,
-            self.executables.as_deref(),
-        ) {
+        let entries = match result {
             Ok(entries) => entries,
             Err(error) => {
                 self.error = Some(error);
@@ -219,8 +261,8 @@ impl Host {
         let mut present = std::collections::HashSet::new();
         let mut errors = Vec::new();
         for (directory, manifest) in entries {
-            let manifest = match manifest {
-                Ok(manifest) => manifest,
+            let (manifest, modified) = match manifest {
+                Ok(entry) => entry,
                 Err(error) => {
                     errors.push(format!("{}: {error}", directory.display()));
                     continue;
@@ -231,14 +273,6 @@ impl Host {
                 errors.push(format!("Duplicate plugin ID: {id}"));
                 continue;
             }
-            let modified = std::fs::metadata(
-                self.executables
-                    .as_deref()
-                    .unwrap_or(&directory)
-                    .join(&manifest.executable),
-            )
-            .ok()
-            .and_then(|m| m.modified().ok());
             if self.installed.get(&id).is_some_and(|entry| {
                 entry.directory == directory
                     && entry.manifest == manifest
@@ -248,6 +282,8 @@ impl Host {
             }
             self.stop(&id);
             self.installed.remove(&id);
+            self.navigation_changed = true;
+            self.context.remove("host.context");
             if let Err(error) = self.register(directory, manifest, modified) {
                 errors.push(error);
             }
@@ -261,6 +297,8 @@ impl Host {
         {
             self.stop(&id);
             self.installed.remove(&id);
+            self.navigation_changed = true;
+            self.context.remove("host.context");
         }
         let error = (!errors.is_empty()).then(|| errors.join("\n"));
         if error != self.error
@@ -307,9 +345,12 @@ impl Host {
             Installed {
                 modified,
                 icon: manifest.icon.as_ref().and_then(|icon| {
-                    std::fs::read(directory.join(icon))
-                        .ok()
-                        .map(|bytes| (format!("bytes://plugins/{}/{}", manifest.id, icon), bytes))
+                    std::fs::read(directory.join(icon)).ok().map(|bytes| {
+                        (
+                            format!("bytes://plugins/{}/{}", manifest.id, icon),
+                            bytes.into(),
+                        )
+                    })
                 }),
                 error: xrtranslate_plugin::directory::require_host(
                     &manifest,
@@ -325,6 +366,7 @@ impl Host {
                 manifest,
                 settings,
                 process: None,
+                starting: None,
                 page: ui::PageState::default(),
                 state: Value::Null,
             },
@@ -351,10 +393,12 @@ impl Host {
         self.resources
             .as_ref()
             .is_none_or(|(lang, paths)| lang != locale(language) || paths != runtimes)
-            || self
-                .installed
-                .values()
-                .any(|p| p.settings.enabled && p.process.is_none() && p.error.is_none())
+            || self.installed.values().any(|p| {
+                p.settings.enabled
+                    && p.process.is_none()
+                    && p.starting.is_none()
+                    && p.error.is_none()
+            })
     }
     pub fn available(&self, id: &str) -> bool {
         self.installed
@@ -415,6 +459,8 @@ impl Host {
             .get_mut(id)
             .ok_or("Plugin is not installed")?;
         entry.settings.enabled = enabled;
+        self.navigation_changed = true;
+        self.context.remove("host.context");
         entry.error =
             xrtranslate_plugin::directory::require_host(&entry.manifest, env!("CARGO_PKG_VERSION"))
                 .err();
@@ -431,7 +477,9 @@ impl Host {
         self.preparing.retain(|(plugin, _, _)| plugin != id);
         self.cancel_operations(id, None);
         if let Some(entry) = self.installed.get_mut(id) {
-            entry.process.take();
+            let process = entry.process.take();
+            let starting = entry.starting.take();
+            self.io.submit(move || drop((process, starting)), None);
             entry.state = Value::Null;
             entry.page.surface = Default::default();
         }
@@ -454,21 +502,36 @@ impl Host {
             .resources
             .as_ref()
             .is_some_and(|previous| previous != &resources);
+        let language_changed = self
+            .resources
+            .as_ref()
+            .is_none_or(|(lang, _)| lang != &resources.0);
         self.resources = Some(resources);
         let events: Vec<_> = self.output.0.lock().unwrap().drain(..).collect();
         let mut calls = Vec::new();
         let mut failed = Vec::new();
-        let states: Vec<_> = self
-            .installed
-            .iter()
-            .map(|(id, p)| json!({"plugin":id,"state":p.state}))
-            .collect();
+        let mut new_subscribers = Vec::new();
         let language = locale(language);
         let base = self.root.clone();
         let models_root = self.models_root.clone();
         for (id, entry) in &mut self.installed {
             if !entry.settings.enabled {
                 continue;
+            }
+            let mut started = false;
+            if let Some(result) = entry
+                .starting
+                .as_ref()
+                .and_then(|pending| pending.try_recv().ok())
+            {
+                entry.starting = None;
+                match result {
+                    Ok(process) => {
+                        entry.process = Some(process);
+                        started = true;
+                    }
+                    Err(error) => entry.error = Some(error),
+                }
             }
             if resources_changed {
                 entry.error = xrtranslate_plugin::directory::require_host(
@@ -477,7 +540,11 @@ impl Host {
                 )
                 .err();
             }
-            if (entry.process.is_none() || resources_changed) && entry.error.is_none() {
+            if ((entry.process.is_none() && entry.starting.is_none())
+                || resources_changed
+                || started)
+                && entry.error.is_none()
+            {
                 let missing: Vec<_> = entry
                     .manifest
                     .requires
@@ -509,47 +576,46 @@ impl Host {
                     capabilities: capabilities.clone(),
                 };
                 if let Some(process) = &entry.process {
-                    if let Err(error) = process.send(Message::Initialize { environment }) {
+                    if let Err(error) = process.initialize(environment) {
                         entry.error = Some(error);
                     }
-                } else {
-                    let repaint = ctx.clone();
-                    match Process::start(
-                        &entry.executable,
-                        &entry.manifest,
-                        environment,
-                        move || repaint.request_repaint(),
-                    ) {
-                        Ok(process) => {
-                            for (name, value) in &self.context {
-                                if entry.manifest.subscriptions.contains(name) {
-                                    let _ = process.send(Message::Event {
-                                        name: name.clone(),
-                                        value: value.clone(),
-                                    });
-                                }
+                    if started {
+                        for (name, value) in &self.context {
+                            if entry.manifest.subscriptions.contains(name) {
+                                let _ = process.send(Message::Event {
+                                    name: name.clone(),
+                                    value: value.clone(),
+                                });
                             }
-                            if entry
-                                .manifest
-                                .subscriptions
-                                .iter()
-                                .any(|name| name == "plugin.state")
-                            {
-                                for state in &states {
-                                    let _ = process.send(Message::Event {
-                                        name: "plugin.state".into(),
-                                        value: state.clone(),
-                                    });
-                                }
-                            }
-                            let _ = process.send(Message::Event {
-                                name: "ui.visibility".into(),
-                                value: json!(self.visible.as_ref() == Some(id)),
-                            });
-                            entry.process = Some(process);
                         }
-                        Err(error) => entry.error = Some(error),
+                        if entry
+                            .manifest
+                            .subscriptions
+                            .iter()
+                            .any(|name| name == "plugin.state")
+                        {
+                            new_subscribers.push(id.clone());
+                        }
+                        let _ = process.send(Message::Event {
+                            name: "ui.visibility".into(),
+                            value: json!(self.visible.as_ref() == Some(id)),
+                        });
                     }
+                } else if entry.starting.is_none() {
+                    let executable = entry.executable.clone();
+                    let manifest = entry.manifest.clone();
+                    let repaint = ctx.clone();
+                    entry.starting = Some(self.io.submit(
+                        move || {
+                            Process::spawn(
+                                &executable,
+                                &manifest,
+                                &environment.host_executable,
+                                move || repaint.request_repaint(),
+                            )
+                        },
+                        Some(ctx.clone()),
+                    ));
                 }
             }
             if let Some(process) = &mut entry.process {
@@ -582,18 +648,35 @@ impl Host {
         for id in failed {
             self.stop(&id);
         }
-        preferences.installed_pages = self
-            .installed
-            .iter()
-            .filter(|(_, p)| p.settings.enabled && p.manifest.page)
-            .map(|(id, p)| crate::plugins::PluginPage {
-                id: PluginId::parse(id).unwrap(),
-                title: p.manifest.title.get(language).into(),
-                order: p.manifest.navigation_order,
-                group: p.manifest.navigation_group.clone(),
-                icon: p.icon.clone(),
-            })
-            .collect();
+        for subscriber in new_subscribers {
+            if let Some(process) = self
+                .installed
+                .get(&subscriber)
+                .and_then(|entry| entry.process.as_ref())
+            {
+                for (id, entry) in &self.installed {
+                    let _ = process.send(Message::Event {
+                        name: "plugin.state".into(),
+                        value: json!({"plugin":id,"state":entry.state}),
+                    });
+                }
+            }
+        }
+        if self.navigation_changed || language_changed {
+            preferences.installed_pages = self
+                .installed
+                .iter()
+                .filter(|(_, p)| p.settings.enabled && p.manifest.page)
+                .map(|(id, p)| crate::plugins::PluginPage {
+                    id: PluginId::parse(id).unwrap(),
+                    title: p.manifest.title.get(language).into(),
+                    order: p.manifest.navigation_order,
+                    group: p.manifest.navigation_group.clone(),
+                    icon: p.icon.clone(),
+                })
+                .collect();
+            self.navigation_changed = false;
+        }
         if !self.inference.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -745,13 +828,6 @@ mod migration_tests {
         );
     }
 }
-impl Drop for Host {
-    fn drop(&mut self) {
-        for request in &self.inference {
-            request.cancel.store(true, Ordering::Release);
-        }
-    }
-}
 fn locale(language: UiLanguage) -> &'static str {
     match language {
         UiLanguage::Chinese => "zh",
@@ -759,6 +835,19 @@ fn locale(language: UiLanguage) -> &'static str {
         UiLanguage::Korean => "ko",
         UiLanguage::Russian => "ru",
         UiLanguage::English => "en",
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        for request in &self.inference {
+            request.cancel.store(true, Ordering::Release);
+        }
+        for entry in self.installed.values_mut() {
+            let process = entry.process.take();
+            let starting = entry.starting.take();
+            self.io.submit(move || drop((process, starting)), None);
+        }
     }
 }
 

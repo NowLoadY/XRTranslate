@@ -17,6 +17,7 @@ pub struct Client {
     cancelled: Arc<Mutex<BTreeSet<u64>>>,
     replies: Arc<Mutex<BTreeMap<u64, Sender<Result>>>>,
     closed: Arc<AtomicBool>,
+    wake: Sender<()>,
 }
 pub struct Request {
     id: u64,
@@ -24,8 +25,9 @@ pub struct Request {
     reply: Receiver<Result>,
 }
 impl Client {
-    pub(crate) fn channel() -> (Self, Receiver<Message>) {
+    pub(crate) fn channel() -> (Self, Receiver<Message>, Receiver<()>) {
         let (output, receiver) = crossbeam_channel::bounded(64);
+        let (wake, wake_rx) = crossbeam_channel::bounded(1);
         (
             Self {
                 next: Arc::new(AtomicU64::new(0)),
@@ -33,8 +35,10 @@ impl Client {
                 replies: Arc::default(),
                 cancelled: Arc::default(),
                 closed: Arc::default(),
+                wake,
             },
             receiver,
+            wake_rx,
         )
     }
     pub(crate) fn cancelled(&self) -> Vec<u64> {
@@ -102,6 +106,7 @@ impl Client {
     pub(crate) fn disconnect(&self) {
         let mut replies = self.replies.lock().unwrap();
         self.closed.store(true, Ordering::Release);
+        let _ = self.wake.try_send(());
         for (_, reply) in std::mem::take(&mut *replies) {
             let _ = reply.send(Err("Host disconnected".into()));
         }
@@ -139,6 +144,7 @@ impl Drop for Request {
             .is_some()
         {
             self.client.cancelled.lock().unwrap().insert(self.id);
+            let _ = self.client.wake.try_send(());
         }
     }
 }

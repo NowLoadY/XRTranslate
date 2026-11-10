@@ -106,7 +106,7 @@ impl crate::XRTranslateApp {
         requirements
     }
     pub(crate) fn poll_installed_plugins(&mut self, ctx: &egui::Context) {
-        self.plugin_host.refresh();
+        self.plugin_host.refresh(ctx);
         #[cfg(target_os = "android")]
         {
             let mut replies = Vec::new();
@@ -609,20 +609,31 @@ impl crate::XRTranslateApp {
         };
         self.plugin_host
             .set_context("host.services", json!(services));
-        let tools = self.director_tools();
-        self.plugin_host.set_context(
-            "host.context",
-            json!({
-                "language": self.ui_language.display_name(),
-                "location": ui_director::egui::driver().location(),
-                "inference": {
-                    "agent": self.service_config.agent_available(),
-                    "ask": self.service_config.supports_ask(),
-                    "input_budget": self.service_config.agent_input_budget(),
-                },
-                "tools": tools,
-            }),
-        );
+        let mut context = json!({
+            "language": self.ui_language.display_name(),
+            "location": ui_director::egui::driver().location(),
+            "inference": {
+                "agent": self.service_config.agent_available(),
+                "ask": self.service_config.supports_ask(),
+                "input_budget": self.service_config.agent_input_budget(),
+            },
+        });
+        let previous = self.plugin_host.context.get("host.context");
+        if previous.is_none_or(|previous| {
+            context
+                .as_object()
+                .unwrap()
+                .iter()
+                .any(|(key, value)| previous.get(key) != Some(value))
+        }) {
+            // Contributions invalidate this existing snapshot. Runtime location
+            // changes reuse its catalogue; idle ticks build no tool definitions.
+            context["tools"] = previous
+                .and_then(|value| value.get("tools"))
+                .cloned()
+                .unwrap_or_else(|| json!(self.director_tools()));
+            self.plugin_host.set_context("host.context", context);
+        }
         self.plugin_host.context_updated = std::time::Instant::now();
     }
 }

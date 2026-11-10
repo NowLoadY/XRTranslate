@@ -2,7 +2,7 @@
 use eframe::egui::Color32;
 use glam::Mat4;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Geometry {
     Body,
     Eye,

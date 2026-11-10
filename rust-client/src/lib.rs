@@ -5790,13 +5790,19 @@ pub fn run() -> eframe::Result<()> {
         options.viewport = options.viewport.with_taskbar(false);
         options
     };
-    #[cfg(all(target_os = "linux", feature = "mpv"))]
+    #[cfg(target_os = "linux")]
     let options = {
         let mut options = options;
         if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
         {
-            // libmpv renders directly into the UI's OpenGL textures through EGL.
-            setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+            // Keep UI rendering and presentation on the native Vulkan backend.
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::VULKAN;
+        }
+        #[cfg(feature = "mpv")]
+        {
+            options.wgpu_options.wgpu_setup =
+                xrtranslate_client_core::playback::graphics_setup(&options.wgpu_options.wgpu_setup)
+                    .map_err(|error| eframe::Error::AppCreation(error.into()))?;
         }
         options
     };

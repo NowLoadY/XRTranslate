@@ -25,4 +25,6 @@ cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
 bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${ROOT_DIR}/plugins" \
   --target-dir "${ROOT_DIR}/target" --locked
 
+# Use the system EGL vendor registry, independent of the invoking shell.
+unset __EGL_VENDOR_LIBRARY_DIRS __EGL_VENDOR_LIBRARY_FILENAMES
 exec "${ROOT_DIR}/target/release/rust-client" "$@"

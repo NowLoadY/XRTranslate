@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [switch]$Release
+    [switch]$Release = $true
 )
 
 $ErrorActionPreference = 'Stop'

@@ -47,9 +47,9 @@ versions in this SDK help reproduce builds; they are not installation requiremen
 
 - Use the host's standard controls for small settings panels.
 - Use `xrtranslate_client_core::ui::surface::serve` for a page inside the main
-  window. On Windows, the plugin renders with its own GPU renderer and the host
-  composites its shared surface. UI geometry and texture pixels stay in the plugin.
-  Older hosts and other platforms retain the compatible drawing adapter.
+  window. The plugin owns layout and interaction; the host draws lossless binary
+  meshes, texture deltas and named shader callbacks using its shared GPU renderer
+  on every platform. Unchanged drawings are retained.
 - For a game or another intensive interactive canvas, own a window and render
   directly there. The SDK still provides controls and access to host services;
   the host does not receive or render that window's frames.
@@ -57,16 +57,14 @@ versions in this SDK help reproduce builds; they are not installation requiremen
 The `examples/plugin-window` directory contains a complete GPU canvas example
 with shared controls. Build it with the same command as any other plugin.
 
-Embedded pages can use ordinary egui WGPU callbacks, including their own shaders.
-Keep callback resources in the plugin renderer's `CallbackResources` and create
-them in `prepare`. Playback continues to use the shared playback service, so a
-page does not need its own video decoder. UI controls, input and automation use
-the same API with either presentation path.
+Embedded pages use named callbacks supplied by the shared UI components; callback
+parameters cross the pipe while pipelines, 3D geometry and video stay in the host.
+For custom shaders, use an independent window with its own WGPU callbacks and
+resources. Playback uses the shared playback service, so an embedded page does
+not need its own decoder. UI controls, input and automation use the same handlers.
 Implement `UiPlugin::back` to handle system Back inside an embedded page. Return
 `true` when handled (including blocked navigation while saving); return `false`
 to let the host leave the page. The surface closes open popup menus first.
-Custom GPU callbacks require the shared GPU path; provide a drawing fallback or
-an independent window when supporting older hosts or other platforms.
 
 Only task requests and state need to cross the host connection for an independent
 window. Recognition and translation still run through host services; each plugin

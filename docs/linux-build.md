@@ -25,7 +25,7 @@ normal user. This follows Ubuntu's [APT guidance for scripts](https://documentat
 
 The package list in `scripts/linux-build-env.sh` includes the X11/Wayland, ALSA,
 PipeWire/SPA, libclang, WebKitGTK 4.1, GTK 3 and D-Bus development packages, plus
-graphics/font runtimes. MPV builds additionally install `libmpv-dev`. APT manages
+Vulkan/EGL and font runtimes. MPV builds additionally install `libmpv-dev`. APT manages
 the system files and their dependencies; the scripts do not extract `.deb`
 packages into the project or create substitute linker libraries. Other
 distributions need the equivalent development packages installed through their
@@ -69,6 +69,21 @@ download; vocal separation remains an optional download.
 The Linux scripts include MPV playback by default. Media videos play inside the
 app, with the same subtitles and controls as Windows. X11 and Wayland are
 supported; hardware decoding depends on the installed graphics driver.
+The main window uses Vulkan. Video rendering runs on its own OpenGL thread on
+the same GPU and driver, identified by their standard UUIDs. Exported memory and
+GPU semaphores hand each completed frame to Vulkan; one GPU copy keeps the UI
+texture independent of video rendering, with no CPU pixel readback. This requires
+`VK_KHR_external_memory_fd`, `VK_KHR_external_semaphore_fd`,
+`GL_EXT_memory_object_fd` and `GL_EXT_semaphore_fd`. Missing video interop support
+does not change the UI renderer.
+
+Both `scripts/run-linux.sh` and the packaged launcher unset
+`__EGL_VENDOR_LIBRARY_DIRS` and `__EGL_VENDOR_LIBRARY_FILENAMES` before starting
+the client, using [GLVND's default system driver discovery](https://github.com/NVIDIA/libglvnd/blob/master/src/EGL/icd_enumeration.md).
+This prevents shell environments from hiding installed GPU drivers without
+selecting a vendor or hardcoding driver paths. The build environment is unchanged;
+the floating overlay still sets its own software-rendering environment after launch.
+
 Set `XRTRANSLATE_FEATURES=` to build without MPV when only audio is needed.
 Source builds use the system development package `libmpv-dev`, which supplies
 the linker files along with the MPV runtime.
@@ -95,8 +110,11 @@ resources, the application binaries, and the default XR Corpus seed. Locally
 downloaded models, managed GPU runtimes, settings, and editable databases are
 excluded. Additional models, including optional OCR, and compatible runtimes
 are downloaded from the welcome flow according to the selected configuration.
-Install the system MPV runtime (`libmpv2` on Debian/Ubuntu) on machines using the
-release package. Account login also uses the system `libwebkit2gtk-4.1-0`
+Install the Vulkan loader (`libvulkan1` on Debian/Ubuntu), the GPU's Vulkan/EGL
+drivers, and the system MPV runtime (`libmpv2`) on machines using the release
+package. Mesa drivers use `mesa-vulkan-drivers` and `libegl-mesa0`; proprietary
+drivers are supplied by the GPU vendor's system packages.
+Account login also uses the system `libwebkit2gtk-4.1-0`
 package (its dependencies include GTK 3). The separate login helper is included
 in every desktop release, so no Python or additional login application is needed.
 The packaged launcher shows installation instructions only

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-mpv = ["dep:libmpv-sys"]
+mpv = ["dep:libmpv-sys", "dep:ash", "dep:glutin"]
 
 [dependencies]
 futures = "0.3.33"
@@ -57,6 +57,8 @@ version = "0.62"
 features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
+glutin = { version = "0.32.3", default-features = false, features = ["egl"], optional = true }
 cpal = { version = "0.18.1", features = ["pulseaudio"] }
 libloading = "0.8.9"
 eframe = { version = "0.37.0", features = ["glow"] }

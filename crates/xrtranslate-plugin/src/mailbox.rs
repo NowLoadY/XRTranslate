@@ -77,6 +77,16 @@ impl Sender {
 }
 
 impl Receiver {
+    pub(crate) fn recv(&self) -> Result<Message, std::sync::mpsc::RecvError> {
+        let state = self.0.state.lock().unwrap();
+        let mut state = self
+            .0
+            .ready
+            .wait_while(state, |state| state.messages.is_empty() && !state.closed)
+            .unwrap();
+        state.messages.pop_front().ok_or(std::sync::mpsc::RecvError)
+    }
+
     pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<Message, RecvTimeoutError> {
         let state = self.0.state.lock().unwrap();
         let (mut state, _) = self

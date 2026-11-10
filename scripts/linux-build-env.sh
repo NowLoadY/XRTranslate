@@ -34,7 +34,7 @@ prepare_linux_system_deps() {
     libx11-dev libxcursor-dev libxrandr-dev libxi-dev
     libwayland-dev libxkbcommon-dev libasound2-dev libpipewire-0.3-dev libclang-dev
     libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev
-    libegl-mesa0 libglx-mesa0 libgl1-mesa-dri
+    libvulkan1 mesa-vulkan-drivers libegl-mesa0 libglx-mesa0 libgl1-mesa-dri
     fontconfig fonts-noto-core fonts-noto-cjk fonts-dejavu-core
   )
   local -a modules=(

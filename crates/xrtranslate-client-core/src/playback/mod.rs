@@ -5,11 +5,10 @@ pub use channels::AudioChannelItem;
 pub use style::SubtitleStyle;
 #[cfg(any(windows, target_os = "linux", target_os = "android"))]
 pub mod audio;
-#[cfg(all(windows, feature = "mpv"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "mpv"))]
 mod gpu;
 #[cfg(all(target_os = "linux", feature = "mpv"))]
-#[path = "gpu_linux.rs"]
-mod gpu;
+pub use gpu::graphics_setup;
 #[cfg(feature = "mpv")]
 pub mod mpv;
 #[cfg(not(feature = "mpv"))]

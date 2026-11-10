@@ -97,6 +97,9 @@ impl std::fmt::Display for AskError {
     }
 }
 
+mod audio_preprocessing;
+pub use audio_preprocessing::{AudioPreprocessingAction, AudioPreprocessingModelState, AudioPreprocessingModels};
+
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};

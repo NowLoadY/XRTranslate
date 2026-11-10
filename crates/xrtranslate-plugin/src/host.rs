@@ -34,15 +34,21 @@ impl Process {
         environment: Environment,
         wake: impl Fn() + Send + 'static,
     ) -> std::result::Result<Self, String> {
+        let process = Self::spawn(executable, manifest, &environment.host_executable, wake)?;
+        process.initialize(environment)?;
+        Ok(process)
+    }
+
+    /// Launch without initializing; hosts may perform the blocking launch on a
+    /// worker, then supply the current environment when accepting the result.
+    pub fn spawn(
+        executable: &Path,
+        manifest: &Manifest,
+        host_executable: &Path,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::result::Result<Self, String> {
         manifest.validate()?;
-        #[cfg(feature = "egui")]
-        let environment = {
-            let mut environment = environment;
-            environment
-                .capabilities
-                .push(crate::surface::wire::CAPABILITY.into());
-            environment
-        };
+        let _ = host_executable;
         let mut command = Command::new(executable);
         command
             .stdin(Stdio::piped())
@@ -53,7 +59,7 @@ impl Process {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
             // Share the app-local CRT even when launched from another directory.
-            if let Some(directory) = environment.host_executable.parent() {
+            if let Some(directory) = host_executable.parent() {
                 let path = std::env::var_os("PATH").unwrap_or_default();
                 let paths =
                     std::iter::once(directory.to_owned()).chain(std::env::split_paths(&path));
@@ -72,10 +78,9 @@ impl Process {
         let write_state = state.clone();
         let writer = std::thread::spawn(move || {
             loop {
-                let message = match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                let message = match rx.recv() {
                     Ok(message) => message,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(_) => break,
                 };
                 if let Err(error) = serde_json::to_writer(&mut input, &message)
                     .map_err(std::io::Error::other)
@@ -177,15 +182,24 @@ impl Process {
                 }
             }
         });
-        let process = Self {
+        Ok(Self {
             child,
             output: Some(tx),
             state,
             threads: vec![writer, reader, stderr],
             next_id: 0,
+        })
+    }
+    pub fn initialize(&self, environment: Environment) -> std::result::Result<(), String> {
+        #[cfg(feature = "egui")]
+        let environment = {
+            let mut environment = environment;
+            environment
+                .capabilities
+                .push(crate::surface::wire::CAPABILITY.into());
+            environment
         };
-        process.send(Message::Initialize { environment })?;
-        Ok(process)
+        self.send(Message::Initialize { environment })
     }
     pub fn send(&self, message: Message) -> std::result::Result<(), String> {
         match self

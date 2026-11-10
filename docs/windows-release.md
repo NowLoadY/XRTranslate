@@ -61,3 +61,9 @@ dependencies whose inputs are no longer fresh. Resource caches have no fallback
 when resource configuration or preparation code changes, so those changes fetch
 the corresponding assets again. A first run or an evicted cache downloads and
 builds normally; cache hits do not skip the package smoke tests.
+
+## Running from source
+
+`start_rust_client.cmd` and `start_rust_client.ps1` build and run Release by default,
+including the backend and plugins, matching the Linux source launcher. For an
+explicit development build, use `.\start_rust_client.ps1 -Release:$false`.

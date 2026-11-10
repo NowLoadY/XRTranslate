@@ -80,7 +80,7 @@ fn send(output: &Mutex<io::BufWriter<io::Stdout>>, message: &Message) {
 
 pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
     let (tx, rx) = crate::mailbox::channel();
-    let (client, outbox) = crate::Client::channel();
+    let (client, outbox, wake) = crate::Client::channel();
     let replies = client.clone();
     std::thread::spawn(move || {
         use std::io::Read;
@@ -116,11 +116,15 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
     let requests = client.clone();
     std::thread::spawn(move || {
         while !requests.is_closed() {
-            if let Ok(message) = outbox.recv_timeout(Duration::from_millis(16)) {
-                // Cancellation may overtake a queued call. Never send it afterwards.
-                if !matches!(&message, Message::Call { id, .. } if !requests.pending(*id)) {
-                    send(&writer, &message);
+            crossbeam_channel::select! {
+                recv(outbox) -> message => {
+                    let Ok(message) = message else { break; };
+                    // Cancellation may overtake a queued call. Never send it afterwards.
+                    if !matches!(&message, Message::Call { id, .. } if !requests.pending(*id)) {
+                        send(&writer, &message);
+                    }
                 }
+                recv(wake) -> _ => {}
             }
             for id in requests.cancelled() {
                 send(&writer, &Message::Cancel { id });

@@ -1,6 +1,6 @@
 mod bilingual;
-mod contextual;
 mod chat_messages;
+mod contextual;
 mod output;
 
 use serde_json::{Value, json};
@@ -64,6 +64,7 @@ pub fn build_translation_messages(
 pub(super) struct RenderedTranslationPrompt {
     pub(super) messages: Vec<PromptMessage>,
     pub(super) trace: PromptExecutionTrace,
+    pub(super) context: xrtranslate_prompt::TranslationPromptContext,
 }
 
 impl RenderedTranslationPrompt {
@@ -82,20 +83,41 @@ fn render_prompt(
     source_text: &str,
     options: &TranslationOptions,
 ) -> Result<RenderedTranslationPrompt, InferenceError> {
-    let execution = graph
-        .render_with_trace(
-            target,
-            source_text,
-            &options.source_language,
-            &options.target_language,
-            &options.prompt_context,
-        )
-        .map_err(|error| InferenceError::InvalidConfiguration {
-            field: "prompt_graph",
-            message: error.to_string(),
-        })?;
+    let mut context = options.prompt_context.clone();
+    let input_limit = options
+        .context_window_tokens
+        .saturating_sub(options.max_tokens) as usize;
+    let execution = loop {
+        let execution = graph
+            .render_with_trace(
+                target,
+                source_text,
+                &options.source_language,
+                &options.target_language,
+                &context,
+            )
+            .map_err(|error| InferenceError::InvalidConfiguration {
+                field: "prompt_graph",
+                message: error.to_string(),
+            })?;
+        if execution.render.estimated_tokens() <= input_limit {
+            break execution;
+        }
+        if !context.reduce_reference_context() {
+            return Err(InferenceError::InvalidConfiguration {
+                field: "context_window_tokens",
+                message: format!(
+                    "The translation prompt and current input need about {} tokens, with {} reserved for output; the model window is {}. Shorten the input or prompt, or increase the model context window.",
+                    execution.render.estimated_tokens(),
+                    options.max_tokens,
+                    options.context_window_tokens,
+                ),
+            });
+        }
+    };
     Ok(RenderedTranslationPrompt {
         messages: execution.render.messages,
         trace: execution.trace,
+        context,
     })
 }

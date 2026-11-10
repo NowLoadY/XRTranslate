@@ -26,7 +26,7 @@ pub use presentation::Presentation;
 pub use presentation::PresentationSampler;
 #[cfg(debug_assertions)]
 pub use render::export::render_views;
-pub use render::install;
+pub use render::{install, surface_paint};
 pub use render::stereo::StereoRenderer;
 pub use wardrobe::{Accessory, Appearance};
 

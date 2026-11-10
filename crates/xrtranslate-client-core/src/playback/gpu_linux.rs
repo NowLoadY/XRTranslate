@@ -1,455 +1,202 @@
-//! libmpv renders into a wgpu-owned GL texture on the UI's EGL context.
-use eframe::{egui, egui_wgpu::RenderState, glow, wgpu};
-use glow::HasContext;
-use libmpv_sys as mpv;
-use std::{
-    ffi::{CStr, c_char, c_void},
-    num::NonZeroU32,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    thread,
+//! Linux video producer: independent OpenGL with Vulkan external memory and sync.
+#[path = "gpu_linux/context.rs"]
+mod context;
+#[path = "gpu_linux/shared.rs"]
+mod shared;
+
+use super::{RenderContext, end, param};
+use ash::{khr, vk};
+use context::GlContext;
+use eframe::{
+    egui_wgpu::{RenderState, WgpuSetup, WgpuSetupExisting},
+    wgpu,
 };
+use libmpv_sys as mpv;
+use shared::GlImage;
+pub use shared::SharedImage;
+use std::{ffi::CStr, sync::Arc};
 
-fn param(kind: u32, data: *mut c_void) -> mpv::mpv_render_param {
-    mpv::mpv_render_param { type_: kind, data }
-}
-fn end() -> mpv::mpv_render_param {
-    param(0, std::ptr::null_mut())
-}
-fn check(code: i32) -> Result<(), String> {
-    if code >= 0 {
-        Ok(())
-    } else {
-        Err(format!("Video GPU renderer: {}", unsafe {
-            CStr::from_ptr(mpv::mpv_error_string(code)).to_string_lossy()
+/// Enable external semaphore support when present, without making video interop
+/// a requirement for opening the UI. All rendering still uses unmodified wgpu.
+pub fn graphics_setup(setup: &WgpuSetup) -> Result<WgpuSetup, String> {
+    let WgpuSetup::CreateNew(config) = setup else {
+        return Ok(setup.clone());
+    };
+    let instance = futures::executor::block_on(setup.new_instance());
+    let adapter =
+        futures::executor::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: config.power_preference,
+            ..Default::default()
         }))
-    }
-}
-
-unsafe extern "C" fn get_proc_address(data: *mut c_void, name: *const c_char) -> *mut c_void {
-    let context = unsafe { &*(data as *const wgpu::hal::gles::AdapterContext) };
-    let name = unsafe { CStr::from_ptr(name) }.to_str().unwrap_or("");
-    context
-        .egl_instance()
-        .and_then(|egl| egl.get_proc_address(name))
-        .map_or(std::ptr::null_mut(), |proc| proc as *const () as *mut _)
-}
-
-// The same context serializes video and UI work, so no readback, GPU copies or
-// cross-context fences are needed. Never call wgpu while this lock is held.
-fn with_gl<T>(
-    state: &RenderState,
-    action: impl FnOnce(&glow::Context, &wgpu::hal::gles::AdapterContext) -> T,
-) -> T {
-    let texture_units = state.device.limits().max_sampled_textures_per_shader_stage;
-    let hal = unsafe { state.device.as_hal::<wgpu::hal::api::Gles>() }.unwrap();
-    let context = hal.context();
-    let gl = context.lock();
-    unsafe {
-        // wgpu leaves its VAO, samplers and pixel upload layout bound. mpv
-        // expects GL defaults: inherited samplers override its subtitle atlas
-        // filtering, and a UI upload's row stride corrupts newly created textures.
-        let vao = NonZeroU32::new(gl.get_parameter_i32(glow::VERTEX_ARRAY_BINDING) as u32)
-            .map(glow::NativeVertexArray);
-        let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
-        let samplers: Vec<_> = (0..texture_units)
-            .map(|unit| {
-                let sampler = NonZeroU32::new(
-                    gl.get_parameter_indexed_i32(glow::SAMPLER_BINDING, unit) as u32,
-                )
-                .map(glow::NativeSampler);
-                gl.bind_sampler(unit, None);
-                sampler
-            })
-            .collect();
-        let pixel_store = [
-            (glow::UNPACK_ALIGNMENT, 4),
-            (glow::UNPACK_ROW_LENGTH, 0),
-            (glow::UNPACK_IMAGE_HEIGHT, 0),
-            (glow::PACK_ALIGNMENT, 4),
-            (glow::PACK_ROW_LENGTH, 0),
-        ]
-        .map(|(name, default)| {
-            let value = gl.get_parameter_i32(name);
-            gl.pixel_store_i32(name, default);
-            (name, value)
-        });
-        gl.active_texture(glow::TEXTURE0);
-        gl.bind_vertex_array(None);
-        gl.use_program(None);
-        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-        for cap in [
-            glow::DEPTH_TEST,
-            glow::STENCIL_TEST,
-            glow::SCISSOR_TEST,
-            glow::BLEND,
-            glow::CULL_FACE,
-        ] {
-            gl.disable(cap);
-        }
-        let result = action(&gl, context);
-        gl.bind_vertex_array(vao);
-        for (unit, sampler) in samplers.into_iter().enumerate() {
-            gl.bind_sampler(unit as u32, sampler);
-        }
-        gl.active_texture(active_texture);
-        for (name, value) in pixel_store {
-            gl.pixel_store_i32(name, value);
-        }
-        gl.flush();
-        result
-    }
-}
-
-struct Wake {
-    ctx: egui::Context,
-    visible: AtomicBool,
-    dirty: AtomicBool,
-    commands: mpsc::Sender<Command>,
-}
-unsafe extern "C" fn render_wakeup(data: *mut c_void) {
-    let wake = unsafe { &*(data as *const Wake) };
-    let already_dirty = wake.dirty.swap(true, Ordering::AcqRel);
-    if wake.visible.load(Ordering::Acquire) {
-        wake.ctx.request_repaint();
-    } else if !already_dirty {
-        let _ = wake.commands.send(Command::Update);
-    }
-}
-
-enum Command {
-    Draw(
-        glow::NativeFramebuffer,
-        [u32; 2],
-        bool,
-        mpsc::SyncSender<Result<(), String>>,
-    ),
-    Update,
-    Stop,
-}
-
-struct Surface {
-    framebuffer: glow::NativeFramebuffer,
-    _texture: wgpu::Texture,
-    id: egui::TextureId,
-    size: [u32; 2],
-}
-
-pub struct VideoRenderer {
-    worker: Option<thread::JoinHandle<()>>,
-    wake: Arc<Wake>,
-    state: RenderState,
-    surface: Option<Surface>,
-    // At most one draw is in flight. UI frames reuse the texture while it is
-    // pending instead of synchronously waiting for decoding/rendering.
-    pending: Option<mpsc::Receiver<Result<(), String>>>,
-}
-
-impl VideoRenderer {
-    pub fn new(
-        handle: *mut mpv::mpv_handle,
-        state: &RenderState,
-        ctx: &egui::Context,
-        display: Option<super::VideoDisplay>,
-    ) -> Result<Self, String> {
-        let hal = unsafe { state.device.as_hal::<wgpu::hal::api::Gles>() }
-            .ok_or("Video GPU rendering requires the OpenGL UI backend")?;
-        if hal.context().egl_instance().is_none() {
-            return Err("Video GPU rendering requires an EGL context".into());
-        }
-        drop(hal);
-        let (commands, receiver) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let wake = Arc::new(Wake {
-            ctx: ctx.clone(),
-            visible: AtomicBool::new(false),
-            // A fresh surface forces its first draw. Start clean so the first
-            // hidden callback also queues an update instead of being coalesced.
-            dirty: AtomicBool::new(false),
-            commands,
-        });
-        let worker_wake = wake.clone();
-        let worker_state = state.clone();
-        // Only the render thread calls mpv_render_*. It never calls blocking core
-        // APIs, and is joined before the mpv core or UI device can be destroyed.
-        let handle = handle as usize;
-        let worker = thread::Builder::new()
-            .name("media-gpu".into())
-            .spawn(move || unsafe {
-                let mut context = std::ptr::null_mut();
-                let result = with_gl(&worker_state, |_, gl_context| {
-                    let mut init = mpv::mpv_opengl_init_params {
-                        get_proc_address: Some(get_proc_address),
-                        get_proc_address_ctx: gl_context as *const _ as *mut _,
-                        extra_exts: std::ptr::null(),
-                    };
-                    let mut params = vec![
-                        param(1, c"opengl".as_ptr() as *mut _),
-                        param(2, &mut init as *mut _ as *mut _),
-                    ];
-                    // The native display enables direct VA-API / EGL decoder interop.
-                    match display {
-                        Some(super::VideoDisplay::X11(ptr)) => params.push(param(8, ptr as *mut _)),
-                        Some(super::VideoDisplay::Wayland(ptr)) => {
-                            params.push(param(9, ptr as *mut _))
-                        }
-                        None => {}
-                    }
-                    params.push(end());
-                    check(mpv::mpv_render_context_create(
-                        &mut context,
-                        handle as *mut _,
-                        params.as_mut_ptr(),
-                    ))
-                });
-                let ok = result.is_ok();
-                let _ = ready_tx.send(result);
-                if !ok {
-                    return;
-                }
-                mpv::mpv_render_context_set_update_callback(
-                    context,
-                    Some(render_wakeup),
-                    Arc::as_ptr(&worker_wake) as *mut _,
-                );
-                while let Ok(command) = receiver.recv() {
-                    match command {
-                        Command::Draw(framebuffer, size, force, reply) => {
-                            let result = with_gl(&worker_state, |_, _| {
-                                worker_wake.dirty.store(false, Ordering::Release);
-                                let changed = mpv::mpv_render_context_update(context) & 1 != 0;
-                                if !changed && !force {
-                                    return Ok(());
-                                }
-                                let mut target = mpv::mpv_opengl_fbo {
-                                    fbo: framebuffer.0.get() as i32,
-                                    w: size[0] as i32,
-                                    h: size[1] as i32,
-                                    internal_format: glow::RGBA8 as i32,
-                                };
-                                // Texture coordinates start at the image's top left;
-                                // only a GL window framebuffer needs FLIP_Y.
-                                let mut block = 0i32;
-                                let mut params = [
-                                    param(3, &mut target as *mut _ as *mut _),
-                                    param(12, &mut block as *mut _ as *mut _),
-                                    end(),
-                                ];
-                                check(mpv::mpv_render_context_render(context, params.as_mut_ptr()))
-                            });
-                            let _ = reply.send(result);
-                            if worker_wake.visible.load(Ordering::Acquire) {
-                                worker_wake.ctx.request_repaint();
-                            }
-                        }
-                        Command::Update => {
-                            if !worker_wake.visible.load(Ordering::Acquire)
-                                && worker_wake.dirty.swap(false, Ordering::AcqRel)
-                            {
-                                with_gl(&worker_state, |_, _| {
-                                    if mpv::mpv_render_context_update(context) & 1 != 0 {
-                                        let mut skip = 1i32;
-                                        let mut block = 0i32;
-                                        // Skipping still performs mpv's timing by default.
-                                        // Never hold the UI's GL lock while waiting for
-                                        // the next audio-clock deadline on another page.
-                                        let mut params = [
-                                            param(13, &mut skip as *mut _ as *mut _),
-                                            param(12, &mut block as *mut _ as *mut _),
-                                            end(),
-                                        ];
-                                        mpv::mpv_render_context_render(
-                                            context,
-                                            params.as_mut_ptr(),
-                                        );
-                                    }
-                                });
-                            }
-                        }
-                        Command::Stop => break,
-                    }
-                }
-                with_gl(&worker_state, |_, _| {
-                    mpv::mpv_render_context_set_update_callback(
-                        context,
-                        None,
-                        std::ptr::null_mut(),
-                    );
-                    mpv::mpv_render_context_free(context);
-                });
-            })
+        .map_err(|e| e.to_string())?;
+    let descriptor = (config.device_descriptor)(&adapter);
+    let open = unsafe {
+        let hal = adapter
+            .as_hal::<wgpu::hal::api::Vulkan>()
+            .ok_or("Linux UI requires Vulkan")?;
+        let extensions = hal
+            .shared_instance()
+            .raw_instance()
+            .enumerate_device_extension_properties(hal.raw_physical_device())
             .map_err(|e| e.to_string())?;
-        match ready_rx.recv().map_err(|e| e.to_string())? {
-            Ok(()) => {}
-            Err(error) => {
-                let _ = worker.join();
-                return Err(error);
-            }
-        }
-        log::info!("Media GPU renderer: OpenGL texture on the UI's EGL context");
-        Ok(Self {
-            worker: Some(worker),
-            wake,
-            state: state.clone(),
-            surface: None,
-            pending: None,
-        })
-    }
-
-    pub fn set_visible(&self, visible: bool) {
-        if self.wake.visible.swap(visible, Ordering::AcqRel) != visible {
-            self.wake.dirty.store(true, Ordering::Release);
-            if !visible {
-                let _ = self.wake.commands.send(Command::Update);
-            }
-        }
-    }
-
-    fn create_surface(&self, size: [u32; 2]) -> Result<Surface, String> {
-        let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("media-video"),
-            size: wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
+        let external_sync = extensions.iter().any(|extension| {
+            CStr::from_ptr(extension.extension_name.as_ptr()) == khr::external_semaphore_fd::NAME
         });
-        let view = texture.create_view(&Default::default());
-        // Initialize through wgpu first, so its lazy clear cannot overwrite the
-        // frame after libmpv has filled the texture for the first time.
-        let mut encoder = self
-            .state
-            .device
-            .create_command_encoder(&Default::default());
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-        }
-        self.state.queue.submit([encoder.finish()]);
-        let raw = unsafe {
-            let hal = texture.as_hal::<wgpu::hal::api::Gles>().unwrap();
-            match hal.inner {
-                wgpu::hal::gles::TextureInner::Texture { raw, .. } => raw,
-                _ => return Err("Video target is not an OpenGL texture".into()),
+        hal.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &descriptor.memory_hints,
+            Some(Box::new(move |args| {
+                if external_sync {
+                    args.extensions.push(khr::external_semaphore_fd::NAME);
+                }
+            })),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let (device, queue) =
+        unsafe { adapter.create_device_from_hal::<wgpu::hal::api::Vulkan>(open, &descriptor) }
+            .map_err(|e| e.to_string())?;
+    Ok(WgpuSetup::Existing(WgpuSetupExisting {
+        instance,
+        adapter,
+        device,
+        queue,
+    }))
+}
+
+#[derive(Clone)]
+pub struct Device {
+    device_uuid: [u8; 16],
+    driver_uuid: [u8; 16],
+}
+impl Device {
+    pub fn new(state: &RenderState) -> Result<Self, String> {
+        let (device_uuid, driver_uuid) = unsafe {
+            let hal = state
+                .device
+                .as_hal::<wgpu::hal::api::Vulkan>()
+                .ok_or("GPU video requires Vulkan")?;
+            for extension in [
+                khr::external_memory_fd::NAME,
+                khr::external_semaphore_fd::NAME,
+            ] {
+                if !hal.enabled_device_extensions().contains(&extension) {
+                    return Err(format!(
+                        "GPU video sharing requires {}",
+                        extension.to_string_lossy()
+                    ));
+                }
             }
+            let mut sync = vk::ExternalSemaphoreProperties::default();
+            hal.shared_instance()
+                .raw_instance()
+                .get_physical_device_external_semaphore_properties(
+                    hal.raw_physical_device(),
+                    &vk::PhysicalDeviceExternalSemaphoreInfo::default()
+                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD),
+                    &mut sync,
+                );
+            if !sync
+                .external_semaphore_features
+                .contains(vk::ExternalSemaphoreFeatureFlags::EXPORTABLE)
+            {
+                return Err("GPU does not support exporting video synchronization handles".into());
+            }
+            let mut id = vk::PhysicalDeviceIDProperties::default();
+            let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+            hal.shared_instance()
+                .raw_instance()
+                .get_physical_device_properties2(hal.raw_physical_device(), &mut properties);
+            (id.device_uuid, id.driver_uuid)
         };
-        let framebuffer = with_gl(&self.state, |gl, _| unsafe {
-            let framebuffer = gl.create_framebuffer()?;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-            gl.framebuffer_texture_2d(
-                glow::FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(raw),
-                0,
-            );
-            let complete =
-                gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            if !complete {
-                gl.delete_framebuffer(framebuffer);
-                return Err("Video framebuffer is incomplete".into());
-            }
-            Ok::<_, String>(framebuffer)
-        })?;
-        let id = self.state.renderer.write().register_native_texture(
-            &self.state.device,
-            &view,
-            wgpu::FilterMode::Linear,
-        );
-        Ok(Surface {
-            framebuffer,
-            _texture: texture,
-            id,
-            size,
+        Ok(Self {
+            device_uuid,
+            driver_uuid,
         })
     }
-
-    fn free_surface(&self, surface: Surface) {
-        self.state.renderer.write().free_texture(&surface.id);
-        with_gl(&self.state, |gl, _| unsafe {
-            gl.delete_framebuffer(surface.framebuffer)
-        });
-        // Drop the wgpu texture after releasing the GL context lock.
-    }
-
-    pub fn frame(&mut self, size: [u32; 2]) -> Result<egui::TextureId, String> {
-        if let Some(pending) = &self.pending {
-            match pending.try_recv() {
-                Ok(result) => {
-                    self.pending = None;
-                    result?;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // Surface replacement also waits for completion without
-                    // blocking: keep scaling the previous frame during resize.
-                    self.wake.visible.store(true, Ordering::Release);
-                    return Ok(self.surface.as_ref().expect("pending draw surface").id);
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.pending = None;
-                    return Err("Video rendering stopped unexpectedly".into());
-                }
-            }
-        }
-        let limit = self
-            .state
-            .device
-            .limits()
-            .max_texture_dimension_2d
-            .min(8192);
-        let size = size.map(|n| n.clamp(1, limit));
-        let resized = self.surface.as_ref().is_none_or(|s| s.size != size);
-        if resized {
-            let surface = self.create_surface(size)?;
-            if let Some(old) = self.surface.replace(surface) {
-                self.free_surface(old);
-            }
-        }
-        let was_visible = self.wake.visible.swap(true, Ordering::AcqRel);
-        let force = resized || !was_visible;
-        let surface = self.surface.as_ref().unwrap();
-        if force || self.wake.dirty.load(Ordering::Acquire) {
-            let (tx, rx) = mpsc::sync_channel(1);
-            self.wake
-                .commands
-                .send(Command::Draw(surface.framebuffer, size, force, tx))
-                .map_err(|e| e.to_string())?;
-            self.pending = Some(rx);
-        }
-        Ok(surface.id)
+    pub fn create_image(
+        &self,
+        state: &RenderState,
+        size: [u32; 2],
+    ) -> Result<Arc<SharedImage>, String> {
+        SharedImage::new(state, size)
     }
 }
 
-impl Drop for VideoRenderer {
-    fn drop(&mut self) {
-        let _ = self.wake.commands.send(Command::Stop);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+pub struct Renderer {
+    pub context: RenderContext,
+    gl: Box<GlContext>,
+    image: Option<GlImage>,
+}
+impl Renderer {
+    pub fn new(
+        handle: usize,
+        device: Device,
+        display: Option<super::super::VideoDisplay>,
+    ) -> Result<Self, String> {
+        let gl = GlContext::new(device.device_uuid, device.driver_uuid)?;
+        // This context stays current only on the video worker for its entire life.
+        let mut init = mpv::mpv_opengl_init_params {
+            get_proc_address: Some(context::get_proc_address),
+            get_proc_address_ctx: &gl.display as *const _ as *mut _,
+            extra_exts: std::ptr::null(),
+        };
+        let mut params = vec![
+            param(1, c"opengl".as_ptr() as *mut _),
+            param(2, &mut init as *mut _ as *mut _),
+        ];
+        match display {
+            Some(super::super::VideoDisplay::X11(ptr)) => params.push(param(8, ptr as *mut _)),
+            Some(super::super::VideoDisplay::Wayland(ptr)) => params.push(param(9, ptr as *mut _)),
+            None => {}
         }
-        if let Some(surface) = self.surface.take() {
-            self.free_surface(surface);
+        params.push(end());
+        let context = RenderContext::new(handle, &mut params)?;
+        log::info!(
+            "Media GPU renderer: independent OpenGL producer, Vulkan shared-memory transfer"
+        );
+        Ok(Self {
+            context,
+            gl,
+            image: None,
+        })
+    }
+
+    pub fn draw(&mut self, shared: Arc<SharedImage>, changed: bool) -> Result<(), String> {
+        if self
+            .image
+            .as_ref()
+            .is_none_or(|image| !Arc::ptr_eq(&image.shared, &shared))
+        {
+            if let Some(old) = self.image.take() {
+                old.destroy(&self.gl);
+            }
+            self.image = Some(GlImage::new(&self.gl, shared)?);
+        }
+        let image = self.image.as_ref().unwrap();
+        image.wait(&self.gl);
+        let result = if changed {
+            let mut target = mpv::mpv_opengl_fbo {
+                fbo: image.framebuffer.0.get() as i32,
+                w: image.shared.size[0] as i32,
+                h: image.shared.size[1] as i32,
+                internal_format: eframe::glow::RGBA8 as i32,
+            };
+            self.context
+                .render(param(3, &mut target as *mut _ as *mut _))
+        } else {
+            Ok(())
+        };
+        image.signal(&self.gl);
+        result.and_then(|_| self.gl.check())
+    }
+}
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.context.close();
+        if let Some(image) = self.image.take() {
+            image.destroy(&self.gl);
         }
     }
 }
