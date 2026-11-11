@@ -288,6 +288,69 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
     ui.add_space(14.0);
 
     #[cfg(any(windows, target_os = "linux"))]
+    section(ui, crate::i18n::tr(app.ui_language, "Folders"), |ui| {
+        let root = app.project_root();
+        for (label, path) in [
+            ("User data folder", xrtranslate_config::data_root(&root)),
+            ("Installation folder", root),
+        ] {
+            let can_move = label == "User data folder";
+            ui.horizontal_top(|ui| {
+                let label = crate::i18n::tr(app.ui_language, label);
+                if components::open_button(ui, label).clicked()
+                    && let Err(error) = crate::file_dialog::open_directory(&path)
+                {
+                    app.notify_error("Could not open the folder.", error.to_string());
+                }
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        if can_move
+                            && components::secondary_button(
+                                ui,
+                                crate::i18n::tr(app.ui_language, "Move…"),
+                            )
+                            .clicked()
+                        {
+                            app.pending_file_dialogs.push((
+                                crate::file_dialog::FileDialog::new().start_pick_folder(),
+                                Box::new(|app, target| {
+                                    match xrtranslate_config::storage_migration::DataMove::new(
+                                        &app.project_root(),
+                                        &target,
+                                    ) {
+                                        Ok(_) => {
+                                            app.modal_dialog =
+                                                crate::ui::modal::ModalDialog::move_user_data(
+                                                    &target,
+                                                    app.ui_language,
+                                                );
+                                            app.pending_data_move = Some(target);
+                                        }
+                                        Err(error) => app.notify_error(
+                                            "Could not move user data.",
+                                            error.to_string(),
+                                        ),
+                                    }
+                                }),
+                            ));
+                        }
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(path.display().to_string())
+                                .small()
+                                .weak(),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+        }
+    });
+    ui.add_space(14.0);
+
+    #[cfg(any(windows, target_os = "linux"))]
     section(
         ui,
         crate::i18n::tr(app.ui_language, "Quick translation"),

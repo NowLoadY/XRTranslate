@@ -145,6 +145,7 @@ jobs:
       - name: Check packaged resources and CLI versions, then smoke test corpus
         run: |
           set -euo pipefail
+          cargo test --release --locked -p xrtranslate-config storage_migration --lib
           python3 - <<'PY'
           import json, os, pathlib, re, sqlite3, subprocess, tempfile, time, tomllib, urllib.request
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])

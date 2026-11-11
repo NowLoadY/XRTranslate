@@ -1,5 +1,16 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Move…", "迁移…", "移動…", "이동…", "Переместить…"),
+    ("Move user data", "迁移用户数据", "ユーザーデータを移動", "사용자 데이터 이동", "Перенос пользовательских данных"),
+    ("Move and restart", "迁移并重启", "移動して再起動", "이동 후 다시 시작", "Перенести и перезапустить"),
+    ("Moving user data…", "正在迁移用户数据…", "ユーザーデータを移動中…", "사용자 데이터 이동 중…", "Перенос пользовательских данных…"),
+    ("XRTranslate will restart to move your data.", "XRTranslate 将重启以迁移用户数据。", "データを移動するため XRTranslate を再起動します。", "데이터 이동을 위해 XRTranslate를 다시 시작합니다.", "XRTranslate перезапустится для переноса данных."),
+    ("Could not move user data.", "未能完成用户数据迁移。", "ユーザーデータを移動できませんでした。", "사용자 데이터를 이동하지 못했습니다.", "Не удалось перенести данные."),
+    ("Open XRTranslate", "打开 XRTranslate", "XRTranslate を開く", "XRTranslate 열기", "Открыть XRTranslate"),
+    ("Folders", "文件夹", "フォルダー", "폴더", "Папки"),
+    ("User data folder", "用户数据目录", "ユーザーデータフォルダー", "사용자 데이터 폴더", "Папка пользовательских данных"),
+    ("Installation folder", "安装目录", "インストールフォルダー", "설치 폴더", "Папка установки"),
+    ("Could not open the folder.", "无法打开文件夹。", "フォルダーを開けませんでした。", "폴더를 열 수 없습니다.", "Не удалось открыть папку."),
     ("Workspace ID", "业务空间 ID", "ワークスペース ID", "워크스페이스 ID", "ID рабочего пространства"),
     ("Long Anlingxin", "龙安灵心", "Long Anlingxin", "Long Anlingxin", "Лун Аньлинсинь"),
     ("Xu Nanchuan", "许南川", "Xu Nanchuan", "Xu Nanchuan", "Сюй Наньчуань"),

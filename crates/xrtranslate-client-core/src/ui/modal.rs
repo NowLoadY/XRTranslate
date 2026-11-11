@@ -43,6 +43,7 @@ pub enum ModalAction {
     DownloadUpdate,
     InstallUpdate,
     RestartApplication,
+    MoveUserData,
     ConfirmResourceDeletion,
 }
 
@@ -65,6 +66,25 @@ impl Default for ModalDialog {
 }
 
 impl ModalDialog {
+    pub fn move_user_data(path: &std::path::Path, language: crate::i18n::UiLanguage) -> Self {
+        Self {
+            open: true,
+            pages: vec![ModalPage::new(
+                crate::i18n::tr(language, "Move user data"),
+                format!(
+                    "{}\n\n{}",
+                    path.display(),
+                    crate::i18n::tr(language, "XRTranslate will restart to move your data.")
+                ),
+            )],
+            ok_label: crate::i18n::tr(language, "Move and restart").into(),
+            show_cancel_button: true,
+            cancel_label: crate::i18n::tr(language, "Cancel").into(),
+            ok_action: Some(ModalAction::MoveUserData),
+            ..Self::default()
+        }
+    }
+
     pub fn restart_required(language: crate::i18n::UiLanguage) -> Self {
         Self {
             open: true,

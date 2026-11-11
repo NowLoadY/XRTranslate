@@ -10,12 +10,13 @@ mod context_window;
 mod language;
 mod models;
 mod remote;
+pub mod storage_migration;
 
 pub use context_window::{
     ModelContextWindow, context_model_id, default_context_window, model_context_window,
 };
 pub use remote::{RemoteTtsConfig, apply_remote_defaults, release_config_document};
-pub use xrtranslate_assets::distribution::{Distribution, data_root};
+pub use xrtranslate_assets::distribution::{Distribution, data_location_file, data_root};
 pub use xrtranslate_assets::remote::AsrPromptMode;
 
 pub use models::InstalledModel;

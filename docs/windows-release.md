@@ -74,17 +74,21 @@ builds normally; cache hits do not skip the package smoke tests.
 Build the release directory once, then choose a distribution format:
 
 ```powershell
-$package = 'dist\XRTranslate-v0.4.4-win-x64'
+$package = 'dist\XRTranslate-v0.4.5-win-x64'
 .\build_release.ps1 -Output $package
 .\scripts\build-windows-distribution.ps1 -Package $package -Format Setup
 ```
 
 Setup requires Inno Setup 6.6 or newer (`-Iscc` can specify its compiler).
 It installs for the current Windows user, registers XRTranslate in Installed
-Apps, and reuses the registered location for upgrades. New installations keep
+Apps, and keeps upgrades at the registered location. The installer also offers
+moving the installation or uninstalling it while keeping user data. New installations keep
 settings, downloads and personal plugins in the Windows user profile; portable
 copies upgraded in place retain their existing data location. The installer only
 replaces its own files.
+
+User data can be moved from either the installer or **Settings > General > Folders**.
+Settings also shows both folders and opens them in the system file manager.
 
 For Microsoft Store, supply the exact identity from Partner Center:
 

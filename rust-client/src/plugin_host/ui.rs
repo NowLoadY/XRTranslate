@@ -102,6 +102,11 @@ impl Host {
         if components::button(ui, tr(language, "Plugin folder")).clicked() {
             match std::fs::create_dir_all(&self.directory) {
                 Ok(()) => {
+                    #[cfg(any(windows, target_os = "linux"))]
+                    if let Err(error) = crate::file_dialog::open_directory(&self.directory) {
+                        self.error = Some(error.to_string());
+                    }
+                    #[cfg(not(any(windows, target_os = "linux")))]
                     if let Ok(url) = reqwest::Url::from_directory_path(&self.directory) {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(url.to_string()));
                     }

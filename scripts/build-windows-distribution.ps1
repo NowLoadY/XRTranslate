@@ -27,7 +27,8 @@ $version = $Matches[1]
 if ($manifest.python -ne $false -or -not (Test-Path -LiteralPath (Join-Path $packageRoot $entrypoint))) {
     throw 'The Windows release package is incomplete.'
 }
-if (Test-Path -LiteralPath (Join-Path $packageRoot 'runtime\user-config.json')) {
+if ((Test-Path -LiteralPath (Join-Path $packageRoot 'runtime\user-config.json')) -or
+    (Test-Path -LiteralPath (Join-Path $packageRoot 'data-directory.txt'))) {
     throw 'Use a fresh release package, not an installed application with user data.'
 }
 $bundledPlugins = @(Get-ChildItem -LiteralPath (Join-Path $packageRoot 'plugins') -Directory)

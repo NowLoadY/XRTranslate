@@ -34,7 +34,49 @@ struct Arguments {
     restart: bool,
 }
 
+#[derive(Debug, Parser)]
+struct MoveDataArguments {
+    #[arg(long)]
+    root: PathBuf,
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    target: PathBuf,
+    #[arg(long)]
+    location_file: PathBuf,
+    #[arg(long)]
+    check: bool,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    // Keep the existing update command compatible with earlier clients.
+    if std::env::args().nth(1).as_deref() == Some("move-data") {
+        let args = MoveDataArguments::parse_from(std::env::args_os().skip(1));
+        let result = xrtranslate_config::storage_migration::DataMove::with_paths(
+            &args.root,
+            &args.source,
+            &args.target,
+            &args.location_file,
+        )
+        .and_then(|plan| {
+            if args.check {
+                return Ok(());
+            }
+            let mut last = u32::MAX;
+            plan.execute(|progress| {
+                let percent = (progress * 100.0) as u32;
+                if last != percent {
+                    println!("{percent}");
+                    last = percent;
+                }
+            })
+        });
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let args = Arguments::parse();
     wait_for_app_exit(args.current_pid);
     apply_update(&args.source, &args.target)?;

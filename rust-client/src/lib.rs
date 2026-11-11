@@ -70,6 +70,8 @@ mod screen_capture;
 mod screen_text_host;
 mod service_config;
 pub mod session_coordinator;
+#[cfg(any(windows, target_os = "linux"))]
+mod storage_migration;
 pub use xrtranslate_client_core::streaming;
 mod text_collection;
 mod text_input;
@@ -602,9 +604,17 @@ enum PendingResourceDeletion {
     Runtime,
 }
 
+#[cfg(not(target_os = "android"))]
+enum RestartRequest {
+    Application,
+    MoveData(std::path::PathBuf),
+}
+
 struct XRTranslateApp {
     #[cfg(not(target_os = "android"))]
-    restart_requested: Arc<AtomicBool>,
+    restart_requested: Arc<Mutex<Option<RestartRequest>>>,
+    #[cfg(any(windows, target_os = "linux"))]
+    pending_data_move: Option<std::path::PathBuf>,
     #[cfg(not(target_os = "android"))]
     pending_model_restart: Option<egui::Id>,
     #[cfg(windows)]
@@ -1756,6 +1766,8 @@ impl Default for XRTranslateApp {
         let mut app = Self {
             #[cfg(not(target_os = "android"))]
             restart_requested: Arc::default(),
+            #[cfg(any(windows, target_os = "linux"))]
+            pending_data_move: None,
             #[cfg(not(target_os = "android"))]
             pending_model_restart: None,
             #[cfg(windows)]
@@ -1997,6 +2009,14 @@ impl XRTranslateApp {
                 #[cfg(not(target_os = "android"))]
                 self.restart(ctx);
             }
+            Some(ui::modal::ModalAction::MoveUserData) => {
+                #[cfg(any(windows, target_os = "linux"))]
+                if let Some(target) = self.pending_data_move.take() {
+                    self.restart(ctx);
+                    *self.restart_requested.lock().unwrap() =
+                        Some(RestartRequest::MoveData(target));
+                }
+            }
             Some(ui::modal::ModalAction::ConfirmResourceDeletion) => {
                 self.confirm_pending_resource_deletion()
             }
@@ -2004,6 +2024,10 @@ impl XRTranslateApp {
         }
         if !self.modal_dialog.open && modal_action.is_none() {
             self.pending_resource_deletion = None;
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                self.pending_data_move = None;
+            }
         }
     }
 
@@ -3294,7 +3318,7 @@ impl XRTranslateApp {
     #[cfg(not(target_os = "android"))]
     fn restart(&mut self, ctx: &egui::Context) {
         self.save_settings();
-        self.restart_requested.store(true, Ordering::Relaxed);
+        *self.restart_requested.lock().unwrap() = Some(RestartRequest::Application);
         #[cfg(windows)]
         if let Some(tray) = &mut self.tray {
             tray.exit(ctx);
@@ -5775,6 +5799,8 @@ pub fn run() -> eframe::Result<()> {
     if let Some(index) = args.iter().position(|arg| arg == "--control") {
         std::process::exit(ui_director::cli::run(args[index + 1..].to_vec()));
     }
+    #[cfg(any(windows, target_os = "linux"))]
+    let data_move = storage_migration::startup_request(&args)?;
     #[cfg(windows)]
     let _instance = if args
         .iter()
@@ -5798,6 +5824,21 @@ pub fn run() -> eframe::Result<()> {
             std::env::set_current_dir(&root)
                 .map_err(|error| eframe::Error::AppCreation(error.into()))?;
         }
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Some(target) = data_move {
+        let result = storage_migration::run(&backend::project_root(), &target);
+        #[cfg(windows)]
+        drop(_instance);
+        if result.is_ok() {
+            let executable = std::env::current_exe()
+                .map_err(|error| eframe::Error::AppCreation(error.into()))?;
+            let mut command = std::process::Command::new(executable);
+            child_process::hide_console(&mut command)
+                .spawn()
+                .map_err(|error| eframe::Error::AppCreation(error.into()))?;
+        }
+        return result;
     }
     #[cfg(not(target_os = "android"))]
     logging::init();
@@ -5877,7 +5918,7 @@ pub fn run() -> eframe::Result<()> {
         options
     };
     #[cfg(not(target_os = "android"))]
-    let restart_requested = Arc::new(AtomicBool::new(false));
+    let restart_requested = Arc::new(Mutex::new(None));
     #[cfg(not(target_os = "android"))]
     let restart_signal = restart_requested.clone();
     let result = eframe::run_native(
@@ -5983,14 +6024,27 @@ pub fn run() -> eframe::Result<()> {
         }),
     );
     #[cfg(not(target_os = "android"))]
-    if result.is_ok() && restart_requested.load(Ordering::Relaxed) {
+    if result.is_ok()
+        && let Some(restart) = restart_requested.lock().unwrap().take()
+    {
         // Release the old window, application and single-instance lock first.
         #[cfg(windows)]
         drop(_instance);
         let executable =
             std::env::current_exe().map_err(|error| eframe::Error::AppCreation(error.into()))?;
         let mut command = std::process::Command::new(executable);
-        command.args(std::env::args_os().skip(1));
+        match restart {
+            RestartRequest::Application => {
+                command.args(std::env::args_os().skip(1));
+            }
+            RestartRequest::MoveData(target) => {
+                command
+                    .arg("--move-user-data")
+                    .arg(target)
+                    .arg("--previous-pid")
+                    .arg(std::process::id().to_string());
+            }
+        }
         child_process::hide_console(&mut command)
             .spawn()
             .map_err(|error| eframe::Error::AppCreation(error.into()))?;

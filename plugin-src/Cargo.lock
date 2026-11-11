@@ -7565,7 +7565,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-assets"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -7579,7 +7579,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-client-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -7624,8 +7624,9 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-config"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -7636,7 +7637,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-connections"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -7654,7 +7655,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-download"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "httpdate",
  "reqwest",
@@ -7664,7 +7665,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-engine"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "audioadapter-buffers",
  "rubato",
@@ -7673,7 +7674,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-http"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "regex",
  "reqwest",
@@ -7701,7 +7702,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-prompt"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -7709,7 +7710,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-protocol"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "serde",
  "serde_json",

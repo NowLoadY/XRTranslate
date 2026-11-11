@@ -27,8 +27,12 @@ impl Distribution {
     }
 }
 
-/// Installed channels use per-user storage; portable/source trees stay self-contained.
-pub fn data_root(root: &Path) -> PathBuf {
+/// The small location preference stays outside the directories being moved.
+pub fn data_location_file(root: &Path) -> PathBuf {
+    default_data_root(root).join("data-directory.txt")
+}
+
+fn default_data_root(root: &Path) -> PathBuf {
     if cfg!(windows)
         && matches!(
             Distribution::read(root),
@@ -41,4 +45,16 @@ pub fn data_root(root: &Path) -> PathBuf {
             .join("XRTranslate");
     }
     root.to_path_buf()
+}
+
+/// Installed channels share per-user storage; portable/source trees stay local
+/// until the user explicitly moves their data.
+pub fn data_root(root: &Path) -> PathBuf {
+    if let Ok(path) = fs::read_to_string(data_location_file(root)) {
+        let path = PathBuf::from(path.trim());
+        if path.is_absolute() {
+            return path;
+        }
+    }
+    default_data_root(root)
 }

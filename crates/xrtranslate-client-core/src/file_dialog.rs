@@ -15,6 +15,22 @@ pub fn take_errors() -> Vec<String> {
     std::mem::take(&mut *ERRORS.lock().unwrap())
 }
 
+/// Open a local directory in the desktop file manager, without a browser URL.
+#[cfg(any(windows, target_os = "linux"))]
+pub fn open_directory(path: &std::path::Path) -> std::io::Result<()> {
+    let path = std::path::absolute(path)?;
+    std::fs::create_dir_all(&path)?;
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    let mut child = command.arg(path).spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 fn report_error(error: String) {
     ERRORS.lock().unwrap().push(error);
     if let Some(context) = CONTEXT.lock().unwrap().as_ref() {
@@ -161,6 +177,20 @@ impl FileDialog {
     #[cfg(any(windows, target_os = "linux"))]
     pub fn save_path(self) -> Option<PathBuf> {
         self.native.save_file()
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    pub fn start_pick_folder(self) -> FileRequest {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(Ok(self.native.pick_folder()));
+            if let Some(context) = CONTEXT.lock().unwrap().as_ref() {
+                context.request_repaint();
+            }
+        });
+        FileRequest {
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
     }
 }
 
