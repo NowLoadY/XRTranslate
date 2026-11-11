@@ -460,9 +460,9 @@
     "max_speakers": 8,
     "min_utterance_ms": 750,
     "model_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
-    "same_speaker_hysteresis": 0.12,
-    "similarity_threshold": 0.5,
-    "speaker_switch_margin": 0.04
+    "same_speaker_hysteresis": 0.08,
+    "similarity_threshold": 0.6,
+    "speaker_switch_margin": 0.03
   },
   "storage": {
     "log_dir": "runtime/logs",

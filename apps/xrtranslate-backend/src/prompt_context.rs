@@ -34,23 +34,6 @@ pub(crate) fn prompt_context_for_segment(
         }
     }
 
-    // The current input and reserved output take priority. Reference text uses
-    // the remaining tokens, without a second fixed character ceiling.
-    let mut low = 0;
-    let mut high = token_budget.saturating_mul(3);
-    while low < high {
-        let size = (low + high).div_ceil(2);
-        context.surrounding_source =
-            surrounding_source(source_language, reference, segments, index, size);
-        if within_budget(&context, token_budget) {
-            low = size;
-        } else {
-            high = size - 1;
-        }
-    }
-    context.surrounding_source =
-        surrounding_source(source_language, reference, segments, index, low);
-
     for term in &corpus.prompt_terms {
         let row = render_term_row(term);
         if row.is_empty() {
@@ -61,6 +44,32 @@ pub(crate) fn prompt_context_for_segment(
             context.terminology_rows.pop();
         }
     }
+
+    // A long source lookahead must not consume the whole reference window.
+    // Share it with bilingual history, then reuse any space history leaves.
+    let mut history_reserve = 0;
+    for turn in reference.recent_turns.iter().rev() {
+        context.recent_turns.push(turn.clone());
+        let needed = reference_tokens(&context);
+        context.recent_turns.clear();
+        if needed <= token_budget {
+            history_reserve = needed;
+            break;
+        }
+    }
+    fit_surrounding_source(
+        &mut context,
+        source_language,
+        reference,
+        segments,
+        index,
+        if reference.recent_turns.is_empty() {
+            token_budget
+        } else {
+            token_budget.saturating_sub(history_reserve.max(token_budget / 2))
+        },
+    );
+
     for turn in reference.recent_turns.iter().rev() {
         context.recent_turns.push(turn.clone());
         if !within_budget(&context, token_budget) {
@@ -68,7 +77,41 @@ pub(crate) fn prompt_context_for_segment(
         }
     }
     context.recent_turns.reverse();
+    if !reference.recent_turns.is_empty() {
+        fit_surrounding_source(
+            &mut context,
+            source_language,
+            reference,
+            segments,
+            index,
+            token_budget,
+        );
+    }
     context
+}
+
+fn fit_surrounding_source(
+    context: &mut TranslationPromptContext,
+    source_language: &str,
+    reference: &TranslationPromptContext,
+    segments: &[TranslationSegmentPair],
+    index: usize,
+    token_budget: usize,
+) {
+    let mut low = 0;
+    let mut high = token_budget.saturating_mul(3);
+    while low < high {
+        let size = (low + high).div_ceil(2);
+        context.surrounding_source =
+            surrounding_source(source_language, reference, segments, index, size);
+        if within_budget(context, token_budget) {
+            low = size;
+        } else {
+            high = size - 1;
+        }
+    }
+    context.surrounding_source =
+        surrounding_source(source_language, reference, segments, index, low);
 }
 
 fn surrounding_source(
@@ -149,11 +192,15 @@ fn excerpt(text: &str, max_chars: usize, tail: bool) -> String {
 }
 
 fn within_budget(context: &TranslationPromptContext, token_budget: usize) -> bool {
+    reference_tokens(context) <= token_budget
+}
+
+fn reference_tokens(context: &TranslationPromptContext) -> usize {
     let Some(reference) = context.reference_text_for_quality_checks() else {
-        return true;
+        return 0;
     };
     let rendered = format!("# Translation Context\n\n{reference}");
-    estimated_tokens(&rendered) <= token_budget
+    estimated_tokens(&rendered)
 }
 
 fn render_term_row(term: &xr_corpus_protocol::CorpusPromptTerm) -> String {
@@ -286,5 +333,85 @@ mod tests {
         assert!(within_budget(&large, 4000 - estimated_tokens(current)));
         assert!(select(estimated_tokens(current)).recent_turns.is_empty());
         assert_eq!(segments[0].translation_text, current);
+    }
+
+    #[test]
+    fn long_lookahead_shares_capacity_with_recent_history() {
+        let current = "What happened next?";
+        let segments = [TranslationSegmentPair {
+            source_text: current.into(),
+            translation_text: current.into(),
+        }];
+        let corpus = CorpusSegmentContext {
+            corrected_text: current.into(),
+            prompt_terms: vec![xr_corpus_protocol::CorpusPromptTerm {
+                values: vec![
+                    ("en".into(), "robot".into()),
+                    ("zh".into(), "机器人".into()),
+                ],
+                sources: Vec::new(),
+            }],
+            source_corrections: Vec::new(),
+            activation_matches: Vec::new(),
+            context_matches: Vec::new(),
+        };
+        let reference = TranslationPromptContext {
+            recent_turns: (0..20)
+                .map(|index| xrtranslate_prompt::PromptTurn {
+                    turn_id: Some(index.to_string()),
+                    speaker_id: "speaker-1".into(),
+                    source_language: "en".into(),
+                    target_language: "zh".into(),
+                    source_text: "Earlier complete sentence. ".repeat(25),
+                    translated_text: "较早的完整句子。".repeat(25),
+                })
+                .collect(),
+            surrounding_source: Some(SurroundingSource {
+                speaker_id: "speaker-1".into(),
+                source_language: "en".into(),
+                before: String::new(),
+                after: "The next part of this conversation. ".repeat(1_000),
+            }),
+            ..Default::default()
+        };
+        let select = |budget| {
+            let selected =
+                prompt_context_for_segment("en", "zh", &corpus, &reference, &segments, 0, budget);
+            assert!(within_budget(&selected, budget - estimated_tokens(current)));
+            assert_eq!(selected.terminology_rows, ["robot,机器人"]);
+            assert_eq!(
+                selected.recent_turns.last().unwrap().turn_id.as_deref(),
+                Some("19")
+            );
+            assert!(
+                !selected
+                    .surrounding_source
+                    .as_ref()
+                    .unwrap()
+                    .after
+                    .is_empty()
+            );
+            selected
+        };
+        let small = select(700);
+        let large = select(4_000);
+        assert!(large.recent_turns.len() > small.recent_turns.len());
+        assert!(
+            large.surrounding_source.unwrap().after.len()
+                > small.surrounding_source.unwrap().after.len()
+        );
+
+        let mut short_history = reference.clone();
+        short_history.recent_turns.truncate(1);
+        let selected =
+            prompt_context_for_segment("en", "zh", &corpus, &short_history, &segments, 0, 4_000);
+        assert!(reference_tokens(&selected) > 3_900);
+        assert!(within_budget(&selected, 4_000 - estimated_tokens(current)));
+
+        short_history.recent_turns.clear();
+        let selected =
+            prompt_context_for_segment("en", "zh", &corpus, &short_history, &segments, 0, 700);
+        assert_eq!(selected.terminology_rows, ["robot,机器人"]);
+        assert!(within_budget(&selected, 700 - estimated_tokens(current)));
     }
 }

@@ -164,9 +164,9 @@ impl TrackerConfig {
 impl Default for TrackerConfig {
     fn default() -> Self {
         Self {
-            similarity_threshold: 0.56,
-            same_speaker_hysteresis: 0.14,
-            speaker_switch_margin: 0.04,
+            similarity_threshold: 0.60,
+            same_speaker_hysteresis: 0.08,
+            speaker_switch_margin: 0.03,
             max_speakers: 8,
         }
     }
@@ -227,7 +227,9 @@ impl OnlineSpeakerTracker {
     }
 
     pub fn assign(&mut self, embedding: &[f32]) -> Result<SpeakerAssignment, SpeakerError> {
-        let observation = self.observe(embedding, true)?;
+        // A complete utterance starts a fresh decision, just like a streaming
+        // turn after a pause. Hysteresis only applies within active speech.
+        let observation = self.observe(embedding, false)?;
         self.commit(observation)
     }
 
@@ -874,4 +876,27 @@ fn cosine(left: &[f32], right: &[f32]) -> f32 {
         return -1.0;
     }
     left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utterances_reconsider_identity_while_streaming_retains_hysteresis() {
+        let mut tracker = OnlineSpeakerTracker::new(TrackerConfig::default()).unwrap();
+        let first = tracker.assign(&[1.0, 0.0]).unwrap();
+        let other = [0.57, (1.0_f32 - 0.57 * 0.57).sqrt()];
+        assert_eq!(
+            tracker.observe(&other, true).unwrap().matched_index,
+            Some(0)
+        );
+        let second = tracker.assign(&other).unwrap();
+        assert!(second.is_new);
+        assert_ne!(second.speaker_id, first.speaker_id);
+        assert_eq!(
+            tracker.assign(&[1.0, 0.0]).unwrap().speaker_id,
+            first.speaker_id
+        );
+    }
 }

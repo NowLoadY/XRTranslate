@@ -1755,10 +1755,10 @@ const fn default_log_retained_files() -> usize {
     2
 }
 const fn default_speaker_similarity_threshold() -> f64 {
-    0.56
+    0.60
 }
 const fn default_same_speaker_hysteresis() -> f64 {
-    0.14
+    0.08
 }
 
 fn active_native_provider(
@@ -1957,7 +1957,7 @@ impl NativeProviderConfig {
     }
 }
 const fn default_speaker_switch_margin() -> f64 {
-    0.04
+    0.03
 }
 const fn default_max_speakers() -> usize {
     8

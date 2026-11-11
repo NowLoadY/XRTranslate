@@ -12,11 +12,11 @@ use crate::session_coordinator::{
 use xrtranslate_engine::language::{
     LanguageCapabilities, LanguageMode, LanguageSelection, SupportedLanguage,
 };
-use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
+use xrtranslate_prompt::{
+    ContextFacts, PromptTurn, SurroundingSource, TaskContext, estimated_tokens,
+};
 
 const CONTEXT_CUES: usize = 2;
-const PREVIOUS_CUES: usize = 8;
-const FOLLOWING_CUES: usize = 4;
 pub(super) const CONTEXT_GAP_MS: i64 = 30_000;
 
 pub(super) struct SubtitleJob {
@@ -61,6 +61,7 @@ impl SubtitleTranslation {
         index: usize,
         text: String,
         mut languages: LanguageSelection,
+        context_budget: usize,
     ) -> TranslationTask {
         // Short recognized sentences may be too ambiguous to detect again.
         // Reuse their known language until the user changes the actual source.
@@ -85,7 +86,7 @@ impl SubtitleTranslation {
                 SessionOutputPolicy::PluginOnly,
             )),
         )
-        .with_context(subtitle_context(cues, index))
+        .with_context(subtitle_context(cues, index, context_budget))
         .with_text_workload(xrtranslate_protocol::InferenceWorkload::Offline)
     }
 
@@ -212,7 +213,13 @@ impl MediaPlugin {
         }
         let translation = SubtitleTranslation::new(&cues[index].id);
         let source = cues[index].original_text.clone();
-        let mut task = translation.task(cues, index, source, job.languages);
+        let mut task = translation.task(
+            cues,
+            index,
+            source,
+            job.languages,
+            self.translation_input_budget,
+        );
         let binding = task.plugin.as_mut()?;
         binding.output_policy = job.output_policy;
         if job.output_policy == SessionOutputPolicy::Host {
@@ -221,7 +228,7 @@ impl MediaPlugin {
                 .clone()
                 .with_audio_source(crate::CaptureSource::SystemAudio);
         }
-        let inputs = cues[context_range(cues, index)].to_vec();
+        let inputs = cues[context_range(cues, index, self.translation_input_budget)].to_vec();
         self.subtitle_job.as_mut()?.pending = Some(PendingSubtitle {
             translation,
             inputs,
@@ -379,18 +386,17 @@ fn cue_ready(timeline: &SubtitleTimeline, index: usize, ready: usize, source_ope
     true
 }
 
-pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContext {
-    // Keep both bilingual history and source lookahead useful within the shared
-    // prompt budget. Do not let a long neighboring cue crowd out every turn.
-    const BEFORE_CHARS: usize = 160;
-    const AFTER_CHARS: usize = 240;
-    const HISTORY_CHARS: usize = 480;
-    let window = context_range(cues, index);
+pub(super) fn subtitle_context(
+    cues: &[SubtitleCue],
+    index: usize,
+    context_budget: usize,
+) -> TaskContext {
+    // Supply complete nearby facts using the host's model/prompt budget.
+    // Inference fits the final references alongside the current input and terms.
+    let window = context_range(cues, index, context_budget);
     let mut recent_turns = Vec::new();
     let mut source_before = Vec::new();
-    let mut history_left = HISTORY_CHARS;
-    let mut before_left = BEFORE_CHARS;
-    for cue in cues[window.start..index].iter().rev() {
+    for cue in &cues[window.start..index] {
         if let (Some(translated), Some(source), Some(target)) = (
             cue.translated_text
                 .as_deref()
@@ -398,16 +404,8 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
                 .filter(|text| !text.is_empty()),
             SupportedLanguage::parse(&cue.source_language),
             SupportedLanguage::parse(&cue.target_language),
-        ) && let cost = cue
-            .original_text
-            .chars()
-            .chain(translated.chars())
-            .take(HISTORY_CHARS + 1)
-            .count()
-            + 64
-            && cost <= history_left
+        ) && cue_context_tokens(cue) <= context_budget
         {
-            history_left -= cost;
             recent_turns.push(PromptTurn {
                 turn_id: Some(cue.id.clone()),
                 speaker_id: cue.speaker_name.clone().unwrap_or_default(),
@@ -416,27 +414,15 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
                 source_text: cue.original_text.clone(),
                 translated_text: translated.to_owned(),
             });
-        } else if before_left > 0 {
-            let text = context_excerpt(&cue.original_text, before_left, true);
-            before_left = before_left.saturating_sub(text.chars().count() + 1);
-            source_before.push(text);
+        } else {
+            source_before.push(cue.original_text.as_str());
         }
     }
-    recent_turns.reverse();
-    source_before.reverse();
-    let mut after = String::new();
-    let mut after_left = AFTER_CHARS;
-    for cue in &cues[index + 1..window.end] {
-        if after_left == 0 {
-            break;
-        }
-        let text = context_excerpt(&cue.original_text, after_left, false);
-        after_left = after_left.saturating_sub(text.chars().count() + 1);
-        if !after.is_empty() {
-            after.push('\n');
-        }
-        after.push_str(&text);
-    }
+    let after = cues[index + 1..window.end]
+        .iter()
+        .map(|cue| cue.original_text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     TaskContext::snapshot(ContextFacts {
         current_speaker_id: String::new(),
         recent_turns,
@@ -450,34 +436,38 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
     })
 }
 
-fn context_range(cues: &[SubtitleCue], index: usize) -> std::ops::Range<usize> {
+fn context_range(
+    cues: &[SubtitleCue],
+    index: usize,
+    token_budget: usize,
+) -> std::ops::Range<usize> {
+    // Bound each candidate side by tokens, not sentence count. Include the
+    // nearest oversized cue so inference can still use an excerpt of it.
     let mut start = index;
-    while start > index.saturating_sub(PREVIOUS_CUES)
+    let mut remaining = token_budget;
+    while start > 0
+        && remaining > 0
         && cues[start].start_ms.saturating_sub(cues[start - 1].end_ms) <= CONTEXT_GAP_MS
     {
         start -= 1;
+        remaining = remaining.saturating_sub(cue_context_tokens(&cues[start]));
     }
     let mut end = index + 1;
-    while end < (index + 1 + FOLLOWING_CUES).min(cues.len())
+    let mut remaining = token_budget;
+    while end < cues.len()
+        && remaining > 0
         && cues[end].start_ms.saturating_sub(cues[end - 1].end_ms) <= CONTEXT_GAP_MS
     {
+        remaining = remaining.saturating_sub(estimated_tokens(&cues[end].original_text) + 1);
         end += 1;
     }
     start..end
 }
 
-fn context_excerpt(text: &str, limit: usize, tail: bool) -> String {
-    if tail {
-        text.chars()
-            .rev()
-            .take(limit)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    } else {
-        text.chars().take(limit).collect()
-    }
+fn cue_context_tokens(cue: &SubtitleCue) -> usize {
+    estimated_tokens(&cue.original_text)
+        + cue.translated_text.as_deref().map_or(0, estimated_tokens)
+        + 16
 }
 
 #[cfg(test)]
@@ -495,7 +485,7 @@ mod tests {
             LanguageSelection::parse_with_options("auto", "zh", Some("ja"), false).unwrap();
         let request = |cue: &SubtitleCue, text: &str, languages| {
             SubtitleTranslation::new(&cue.id)
-                .task(std::slice::from_ref(cue), 0, text.into(), languages)
+                .task(std::slice::from_ref(cue), 0, text.into(), languages, 2048)
                 .languages
         };
         let recognized = request(&cue, "Read aloud.", selected);
@@ -529,7 +519,7 @@ mod tests {
         edited.translated_text = Some("入口在左边。".into());
         timeline.edit_cue(edited).unwrap();
 
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2, 2048) else {
             panic!("Subtitles must use a snapshot");
         };
         assert_eq!(facts.recent_turns.len(), 2);
@@ -543,7 +533,7 @@ mod tests {
 
         timeline.clear_translations();
         timeline.set_translation("srt_1", "Old translation".into(), "", "");
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2, 2048) else {
             unreachable!();
         };
         assert!(facts.recent_turns.is_empty());
@@ -555,7 +545,7 @@ mod tests {
         assert!(timeline.cues()[0].target_language.is_empty());
 
         timeline.set_translation("srt_0", "入口在左边。".into(), "en", "zh");
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2, 2048) else {
             unreachable!();
         };
         assert_eq!(facts.recent_turns.len(), 1);
@@ -574,7 +564,7 @@ mod tests {
         for id in ["srt_0", "srt_1"] {
             timeline.set_translation(id, "再一次。".into(), "en", "zh");
         }
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2, 2048) else {
             unreachable!();
         };
         assert_eq!(facts.recent_turns.len(), 2);
@@ -585,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn long_neighbors_leave_room_for_bilingual_history_and_scene_breaks_cut_context() {
+    fn full_neighbor_facts_reach_the_shared_budget_and_scene_breaks_cut_context() {
         let mut timeline = SubtitleTimeline::parse(
             "1\n00:00:00,000 --> 00:00:01,000\nHer name is Mira.\n\n\
              2\n00:00:01,000 --> 00:00:02,000\nShe is here.\n\n\
@@ -596,21 +586,64 @@ mod tests {
         let mut long = timeline.cues()[2].clone();
         long.original_text = "后文".repeat(2_000);
         timeline.edit_cue(long.clone()).unwrap();
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 1) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 1, 2048) else {
             unreachable!()
         };
         assert_eq!(facts.recent_turns.len(), 1);
         assert_eq!(facts.recent_turns[0].translated_text, "她叫米拉。");
-        assert_eq!(facts.surrounding_source.unwrap().after.chars().count(), 240);
+        assert_eq!(facts.surrounding_source.unwrap().after, long.original_text);
 
         long.start_ms = 60_000;
         long.end_ms = 61_000;
         timeline.edit_cue(long).unwrap();
-        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2, 2048) else {
             unreachable!()
         };
         assert!(facts.recent_turns.is_empty());
         assert!(facts.surrounding_source.unwrap().before.is_empty());
+    }
+
+    #[test]
+    fn context_sentence_count_grows_with_the_host_budget() {
+        let cues = (0..40)
+            .map(|index| SubtitleCue {
+                id: index.to_string(),
+                start_ms: index * 2_000,
+                end_ms: index * 2_000 + 1_900,
+                speaker_name: Some("speaker-1".into()),
+                original_text: format!("This is sentence {index}."),
+                translated_text: (index < 20).then(|| format!("这是第 {index} 句。")),
+                source_language: "en".into(),
+                target_language: "zh".into(),
+            })
+            .collect::<Vec<_>>();
+        let facts = |budget| {
+            let TaskContext::Snapshot { facts } = subtitle_context(&cues, 20, budget) else {
+                unreachable!()
+            };
+            facts
+        };
+        let small = facts(100);
+        let large = facts(2048);
+        assert!(small.recent_turns.len() < large.recent_turns.len());
+        assert_eq!(large.recent_turns.len(), 20);
+        assert_eq!(
+            large.recent_turns.last().unwrap().turn_id.as_deref(),
+            Some("19")
+        );
+        assert_eq!(
+            large
+                .surrounding_source
+                .as_ref()
+                .unwrap()
+                .after
+                .lines()
+                .count(),
+            19
+        );
+        assert!(small.surrounding_source.unwrap().after.lines().count() < 19);
+        assert!(large.surrounding_source.unwrap().before.is_empty());
+        assert!(facts(0).recent_turns.is_empty());
     }
 
     fn fixture() -> (MediaPlugin, tempfile::TempDir) {
@@ -623,6 +656,7 @@ mod tests {
             storage.path().into(),
             None,
         ));
+        plugin.translation_input_budget = 2048;
         plugin.controller.backend = None;
         plugin.controller.storage_dir = storage.path().to_owned();
         plugin.controller.store.tasks.clear();

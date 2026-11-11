@@ -41,9 +41,9 @@ models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
   "speaker": {
     "enabled": true,
     "model_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
-    "similarity_threshold": 0.50,
-    "same_speaker_hysteresis": 0.12,
-    "speaker_switch_margin": 0.04,
+    "similarity_threshold": 0.60,
+    "same_speaker_hysteresis": 0.08,
+    "speaker_switch_margin": 0.03,
     "max_speakers": 8,
     "min_utterance_ms": 750,
     "intra_threads": 2
@@ -56,7 +56,7 @@ models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
 ## 性能与调参
 
 - `similarity_threshold` 越高，错合并越少，但同一人更容易被拆成多个 ID。远场、变声器或系统混音可在 `0.58–0.68` 小范围校准。
-- `same_speaker_hysteresis` 只降低连续片段归属上一个人的门槛；数值越大越黏，越小则换人更灵敏。默认运行配置使用 `0.12`，仍保留多窗口确认以抑制噪声跳号。
+- `same_speaker_hysteresis` 只降低连续片段归属上一个人的门槛；数值越大越黏，越小则换人更灵敏。默认运行配置使用 `0.08`，仍保留多窗口确认以抑制噪声跳号。
 - `speaker_switch_margin` 要求另一个已有声纹取得足够的相似度优势，避免两个相近声纹在临界点来回切换。
 - `max_speakers` 是严格内存边界；达到上限后，低于门槛的片段只匹配最近的已有声纹，不污染聚类中心。
 - `min_utterance_ms` 以下的片段标记为 `speaker-unknown`，避免用爆破音或极短噪声创建身份。

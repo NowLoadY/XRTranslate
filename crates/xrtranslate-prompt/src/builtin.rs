@@ -10,12 +10,14 @@ pub(crate) const BUILTIN_ID: &str = "builtin-default";
 pub(crate) const EXPLICIT_REFERENCE_CONTEXT_INSTRUCTION: &str = concat!(
     "Use the provided context to translate the current {0} input into {1}.\n\n",
     "First understand the actual meaning of the current {0} input, then use the context to determine references, tone, speaker relationships, and intended meaning.\n\n",
+    "Keep names and terminology consistent with relevant context. Render incidental stutters or restarts naturally rather than mechanically repeating words; preserve deliberate emphasis, meaningful corrections and all information.\n\n",
     "Preserve the original meaning. Do not unnecessarily add, remove, or change the original meaning.\n\n",
     "Translate only the current {0} input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final {1} translation."
 );
 pub(crate) const AUTO_REFERENCE_CONTEXT_INSTRUCTION: &str = concat!(
     "Use the provided context to translate the current input into the other language among {0}.\n\n",
     "First understand the actual meaning of the current input, then use the context to determine references, tone, speaker relationships, and intended meaning.\n\n",
+    "Keep names and terminology consistent with relevant context. Render incidental stutters or restarts naturally rather than mechanically repeating words; preserve deliberate emphasis, meaningful corrections and all information.\n\n",
     "Preserve the original meaning. Do not unnecessarily add, remove, or change the original meaning.\n\n",
     "Translate only the current input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final translation."
 );

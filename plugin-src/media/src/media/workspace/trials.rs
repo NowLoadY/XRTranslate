@@ -199,7 +199,13 @@ impl MediaPlugin {
                     )),
                     context: cues
                         .get(range.start)
-                        .map(|_| super::super::subtitle_job::subtitle_context(cues, range.start))
+                        .map(|_| {
+                            super::super::subtitle_job::subtitle_context(
+                                cues,
+                                range.start,
+                                self.translation_input_budget,
+                            )
+                        })
                         .unwrap_or_default(),
                     text_workload: None,
                     profiles: Vec::new(),

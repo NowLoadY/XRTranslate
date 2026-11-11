@@ -57,6 +57,7 @@ impl MediaPlugin {
             index,
             draft.cue.original_text.trim().to_owned(),
             selection,
+            self.translation_input_budget,
         );
         let pending = SubtitleRetranslation {
             task_id: draft.task_id.clone(),

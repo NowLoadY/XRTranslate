@@ -134,6 +134,7 @@ pub enum MediaAction {
 pub struct MediaPlugin {
     pub(crate) available_preprocessing: Vec<xrtranslate_protocol::AudioPreprocessing>,
     pub(crate) default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
+    pub(crate) translation_input_budget: usize,
     pub(crate) pending_optimization: Option<String>,
     workspace_trial: Option<workspace::PendingTrial>,
     pub(crate) workspace_cancelled: Vec<crate::session_coordinator::TranslationSessionOwner>,
@@ -149,6 +150,7 @@ impl MediaPlugin {
         Self {
             available_preprocessing: vec![xrtranslate_protocol::AudioPreprocessing::None],
             default_preprocessing: xrtranslate_protocol::AudioPreprocessing::None,
+            translation_input_budget: 0,
             pending_optimization: None,
             workspace_trial: None,
             workspace_cancelled: Vec::new(),

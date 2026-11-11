@@ -4,6 +4,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crate::media::subtitles::SubtitleCue;
 use std::collections::BTreeMap;
 
+const MIN_REFERENCE_MS: i64 = 5_000;
+const MAX_REFERENCE_MS: i64 = 20_000;
+
 #[derive(Clone)]
 pub(super) struct Prepared {
     pub id: String,
@@ -45,24 +48,21 @@ impl References {
         }
         // A known speaker keeps one voice. With no speaker labels, a fresh long
         // passage can update the voice, while short replies retain the last success.
-        if (speaker(cue).is_some() || cue.end_ms - cue.start_ms < 5000)
+        if (speaker(cue).is_some() || cue.end_ms - cue.start_ms < MIN_REFERENCE_MS)
             && let Some(previous) = self.previous(task, index)
         {
             return Ok(previous);
         }
-        if cue.end_ms - cue.start_ms >= 5000
+        // Without an identity, extending a long passage could mix different voices.
+        if speaker(cue).is_none()
+            && cue.end_ms - cue.start_ms >= MIN_REFERENCE_MS
             && let Ok(audio) = audio(task, cue.start_ms, cue.end_ms)
         {
             return Ok(Prepared {
-                id: speaker(cue).map_or_else(
-                    || {
-                        format!(
-                            "passage:{}:{}",
-                            cue.start_ms,
-                            cue.end_ms.min(cue.start_ms + 20_000)
-                        )
-                    },
-                    |speaker| format!("speaker:{speaker}"),
+                id: format!(
+                    "passage:{}:{}",
+                    cue.start_ms,
+                    cue.end_ms.min(cue.start_ms + MAX_REFERENCE_MS)
                 ),
                 audio,
             });
@@ -125,27 +125,27 @@ fn candidates(cues: &[SubtitleCue], index: usize) -> Vec<[i64; 2]> {
     {
         let mut spoken = 0;
         let mut previous_end = start.start_ms;
+        let limit = start.start_ms + MAX_REFERENCE_MS;
         for other in &cues[first..] {
-            if !same(other)
-                || other.start_ms - previous_end > 2000
-                || (other.end_ms - start.start_ms > 20_000 && other != start)
-            {
+            if !same(other) || other.start_ms - previous_end > 2000 || other.start_ms >= limit {
                 break;
             }
-            spoken += other.end_ms - other.start_ms;
-            previous_end = other.end_ms;
-            if spoken >= 5000 {
-                spans.push([start.start_ms, other.end_ms.min(start.start_ms + 20_000)]);
+            let end = other.end_ms.min(limit);
+            spoken += (end - other.start_ms.max(previous_end)).max(0);
+            previous_end = previous_end.max(end);
+            if previous_end == limit || (speaker(cue).is_none() && spoken >= MIN_REFERENCE_MS) {
                 break;
             }
         }
+        if spoken >= MIN_REFERENCE_MS {
+            spans.push([start.start_ms, previous_end]);
+        }
     }
     spans.sort_by_key(|[start, end]| {
-        let distance = (cue.start_ms - end).max(start - cue.end_ms).max(0);
+        let distance = (cue.start_ms - end).max(start - cue.start_ms).max(0);
         (
-            *start != cue.start_ms,
             distance,
-            *start > cue.start_ms,
+            std::cmp::Reverse(end - start),
             (*start - cue.start_ms).abs(),
         )
     });
@@ -156,7 +156,7 @@ fn candidates(cues: &[SubtitleCue], index: usize) -> Vec<[i64; 2]> {
 /// Read a bounded passage from the separated vocal track.
 pub(super) fn audio(task: &MediaTask, start_ms: i64, end_ms: i64) -> Result<String, String> {
     let [start_ms, end_ms] = task.speech_reference_range.unwrap_or([start_ms, end_ms]);
-    if end_ms - start_ms < 5000 {
+    if end_ms - start_ms < MIN_REFERENCE_MS {
         return Err("Voice cloning needs at least 5 seconds of original speech. Use the selected voice for this short segment.".into());
     }
     let path = &task
@@ -171,8 +171,8 @@ pub(super) fn audio(task: &MediaTask, start_ms: i64, end_ms: i64) -> Result<Stri
     }
     let start = (start_ms.max(0) as u64 * u64::from(spec.sample_rate) / 1000)
         .min(u64::from(u32::MAX)) as u32;
-    let frames =
-        ((end_ms - start_ms).min(20_000) as u64 * u64::from(spec.sample_rate) / 1000) as usize;
+    let frames = ((end_ms - start_ms).min(MAX_REFERENCE_MS) as u64 * u64::from(spec.sample_rate)
+        / 1000) as usize;
     reader.seek(start).map_err(|e| e.to_string())?;
     let count = frames * usize::from(spec.channels);
     let samples: Vec<f32> = match spec.sample_format {
@@ -266,6 +266,28 @@ mod tests {
     }
 
     #[test]
+    fn known_speakers_prefer_long_nearby_passages_with_bounded_duration() {
+        let cues = vec![
+            cue(0, 6000, Some("A")),
+            cue(6200, 12000, Some("A")),
+            cue(12000, 18000, Some("A")),
+            cue(18000, 25000, Some("A")),
+            cue(25000, 31000, Some("B")),
+            cue(31000, 32000, Some("B")),
+            cue(40000, 47000, Some("A")),
+            cue(48000, 54000, Some("A")),
+        ];
+        assert_eq!(candidates(&cues, 0)[0], [0, 20000]);
+        assert_eq!(candidates(&cues, 5)[0], [25000, 32000]);
+        assert_eq!(candidates(&cues, 7)[0], [40000, 54000]);
+        assert!(candidates(&cues, 0).iter().all(|[start, end]| {
+            end - start <= MAX_REFERENCE_MS && (*end <= 25000 || *start >= 40000)
+        }));
+        let overlapping = vec![cue(0, 3000, Some("A")), cue(1000, 4000, Some("A"))];
+        assert!(candidates(&overlapping, 0).is_empty());
+    }
+
+    #[test]
     fn unknown_speakers_refresh_long_passages_and_reuse_short_replies() {
         let dir = tempfile::tempdir().unwrap();
         let vocals = dir.path().join("vocals.wav");
@@ -342,7 +364,7 @@ mod tests {
             },
         )
         .unwrap();
-        for frame in 0..48_000 * 12 {
+        for frame in 0..48_000 * 24 {
             let value = if frame < 48_000 * 6 {
                 0.0
             } else {
@@ -384,5 +406,21 @@ mod tests {
             audio(&task, 0, 1000).is_ok(),
             "a longer chosen reference can voice a short subtitle"
         );
+        task.speech_reference_range = None;
+        for (start, end, speaker) in [(6000, 12000, "A"), (12000, 18000, "A"), (18000, 24000, "B")]
+        {
+            task.subtitles
+                .add_cue_with_metadata(cue(start, end, Some(speaker)), Default::default());
+        }
+        let mut references = References::default();
+        let first = references.choose(&task, 0).unwrap();
+        let wav = STANDARD.decode(&first.audio).unwrap();
+        assert_eq!(
+            hound::WavReader::new(Cursor::new(wav)).unwrap().duration(),
+            12 * 24000
+        );
+        references.remember(&task, 0, first.clone());
+        assert_eq!(references.choose(&task, 1).unwrap().audio, first.audio);
+        assert_ne!(references.choose(&task, 2).unwrap().id, first.id);
     }
 }

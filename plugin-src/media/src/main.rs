@@ -288,6 +288,7 @@ impl Plugin for App {
                         .filter(|value| cap.preprocessing.is_ready(*value))
                         .collect();
                         media.default_preprocessing = cap.default_preprocessing;
+                        media.translation_input_budget = cap.text.input_budget.unwrap_or_default();
                     }
                     self.capabilities = Some(cap);
                 }
