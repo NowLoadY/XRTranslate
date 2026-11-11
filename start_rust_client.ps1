@@ -107,7 +107,8 @@ Write-Host 'Starting XRTranslate...'
 Write-Host "Logging enabled (RUST_LOG=$env:RUST_LOG). Press Ctrl+C to stop."
 Push-Location -LiteralPath $projectRoot
 try {
-    & (Join-Path $targetBinDir 'rust-client.exe')
+    # A GUI executable must stay in the pipeline for PowerShell to wait for it.
+    & (Join-Path $targetBinDir 'rust-client.exe') | Out-Host
     $clientExitCode = $LASTEXITCODE
 } finally {
     Pop-Location
