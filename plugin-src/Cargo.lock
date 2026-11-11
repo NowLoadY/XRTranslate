@@ -7376,7 +7376,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-avatar"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "crossbeam-channel",
  "eframe",
@@ -7410,7 +7410,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-chilloutvr-osc"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "xrt-osc",
 ]
@@ -7494,7 +7494,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-ocr"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "serde_json",
  "uuid",
@@ -7504,7 +7504,7 @@ dependencies = [
 
 [[package]]
 name = "xrt-osc"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "crossbeam-channel",
  "eframe",
