@@ -44,6 +44,7 @@ struct MoveDataArguments {
     target: PathBuf,
     #[arg(long)]
     location_file: PathBuf,
+    /// Resolve the selected location and validate it without moving data.
     #[arg(long)]
     check: bool,
 }
@@ -52,14 +53,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Keep the existing update command compatible with earlier clients.
     if std::env::args().nth(1).as_deref() == Some("move-data") {
         let args = MoveDataArguments::parse_from(std::env::args_os().skip(1));
+        let target = if args.check {
+            let selected = args.target.components().collect::<PathBuf>();
+            xrtranslate_config::storage_migration::destination_in(&selected)
+        } else {
+            args.target
+        };
         let result = xrtranslate_config::storage_migration::DataMove::with_paths(
             &args.root,
             &args.source,
-            &args.target,
+            &target,
             &args.location_file,
         )
         .and_then(|plan| {
             if args.check {
+                println!("{}", target.display());
                 return Ok(());
             }
             let mut last = u32::MAX;
@@ -79,11 +87,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let args = Arguments::parse();
     wait_for_app_exit(args.current_pid);
+    #[cfg(windows)]
+    if let Some(mut setup) = setup_command(&args.source, &args.target)? {
+        setup.spawn()?;
+        return Ok(());
+    }
     apply_update(&args.source, &args.target)?;
     if args.restart {
         restart_app(&args.source, &args.target)?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn setup_command(source: &Path, target: &Path) -> Result<Option<Command>, Box<dyn Error>> {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(source.join("release-manifest.json"))?)?;
+    let Some(setup) = manifest
+        .pointer("/entrypoints/setup")
+        .and_then(|v| v.as_str())
+    else {
+        return Ok(None);
+    };
+    if Path::new(setup).components().count() != 1 || !source.join(setup).is_file() {
+        return Err("The update installer is missing or invalid.".into());
+    }
+    let mut command = Command::new(source.join(setup));
+    command.args(["/SP-", "/NORESTART"]);
+    if target.join("release-manifest.json").is_file() && !target.join("Cargo.toml").is_file() {
+        command.arg(format!("/DIR={}", target.display()));
+    }
+    Ok(Some(command))
 }
 
 fn wait_for_app_exit(current_pid: u32) {
@@ -569,6 +603,46 @@ mod tests {
         let path = root.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn compatibility_zip_opens_setup_in_place_without_replacing_the_old_app() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("update");
+        let target = directory.path().join("old installation");
+        write(
+            &source,
+            "release-manifest.json",
+            r#"{"entrypoints":{"setup":"setup.exe"}}"#,
+        );
+        write(&source, "setup.exe", "installer");
+        write(&target, "release-manifest.json", "old manifest");
+        write(&target, "XRTranslate-v0.4.3.exe", "old client");
+        write(&target, "runtime/video_tasks.json", "subtitles");
+        let command = setup_command(&source, &target).unwrap().unwrap();
+        assert_eq!(command.get_program(), source.join("setup.exe"));
+        assert!(
+            command
+                .get_args()
+                .any(|arg| arg == format!("/DIR={}", target.display()).as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("XRTranslate-v0.4.3.exe")).unwrap(),
+            "old client"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("runtime/video_tasks.json")).unwrap(),
+            "subtitles"
+        );
+        write(&target, "Cargo.toml", "source checkout");
+        assert!(
+            !setup_command(&source, &target)
+                .unwrap()
+                .unwrap()
+                .get_args()
+                .any(|arg| arg.to_string_lossy().starts_with("/DIR="))
+        );
     }
 
     #[test]

@@ -314,7 +314,11 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                         {
                             app.pending_file_dialogs.push((
                                 crate::file_dialog::FileDialog::new().start_pick_folder(),
-                                Box::new(|app, target| {
+                                Box::new(|app, folder| {
+                                    let target =
+                                        xrtranslate_config::storage_migration::destination_in(
+                                            &folder,
+                                        );
                                     match xrtranslate_config::storage_migration::DataMove::new(
                                         &app.project_root(),
                                         &target,
@@ -329,7 +333,11 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                                         }
                                         Err(error) => app.notify_error(
                                             "Could not move user data.",
-                                            error.to_string(),
+                                            crate::i18n::tr_dynamic(
+                                                app.ui_language,
+                                                &error.to_string(),
+                                            )
+                                            .into_owned(),
                                         ),
                                     }
                                 }),

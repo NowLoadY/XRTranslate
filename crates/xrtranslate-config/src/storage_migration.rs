@@ -14,6 +14,20 @@ use serde_json::Value;
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const DIRECTORIES: &[&str] = &["runtime", "models", "plugins"];
 
+/// A folder picker selects a location, not a folder whose other files we own.
+pub fn destination_in(folder: &Path) -> PathBuf {
+    const NAME: &str = "XRTranslate-UserData";
+    if folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(NAME))
+    {
+        folder.to_owned()
+    } else {
+        folder.join(NAME)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DataMove {
     source: PathBuf,
@@ -42,10 +56,19 @@ impl DataMove {
         let source = absolute(source)?;
         let target = absolute(target)?;
         let root = absolute(root)?;
-        let mut retained = Vec::new();
-        if source == root {
+        if target.starts_with(&root) || root.starts_with(&target) {
+            return Err(invalid("Choose a data folder outside the installation folder.").into());
+        }
+        let mut plan = Self {
+            source,
+            target,
+            location_file: absolute(location_file)?,
+            retained: Vec::new(),
+        };
+        plan.validate()?;
+        if plan.source == root {
             // These files belong to the application, not its writable storage.
-            retained.extend([
+            plan.retained.extend([
                 PathBuf::from("runtime/onnxruntime/cpu"),
                 PathBuf::from("models/silero-vad"),
                 PathBuf::from("models/3D-Speaker-ERes2NetV2"),
@@ -59,21 +82,12 @@ impl DataMove {
                         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                         .is_some_and(|manifest| manifest["bundle_with_host"] == true)
                     {
-                        retained.push(Path::new("plugins").join(entry.file_name()));
+                        plan.retained
+                            .push(Path::new("plugins").join(entry.file_name()));
                     }
                 }
             }
         }
-        if target == root || target.starts_with(&root) {
-            return Err(invalid("Choose a data folder outside the installation folder.").into());
-        }
-        let plan = Self {
-            source,
-            target,
-            location_file: absolute(location_file)?,
-            retained,
-        };
-        plan.validate()?;
         Ok(plan)
     }
 
@@ -88,7 +102,10 @@ impl DataMove {
         if self.target.exists() {
             for entry in fs::read_dir(&self.target)? {
                 if entry?.path() != self.location_file {
-                    return Err(invalid("Choose an empty data folder.").into());
+                    return Err(invalid(
+                        "The destination data folder is not empty. Choose another location.",
+                    )
+                    .into());
                 }
             }
         }
@@ -399,6 +416,65 @@ mod tests {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn selecting_a_populated_location_uses_a_dedicated_data_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("app");
+        write(&root, "runtime/user-config.json", b"settings");
+        write(directory.path(), "other-app/file.txt", b"unrelated");
+
+        let target = destination_in(directory.path());
+        assert_eq!(target, directory.path().join("XRTranslate-UserData"));
+        assert_eq!(destination_in(&target), target);
+        let plan = DataMove::new(&root, &target).unwrap();
+        assert!(!target.exists()); // Selecting or cancelling never creates a folder.
+        plan.execute(|_| {}).unwrap();
+        assert_eq!(
+            fs::read(target.join("runtime/user-config.json")).unwrap(),
+            b"settings"
+        );
+        assert_eq!(
+            fs::read(directory.path().join("other-app/file.txt")).unwrap(),
+            b"unrelated"
+        );
+
+        // An existing data folder must never be merged with another installation.
+        let second = directory.path().join("another-app");
+        write(&second, "runtime/user-config.json", b"other settings");
+        assert!(DataMove::new(&second, &target).is_err());
+        assert_eq!(
+            fs::read(target.join("runtime/user-config.json")).unwrap(),
+            b"settings"
+        );
+    }
+
+    #[test]
+    fn data_and_installation_destinations_cannot_overlap() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("app");
+        let source = directory.path().join("data");
+        let location = source.join("data-directory.txt");
+        write(&source, "runtime/user-config.json", b"settings");
+        for (install, target) in [
+            (root.clone(), root.clone()),
+            (root.clone(), destination_in(&root)),
+            (root.clone(), destination_in(&root.join("nested"))),
+            (destination_in(&root).join("app"), destination_in(&root)),
+        ] {
+            let error = DataMove::with_paths(&install, &source, &target, &location).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Choose a data folder outside the installation folder."
+            );
+            assert!(!target.exists());
+        }
+        assert!(DataMove::with_paths(&root, &source, &destination_in(&source), &location).is_err());
+        assert_eq!(
+            fs::read(source.join("runtime/user-config.json")).unwrap(),
+            b"settings"
+        );
     }
 
     #[test]

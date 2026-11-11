@@ -26,7 +26,9 @@ public plugins. Locally installed and private plugins are not included. Optional
 offline GGUF models are not included. The workflow creates
 `XRTranslate-v0.3.5-win-x64-setup.exe`, using the runner's Inno Setup compiler.
 With **compatibility_zip** enabled, it also creates
-`XRTranslate-v0.3.5-win-x64.zip` with the same layout as previous Windows releases.
+`XRTranslate-v0.3.5-win-x64.zip` for older clients. This ZIP opens the same installer
+at the existing application location, preserving user data and registering the
+installation. Cancelling Setup leaves the old application unchanged.
 The selected packages are uploaded using GitHub's automatic workflow token.
 The workflow does not create a Release or edit its title,
 notes, or other platform assets.
@@ -39,8 +41,7 @@ Before uploading, the Windows job runs the packaged backend, installer and
 updater with `--version`, starts the packaged XR-Corpus service, and checks its
 health/version and seeded vocabulary graph through local HTTP requests. The
 smoke test uses a temporary configuration and database outside the package,
-then stops its service. Every file in the ZIP is checked against the verified
-release directory by size and SHA-256 before upload. It does not test GPU models
+then stops its service. It does not test GPU models
 or full speech inference.
 
 Publish the setup executable as the main Windows download. Keep **compatibility_zip**
@@ -76,7 +77,7 @@ Build the release directory once, then choose a distribution format:
 ```powershell
 $package = 'dist\XRTranslate-v0.4.5-win-x64'
 .\build_release.ps1 -Output $package
-.\scripts\build-windows-distribution.ps1 -Package $package -Format Setup
+.\scripts\build-windows-distribution.ps1 -Package $package -Format Setup -CompatibilityZip
 ```
 
 Setup requires Inno Setup 6.6 or newer (`-Iscc` can specify its compiler).

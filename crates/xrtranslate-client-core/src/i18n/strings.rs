@@ -1,5 +1,8 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Choose a data folder outside the installation folder.", "请选择安装目录以外的位置。", "インストール先以外の場所を選択してください。", "설치 폴더 밖의 위치를 선택하세요.", "Выберите расположение вне папки установки."),
+    ("The destination data folder is not empty. Choose another location.", "目标数据文件夹已有文件，请选择其他位置。", "移動先のデータフォルダーは空ではありません。別の場所を選択してください。", "대상 데이터 폴더가 비어 있지 않습니다. 다른 위치를 선택하세요.", "Папка назначения не пуста. Выберите другое расположение."),
+    ("Choose a separate, empty data folder.", "请选择当前用户数据目录以外的位置。", "現在のユーザーデータフォルダー以外の場所を選択してください。", "현재 사용자 데이터 폴더 밖의 위치를 선택하세요.", "Выберите расположение вне текущей папки пользовательских данных."),
     ("Move…", "迁移…", "移動…", "이동…", "Переместить…"),
     ("Move user data", "迁移用户数据", "ユーザーデータを移動", "사용자 데이터 이동", "Перенос пользовательских данных"),
     ("Move and restart", "迁移并重启", "移動して再起動", "이동 후 다시 시작", "Перенести и перезапустить"),

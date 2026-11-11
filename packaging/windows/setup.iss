@@ -41,6 +41,10 @@ SolidCompression=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
+[Messages]
+english.ConfirmUninstall=Uninstall %1? User data will be kept.
+chinesesimplified.ConfirmUninstall=卸载 %1？用户数据会保留。
+
 [CustomMessages]
 english.Location=Install location
 english.Open=Open XRTranslate
@@ -56,8 +60,14 @@ english.KeepLocation=Upgrade in the existing location, or choose Move.
 english.DataError=Could not save the user data location.
 english.DataMoveFailed=Could not move user data.
 english.DataLocation=User data location
-english.MoveData=Move user data
+english.ModelsAndData=Models & data
+english.AvailableSpace=%1 GB free of %2 GB
+english.RestoreLocation=Reset
 english.MovingData=Moving user data…
+english.SeparateData=Choose a location outside the installation folder.
+english.OccupiedData=XRTranslate-UserData already contains files. Choose another location.
+english.NestedData=Choose a location outside the current user data folder.
+english.OtherInstallation=XRTranslate is already installed in another folder. Update or uninstall that installation first.
 chinesesimplified.Location=安装位置
 chinesesimplified.Open=打开 XRTranslate
 chinesesimplified.NewerInstalled=已安装更新版本的 XRTranslate。
@@ -72,12 +82,21 @@ chinesesimplified.KeepLocation=请在原位置升级，或选择迁移。
 chinesesimplified.DataError=无法保存用户数据位置。
 chinesesimplified.DataMoveFailed=无法迁移用户数据。
 chinesesimplified.DataLocation=用户数据位置
-chinesesimplified.MoveData=迁移用户数据
+chinesesimplified.ModelsAndData=模型与数据
+chinesesimplified.AvailableSpace=%1 GB 可用 / %2 GB
+chinesesimplified.RestoreLocation=重置
 chinesesimplified.MovingData=正在迁移用户数据…
+chinesesimplified.SeparateData=请选择安装目录以外的位置。
+chinesesimplified.OccupiedData=XRTranslate-UserData 已有文件，请选择其他位置。
+chinesesimplified.NestedData=请选择当前用户数据目录以外的位置。
+chinesesimplified.OtherInstallation=XRTranslate 已安装在另一个位置。请先更新或卸载该安装。
 
 [Files]
+; A pre-rendered SVG keeps Setup independent of an extra image renderer.
+Source: "model-storage.png"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "{#PackageDir}\bin\xrtranslate-updater.exe"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "{#PackageDir}\bin\*.dll"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "{#InventoryFile}"; DestDir: "{tmp}"; Flags: dontcopy
 #include "files.iss"
 
 [InstallDelete]
@@ -92,9 +111,11 @@ Name: "{userprograms}\XRTranslate"; Filename: "{app}\XRTranslate.exe"; WorkingDi
 Filename: "{app}\XRTranslate.exe"; Description: "{cm:Open}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-function CreateDataMoveMutex(Attributes: NativeInt; InitialOwner: Boolean; Name: String): THandle;
+#include "shutdown.iss"
+
+function CreateAppMutex(Attributes: NativeInt; InitialOwner: Boolean; Name: String): THandle;
   external 'CreateMutexW@kernel32.dll stdcall';
-function CloseDataMoveMutex(Handle: THandle): Boolean;
+function CloseAppMutex(Handle: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
 
 const
@@ -102,12 +123,16 @@ const
 var
   PreviousVersion, PreviousDirectory, UninstallCommand: String;
   DataDirectory, MoveDirectory, RetainedDirectory, MoveDataDirectory: String;
-  Heading, VersionLabel, DataLabel: TNewStaticText;
+  Heading, VersionLabel, DataLabel, SpaceLabel: TNewStaticText;
   MoveButton, UninstallButton, DataButton: TNewButton;
   DataEdit: TNewEdit;
+  DataPage: TWizardPage;
+  DataRestore: TNewLinkLabel;
+  DataSpace: TBitmapImage;
   DataProgress: TOutputProgressWizardPage;
-  DataMoveError: String;
-  LocalData: Boolean;
+  DataMoveMessage: String;
+  LocalData, NewData, DataLocationChosen: Boolean;
+  UninstallMutex: THandle;
 
 function UseSharedData: Boolean;
 begin
@@ -172,7 +197,8 @@ end;
 
 function IsPortableInstallation(const Directory: String): Boolean;
 begin
-  Result := not FileExists(AddBackslash(Directory) + 'distribution.json') and
+  Result := (Directory <> '') and DirExists(Directory) and
+    not FileExists(AddBackslash(Directory) + 'distribution.json') and
     FileExists(AddBackslash(Directory) + 'release-manifest.json') and
     FileExists(AddBackslash(Directory) + 'config.json') and
     FileExists(AddBackslash(Directory) + 'bin\xrtranslate-updater.exe') and
@@ -180,16 +206,54 @@ begin
     not DirExists(AddBackslash(Directory) + '.git');
 end;
 
+function PortableVersion(const Directory: String): String;
+var
+  Entry: TFindRec;
+  Version: String;
+  Candidate, Latest: Int64;
+begin
+  Result := '';
+  Latest := 0;
+  if FindFirst(AddBackslash(Directory) + 'XRTranslate-v*.exe', Entry) then begin
+    try
+      repeat
+        Version := Copy(Entry.Name, 14, Length(Entry.Name) - 17);
+        if StrToVersion(Version, Candidate) and (Candidate > Latest) then begin
+          Latest := Candidate;
+          Result := Version;
+        end;
+      until not FindNext(Entry);
+    finally
+      FindClose(Entry);
+    end;
+  end;
+end;
+
 function InitializeSetup: Boolean;
 var
   Installed, Incoming: Int64;
+  RequestedDirectory: String;
 begin
   RegQueryStringValue(HKCU64, UninstallKey, 'DisplayVersion', PreviousVersion);
   RegQueryStringValue(HKCU64, UninstallKey, 'InstallLocation', PreviousDirectory);
   RegQueryStringValue(HKCU64, UninstallKey, 'UninstallString', UninstallCommand);
+  // Both older clients and the compatibility ZIP pass their actual directory.
+  RequestedDirectory := ExpandConstant('{param:DIR|}');
+  if IsPortableInstallation(RequestedDirectory) then begin
+    if (PreviousDirectory <> '') and not SameDirectory(PreviousDirectory, RequestedDirectory) then begin
+      SuppressibleMsgBox(CustomMessage('OtherInstallation'), mbInformation, MB_OK, IDOK);
+      Result := False;
+      Exit;
+    end;
+    if PreviousDirectory = '' then begin
+      PreviousDirectory := ExpandFileName(RequestedDirectory);
+      PreviousVersion := PortableVersion(PreviousDirectory);
+    end;
+  end;
   DataDirectory := ReadDataLocation(SharedDataLocationFile, ExpandConstant('{localappdata}\XRTranslate'));
   if PreviousDirectory <> '' then
     DataDirectory := ExistingDataDirectory(PreviousDirectory);
+  NewData := (PreviousDirectory = '') and not FileExists(SharedDataLocationFile) and EmptyDirectory(DataDirectory);
   Result := True;
   if StrToVersion(PreviousVersion, Installed) and StrToVersion('{#AppVersion}', Incoming) then
     if ComparePackedVersion(Installed, Incoming) > 0 then begin
@@ -198,7 +262,57 @@ begin
     end;
 end;
 
+function ExistingParentDirectory(const Path: String): String;
+var
+  Parent: String;
+begin
+  Result := Path;
+  while not DirExists(Result) do begin
+    Parent := ExtractFileDir(RemoveBackslash(Result));
+    if (Parent = '') or (Parent = Result) then Break;
+    Result := Parent;
+  end;
+end;
+
+procedure ShowDataSpace;
+var
+  FreeBytes, TotalBytes: Int64;
+  BarWidth, BarHeight, UsedWidth: Integer;
+  FillColor: TColor;
+begin
+  SpaceLabel.Caption := '';
+  DataSpace.Hide;
+  if not GetSpaceOnDisk64(ExistingParentDirectory(DataEdit.Text), FreeBytes, TotalBytes) or (TotalBytes <= 0) then Exit;
+  SpaceLabel.Caption := ExtractFileDrive(DataEdit.Text) + '  ·  ' + FmtMessage(CustomMessage('AvailableSpace'), [
+    Format('%.1f', [FreeBytes / 1073741824.0]), Format('%.1f', [TotalBytes / 1073741824.0])]);
+  FillColor := $00F77E00;
+  SpaceLabel.Font.Color := clGrayText;
+  if FreeBytes < TotalBytes div 20 then begin
+    FillColor := $005A5FB3;
+    SpaceLabel.Font.Color := FillColor;
+  end;
+  // Supersampling keeps the static rounded ends smooth at any display scale.
+  BarWidth := DataSpace.Width * 4;
+  BarHeight := DataSpace.Height * 4;
+  UsedWidth := BarWidth - Round(FreeBytes * 1.0 / TotalBytes * BarWidth);
+  with DataSpace.Bitmap do begin
+    Width := BarWidth;
+    Height := BarHeight;
+    Canvas.Pen.Style := psClear;
+    Canvas.Brush.Color := clWhite;
+    Canvas.Rectangle(0, 0, BarWidth, BarHeight);
+    Canvas.Brush.Color := $00FDF0E5;
+    Canvas.RoundRect(0, 0, BarWidth, BarHeight, BarHeight, BarHeight);
+    Canvas.Brush.Color := FillColor;
+    if UsedWidth > 0 then
+      Canvas.RoundRect(0, 0, UsedWidth, BarHeight, BarHeight, BarHeight);
+  end;
+  DataSpace.Show;
+end;
+
 procedure DataLocationChanged(Sender: TObject);
+var
+  RecommendLocation: Boolean;
 begin
   if PreviousDirectory <> '' then
     DataDirectory := ExistingDataDirectory(PreviousDirectory)
@@ -208,10 +322,21 @@ begin
     else if RetainedDirectory = '' then
       DataDirectory := ReadDataLocation(SharedDataLocationFile, ExpandConstant('{localappdata}\XRTranslate'));
   end;
+  RecommendLocation := NewData and (PreviousDirectory = '') and (RetainedDirectory = '') and
+    not IsPortableInstallation(WizardForm.DirEdit.Text);
+  if not DataLocationChosen then begin
+    MoveDataDirectory := '';
+    if RecommendLocation then
+      MoveDataDirectory := AddBackslash(ExtractFileDir(RemoveBackslash(WizardForm.DirEdit.Text))) + 'XRTranslate-UserData';
+  end;
   if MoveDataDirectory <> '' then
     DataEdit.Text := MoveDataDirectory
   else
     DataEdit.Text := DataDirectory;
+  DataEdit.Hint := DataEdit.Text;
+  DataEdit.SelStart := 0;
+  DataRestore.Visible := DataLocationChosen and ((MoveDataDirectory <> '') or RecommendLocation);
+  ShowDataSpace;
 end;
 
 procedure DataMoveOutput(const Line: String; const Error, FirstLine: Boolean);
@@ -222,7 +347,7 @@ begin
   if not Error and (Progress >= 0) and (Progress <= 100) then
     DataProgress.SetProgress(Progress, 100)
   else begin
-    DataMoveError := DataMoveError + Line + #13#10;
+    DataMoveMessage := DataMoveMessage + Line + #13#10;
     Log(Line);
   end;
 end;
@@ -235,56 +360,71 @@ begin
   Root := WizardForm.DirEdit.Text;
   LocationFile := SharedDataLocationFile;
   if IsPortableInstallation(Root) then LocationFile := AddBackslash(Root) + 'data-directory.txt';
-  Parameters := 'move-data --root ' + AddQuotes(RemoveBackslash(Root)) +
-    ' --source ' + AddQuotes(RemoveBackslash(DataDirectory)) + ' --target ' + AddQuotes(RemoveBackslash(MoveDataDirectory)) +
+  // A final dot keeps drive roots absolute without a backslash escaping the quote.
+  Parameters := 'move-data --root ' + AddQuotes(AddBackslash(Root) + '.') +
+    ' --source ' + AddQuotes(AddBackslash(DataDirectory) + '.') + ' --target ' + AddQuotes(AddBackslash(MoveDataDirectory) + '.') +
     ' --location-file ' + AddQuotes(LocationFile);
   if CheckOnly then Parameters := Parameters + ' --check';
-  ExtractTemporaryFiles('{tmp}\*');
-  DataMoveError := '';
+  // These entries precede the payload in the solid archive. Extract once only.
+  if not FileExists(ExpandConstant('{tmp}\xrtranslate-updater.exe')) then begin
+    ExtractTemporaryFiles('{tmp}\*.dll');
+    ExtractTemporaryFile('xrtranslate-updater.exe');
+  end;
+  DataMoveMessage := '';
   Result := ExecAndLogOutput(ExpandConstant('{tmp}\xrtranslate-updater.exe'), Parameters, '',
     SW_HIDE, ewWaitUntilTerminated, ResultCode, @DataMoveOutput);
-  if not Result then DataMoveError := SysErrorMessage(ResultCode);
+  if not Result then DataMoveMessage := SysErrorMessage(ResultCode);
   Result := Result and (ResultCode = 0);
+  if Result and CheckOnly then MoveDataDirectory := Trim(DataMoveMessage);
   if not Result then begin
-    if DataMoveError = '' then DataMoveError := SysErrorMessage(ResultCode);
-    MsgBox(DataMoveError, mbError, MB_OK);
+    if DataMoveMessage = '' then DataMoveMessage := SysErrorMessage(ResultCode);
+    StringChangeEx(DataMoveMessage, 'Choose a data folder outside the installation folder.', CustomMessage('SeparateData'), True);
+    StringChangeEx(DataMoveMessage, 'The destination data folder is not empty. Choose another location.', CustomMessage('OccupiedData'), True);
+    StringChangeEx(DataMoveMessage, 'Choose a separate, empty data folder.', CustomMessage('NestedData'), True);
+    SuppressibleMsgBox(DataMoveMessage, mbError, MB_OK, IDOK);
   end;
 end;
 
 procedure ChooseDataLocation(Sender: TObject);
 var
-  Destination: String;
+  Destination, PreviousTarget: String;
 begin
-  if MoveDataDirectory <> '' then begin
+  DataLocationChanged(Sender);
+  Destination := ExistingParentDirectory(DataEdit.Text);
+  if not BrowseForFolder(CustomMessage('DataLocation'), Destination, True) then Exit;
+  if SameDirectory(Destination, DataDirectory) then begin
     MoveDataDirectory := '';
-    DataButton.Caption := CustomMessage('Move');
+    DataLocationChosen := True;
     DataLocationChanged(Sender);
     Exit;
   end;
-  DataLocationChanged(Sender);
-  Destination := DataDirectory;
-  if not BrowseForFolder(CustomMessage('MoveData'), Destination, True) or
-     SameDirectory(Destination, DataDirectory) then Exit;
+  PreviousTarget := MoveDataDirectory;
   MoveDataDirectory := Destination;
-  if not RunDataMove(True) then begin
-    MoveDataDirectory := '';
-    Exit;
-  end;
-  DataEdit.Text := Destination;
-  DataButton.Caption := SetupMessage(msgButtonCancel);
+  if RunDataMove(True) then
+    DataLocationChosen := True
+  else
+    MoveDataDirectory := PreviousTarget;
+  DataLocationChanged(Sender);
+end;
+
+procedure RestoreDataLocation(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+begin
+  DataLocationChosen := False;
+  MoveDataDirectory := '';
+  DataLocationChanged(Sender);
 end;
 
 procedure MoveUserData;
 var
   MoveMutex: THandle;
 begin
-  MoveMutex := CreateDataMoveMutex(0, False, 'Local\XRTranslate.Desktop');
+  MoveMutex := CreateAppMutex(0, False, 'Local\XRTranslate.Desktop');
   if MoveMutex = 0 then begin
     MsgBox(SysErrorMessage(DLLGetLastError), mbError, MB_OK);
     Exit;
   end;
   if DLLGetLastError = 183 then begin
-    CloseDataMoveMutex(MoveMutex);
+    CloseAppMutex(MoveMutex);
     MsgBox(CustomMessage('CloseApp'), mbInformation, MB_OK);
     Exit;
   end;
@@ -298,8 +438,49 @@ begin
     DataEdit.Text := DataDirectory;
   finally
     DataProgress.Hide;
-    CloseDataMoveMutex(MoveMutex);
+    CloseAppMutex(MoveMutex);
   end;
+end;
+
+function RemovePortableFile(const Relative: String): Boolean;
+var
+  Filename, Directory: String;
+begin
+  Filename := AddBackslash(PreviousDirectory) + Relative;
+  Result := not FileExists(Filename) or DeleteFile(Filename);
+  if not Result then Exit;
+  Directory := ExtractFileDir(Filename);
+  while not SameDirectory(Directory, PreviousDirectory) do begin
+    if not RemoveDir(Directory) then Break;
+    Directory := ExtractFileDir(Directory);
+  end;
+end;
+
+function RemovePortableInstallation: Boolean;
+var
+  Files: TArrayOfString;
+  Entry: TFindRec;
+  Index: Integer;
+  Version: Int64;
+begin
+  Result := False;
+  if not IsPortableInstallation(PreviousDirectory) then Exit;
+  ExtractTemporaryFile('portable-files.txt');
+  if not LoadStringsFromFile(ExpandConstant('{tmp}\portable-files.txt'), Files) then Exit;
+  // Stop on a locked client before removing any of its other files.
+  if FindFirst(AddBackslash(PreviousDirectory) + 'XRTranslate-v*.exe', Entry) then begin
+    try
+      repeat
+        if StrToVersion(Copy(Entry.Name, 14, Length(Entry.Name) - 17), Version) and
+           not RemovePortableFile(Entry.Name) then Exit;
+      until not FindNext(Entry);
+    finally
+      FindClose(Entry);
+    end;
+  end;
+  for Index := 0 to GetArrayLength(Files) - 1 do
+    if not RemovePortableFile(Files[Index]) then Exit;
+  Result := RemovePortableFile('release-manifest.json');
 end;
 
 function UninstallPrevious: String;
@@ -307,23 +488,23 @@ var
   ResultCode: Integer;
 begin
   Result := CustomMessage('CloseApp');
-  if CheckForMutexes('Local\XRTranslate.Desktop') then
-    Exit;
+  if not CloseInstalledApplication(PreviousDirectory) then Exit;
   Result := CustomMessage('UninstallFailed');
-  if UninstallCommand = '' then
-    Exit;
   DataLocationChanged(WizardForm);
   if not SaveDataLocation then begin
     Result := CustomMessage('DataError');
     Exit;
   end;
-  if not Exec('>', UninstallCommand + ' /NORESTART', '', SW_SHOWNORMAL,
-     ewWaitUntilTerminated, ResultCode) then begin
-    Result := SysErrorMessage(ResultCode);
-    Exit;
+  if UninstallCommand = '' then begin
+    if not RemovePortableInstallation then Exit;
+  end else begin
+    if not Exec('>', UninstallCommand + ' /SILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_SHOWNORMAL,
+       ewWaitUntilTerminated, ResultCode) then begin
+      Result := SysErrorMessage(ResultCode);
+      Exit;
+    end;
+    if (ResultCode <> 0) or RegKeyExists(HKCU64, UninstallKey) then Exit;
   end;
-  if (ResultCode <> 0) or RegKeyExists(HKCU64, UninstallKey) then
-    Exit;
   RetainedDirectory := PreviousDirectory;
   PreviousDirectory := '';
   PreviousVersion := '';
@@ -359,6 +540,8 @@ procedure UninstallInstallation(Sender: TObject);
 var
   Error: String;
 begin
+  if SuppressibleMsgBox(FmtMessage(SetupMessage(msgConfirmUninstall), ['XRTranslate']),
+    mbConfirmation, MB_YESNO, IDNO) <> IDYES then Exit;
   Error := UninstallPrevious;
   if Error <> '' then begin
     MsgBox(Error, mbError, MB_OK);
@@ -375,6 +558,7 @@ end;
 procedure InitializeWizard;
 var
   ExtraHeight: Integer;
+  DataIcon: TBitmapImage;
 begin
   WizardForm.PageNameLabel.Hide;
   WizardForm.PageDescriptionLabel.Hide;
@@ -404,20 +588,46 @@ begin
   WizardForm.DiskSpaceLabel.Hide;
   WizardForm.DirEdit.Top := ScaleY(42);
   WizardForm.DirBrowseButton.Top := WizardForm.DirEdit.Top;
-  DataLabel := TNewStaticText.Create(WizardForm);
-  DataLabel.Parent := WizardForm.DirEdit.Parent;
-  DataLabel.Caption := CustomMessage('DataLocation');
-  DataLabel.SetBounds(WizardForm.DirEdit.Left, ScaleY(82), WizardForm.DirEdit.Width, ScaleY(20));
-  DataEdit := TNewEdit.Create(WizardForm);
-  DataEdit.Parent := WizardForm.DirEdit.Parent;
+
+  DataPage := CreateCustomPage(wpSelectDir, CustomMessage('ModelsAndData'), '');
+  ExtractTemporaryFile('model-storage.png');
+  DataIcon := TBitmapImage.Create(DataPage);
+  DataIcon.Parent := DataPage.Surface;
+  DataIcon.BackColor := clNone;
+  DataIcon.Stretch := True;
+  DataIcon.PngImage.LoadFromFile(ExpandConstant('{tmp}\model-storage.png'));
+  DataIcon.SetBounds(0, ScaleY(8), ScaleX(32), ScaleY(32));
+  DataLabel := TNewStaticText.Create(DataPage);
+  DataLabel.Parent := DataPage.Surface;
+  DataLabel.Caption := CustomMessage('ModelsAndData');
+  DataLabel.ShowAccelChar := False;
+  DataLabel.Font.Size := 12;
+  DataLabel.SetBounds(ScaleX(44), ScaleY(13), DataPage.SurfaceWidth - ScaleX(44), ScaleY(26));
+  DataEdit := TNewEdit.Create(DataPage);
+  DataEdit.Parent := DataPage.Surface;
   DataEdit.ReadOnly := True;
-  DataEdit.SetBounds(WizardForm.DirEdit.Left, ScaleY(106), WizardForm.DirEdit.Width, WizardForm.DirEdit.Height);
-  DataButton := TNewButton.Create(WizardForm);
-  DataButton.Parent := WizardForm.DirBrowseButton.Parent;
+  DataEdit.AutoSelect := False;
+  DataEdit.ShowHint := True;
+  DataEdit.SetBounds(0, ScaleY(58), WizardForm.DirEdit.Width, WizardForm.DirEdit.Height);
+  DataButton := TNewButton.Create(DataPage);
+  DataButton.Parent := DataPage.Surface;
   DataButton.SetBounds(WizardForm.DirBrowseButton.Left, DataEdit.Top,
     WizardForm.DirBrowseButton.Width, WizardForm.DirBrowseButton.Height);
-  DataButton.Caption := CustomMessage('Move');
+  DataButton.Caption := SetupMessage(msgButtonBrowse);
   DataButton.OnClick := @ChooseDataLocation;
+  SpaceLabel := TNewStaticText.Create(DataPage);
+  SpaceLabel.Parent := DataPage.Surface;
+  SpaceLabel.SetBounds(0, ScaleY(101), DataPage.SurfaceWidth, ScaleY(20));
+  DataSpace := TBitmapImage.Create(DataPage);
+  DataSpace.Parent := DataPage.Surface;
+  DataSpace.BackColor := clNone;
+  DataSpace.Stretch := True;
+  DataSpace.SetBounds(0, ScaleY(129), DataPage.SurfaceWidth, ScaleY(4));
+  DataRestore := TNewLinkLabel.Create(DataPage);
+  DataRestore.Parent := DataPage.Surface;
+  DataRestore.Caption := '<a id="restore">' + CustomMessage('RestoreLocation') + '</a>';
+  DataRestore.SetBounds(0, ScaleY(153), DataPage.SurfaceWidth, ScaleY(20));
+  DataRestore.OnLinkClick := @RestoreDataLocation;
   DataProgress := CreateOutputProgressPage(CustomMessage('MovingData'), '');
   DataLocationChanged(WizardForm);
   WizardForm.DirEdit.OnChange := @DataLocationChanged;
@@ -444,7 +654,11 @@ end;
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpSelectDir then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonNext);
+  if CurPageID = DataPage.ID then begin
+    DataLocationChanged(WizardForm);
     WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+  end;
   if CurPageID = wpFinished then begin
     WizardForm.WizardBitmapImage2.Hide;
     WizardForm.FinishedHeadingLabel.Hide;
@@ -497,6 +711,13 @@ begin
   LocalData := IsPortableInstallation(Destination);
   if (RetainedDirectory <> '') and SameDirectory(Destination, RetainedDirectory) then
     LocalData := SameDirectory(Destination, DataDirectory);
+  // A completed uninstall can leave this directory containing only user data.
+  if (PreviousDirectory = '') and FileExists(SharedDataLocationFile) and
+     SameDirectory(ExistingDataDirectory(Destination), DataDirectory) and
+     not FileExists(AddBackslash(Destination) + 'release-manifest.json') and
+     not FileExists(AddBackslash(Destination) + 'Cargo.toml') and
+     not DirExists(AddBackslash(Destination) + '.git') then
+    LocalData := True;
   if LocalData then
     Exit;
   if not ((PreviousDirectory <> '') and SameDirectory(Destination, PreviousDirectory)) and
@@ -509,10 +730,27 @@ begin
     Result := CustomMessage('DataError');
 end;
 
-function InitializeUninstall: Boolean;
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Directory: String;
 begin
-  DataDirectory := ExistingDataDirectory(ExpandConstant('{app}'));
-  Result := SaveDataLocation;
-  if not Result then
-    SuppressibleMsgBox(CustomMessage('DataError'), mbError, MB_OK, IDOK);
+  // This event follows confirmation and precedes every file deletion.
+  if CurUninstallStep <> usUninstall then Exit;
+  Directory := ExpandConstant('{app}');
+  if not CloseInstalledApplication(Directory) then
+    RaiseException(CustomMessage('CloseApp'));
+  UninstallMutex := CreateAppMutex(0, False, 'Local\XRTranslate.Desktop');
+  if UninstallMutex = 0 then RaiseException(SysErrorMessage(DLLGetLastError));
+  DataDirectory := ExistingDataDirectory(Directory);
+  if not SaveDataLocation then RaiseException(CustomMessage('DataError'));
+  // Retain the location of data nested inside the program folder for reinstall.
+  if not SameDirectory(Directory, DataDirectory) and
+     (Pos(Uppercase(AddBackslash(Directory)), Uppercase(AddBackslash(DataDirectory))) = 1) then
+    if not SaveStringToFile(AddBackslash(Directory) + 'data-directory.txt', Utf8Encode(DataDirectory), False) then
+      RaiseException(CustomMessage('DataError'));
+end;
+
+procedure DeinitializeUninstall;
+begin
+  if UninstallMutex <> 0 then CloseAppMutex(UninstallMutex);
 end;

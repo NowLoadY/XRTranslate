@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)][string]$Package,
     [ValidateSet('Setup', 'Msix', 'Steam')][string]$Format = 'Setup',
     [string]$OutputDirectory = 'dist',
+    [switch]$CompatibilityZip,
     [string]$Iscc,
     [string]$MakeAppx,
     # MSIX identity values come from Partner Center, not the repository name.
@@ -78,13 +79,39 @@ try {
                 'Source: "{0}"; DestDir: "{1}"; DestName: "{2}"; Flags: ignoreversion{3}' -f
                     $_.Source, $destination, [IO.Path]::GetFileName($_.Destination), $check
             } | Set-Content -LiteralPath (Join-Path $work 'files.iss') -Encoding utf8
+            # The same package inventory also removes a pre-installer ZIP copy.
+            # Writable storage stays in place, including downloaded models.
+            $files.Destination | Where-Object {
+                $_ -notmatch '^(runtime|models)\\' -and
+                $_ -notin @('config.json', 'distribution.json', 'release-manifest.json')
+            } | Set-Content -LiteralPath (Join-Path $work 'portable-files.txt') -Encoding utf8
             Set-Content -LiteralPath (Join-Path $work 'plugins.iss') -Encoding utf8 -Value @(
                 $bundledPlugins | ForEach-Object {
                     'Type: filesandordirs; Name: "{{app}}\plugins\{0}"' -f $_.Name
                 }
             )
-            & $Iscc "/I$work" "/DPackageDir=$packageRoot" "/DAppVersion=$version" "/DOutputDir=$outputRoot" (Join-Path $sourceRoot 'packaging\windows\setup.iss')
+            & $Iscc "/I$work" "/DInventoryFile=$(Join-Path $work 'portable-files.txt')" "/DPackageDir=$packageRoot" "/DAppVersion=$version" "/DOutputDir=$outputRoot" (Join-Path $sourceRoot 'packaging\windows\setup.iss')
             if ($LASTEXITCODE -ne 0) { throw 'Windows setup compilation failed.' }
+            if ($CompatibilityZip) {
+                # Old clients already understand these two entrypoints. Their
+                # downloaded helper hands off to Setup before changing any files.
+                $bridge = New-Item -ItemType Directory -Path (Join-Path $work 'bridge')
+                $setupName = "XRTranslate-v$version-win-x64-setup.exe"
+                Copy-Item -LiteralPath (Join-Path $outputRoot $setupName) -Destination $bridge.FullName
+                $bin = New-Item -ItemType Directory -Path (Join-Path $bridge.FullName 'bin')
+                Copy-Item -LiteralPath (Join-Path $packageRoot 'bin/xrtranslate-updater.exe') -Destination $bin.FullName
+                Get-ChildItem -LiteralPath (Join-Path $packageRoot 'bin') -Filter '*.dll' |
+                    Copy-Item -Destination $bin.FullName
+                @{
+                    layout_version = 4
+                    python = $false
+                    entrypoints = @{ client = $setupName; setup = $setupName; updater = 'bin/xrtranslate-updater.exe' }
+                } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $bridge.FullName 'release-manifest.json') -Encoding utf8NoBOM
+                $archive = Join-Path $outputRoot "XRTranslate-v$version-win-x64.zip"
+                if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive }
+                [IO.Compression.ZipFile]::CreateFromDirectory($bridge.FullName, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
+                Write-Host "Compatibility ZIP ready: $archive"
+            }
         }
         Msix {
             if (-not $MakeAppx) {

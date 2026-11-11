@@ -192,39 +192,10 @@ jobs:
             Remove-Item $smoke -Recurse -Force
           }
 
-      - name: Zip the contents in the standard release layout
-        if: ${{ inputs.compatibility_zip }}
+      - name: Build the registered Windows installer and compatibility ZIP
         run: |
-          $directory = Join-Path $env:GITHUB_WORKSPACE "dist\$env:PACKAGE_NAME"
-          $archivePath = "$directory.zip"
-          [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $directory, $archivePath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-          $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
-          try {
-            $files = @(Get-ChildItem -LiteralPath $directory -Recurse -File)
-            if (@($archive.Entries | Where-Object Name).Count -ne $files.Count) {
-              throw 'ZIP file count does not match the verified release directory.'
-            }
-            foreach ($file in $files) {
-              $relative = [System.IO.Path]::GetRelativePath($directory, $file.FullName).Replace('\', '/')
-              $entry = $archive.GetEntry($relative)
-              if (-not $entry -or $entry.Length -ne $file.Length) { throw "ZIP is missing or truncated: $relative" }
-              $stream = $entry.Open()
-              try {
-                $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
-                if ($hash -cne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash) {
-                  throw "ZIP content differs from the verified release: $relative"
-                }
-              } finally { $stream.Dispose() }
-            }
-            Write-Host "Verified all $($files.Count) packaged files against the ZIP."
-          } finally {
-            $archive.Dispose()
-          }
-
-      - name: Build the registered Windows installer
-        run: |
-          & .\scripts\build-windows-distribution.ps1 -Package "dist\$env:PACKAGE_NAME" -Format Setup
+          $compatibility = '${{ inputs.compatibility_zip }}' -eq 'true'
+          & .\scripts\build-windows-distribution.ps1 -Package "dist\$env:PACKAGE_NAME" -Format Setup -CompatibilityZip:$compatibility
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed.' }
 
       - name: Upload the Windows packages to the existing release
