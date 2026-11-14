@@ -8,8 +8,30 @@ use std::{
 };
 use xrtranslate_download::{DownloadCancellation, DownloadError};
 
+/// Identifies a complete supported package using only its declared file names and sizes.
+/// The source is indexed once; no model contents are read or hashed.
+pub fn identify_model_package<'a>(
+    path: &Path,
+    packages: impl IntoIterator<Item = &'a ModelPackage>,
+) -> Result<&'a ModelPackage, ModelDownloadError> {
+    let source = Source::open(path)?;
+    let mut matched = None;
+    for package in packages {
+        package.validate()?;
+        if source.locate(package)?.is_some() {
+            if matched.is_some() {
+                return Err(ModelDownloadError::Manifest(
+                    "Multiple models found. Select one model file or folder.".into(),
+                ));
+            }
+            matched = Some(package);
+        }
+    }
+    matched.ok_or_else(|| ModelDownloadError::Manifest("Unsupported model.".into()))
+}
+
 impl ModelPackage {
-    /// Copies a model folder or ZIP into its resolved storage directory.
+    /// Copies a model file, folder or ZIP into its resolved storage directory.
     /// Only declared model files are imported; the source is never modified.
     pub fn import(
         &self,
@@ -20,7 +42,8 @@ impl ModelPackage {
     ) -> Result<PathBuf, ModelDownloadError> {
         self.validate()?;
         ensure_running(cancellation)?;
-        let mut source = Source::open(self, source)?;
+        let mut source = Source::open(source)?;
+        let location = source.locate(self)?.ok_or_else(|| missing(&self.id))?;
         let parent = destination
             .parent()
             .ok_or_else(|| ModelDownloadError::Manifest("Model directory has no parent".into()))?;
@@ -48,7 +71,7 @@ impl ModelPackage {
             if missing.contains(file.path.as_str()) {
                 let output = staging.path().join(&file.path);
                 fs::create_dir_all(output.parent().unwrap()).map_err(|e| file_error(&output, e))?;
-                let mut input = source.read(&file.path)?;
+                let mut input = source.read(&location, &file.path)?;
                 let mut writer = File::create(&output).map_err(|e| file_error(&output, e))?;
                 let mut copied = 0;
                 loop {
@@ -88,37 +111,30 @@ impl ModelPackage {
 }
 
 enum Source {
-    Directory(PathBuf),
+    Directory {
+        roots: Vec<PathBuf>,
+        selected_file: Option<PathBuf>,
+    },
     Zip {
         archive: zip::ZipArchive<File>,
-        entries: HashMap<String, usize>,
-        prefix: String,
+        entries: HashMap<String, (usize, u64)>,
     },
 }
 
+enum Location {
+    Directory(PathBuf),
+    Zip(String),
+}
+
 impl Source {
-    fn open(package: &ModelPackage, path: &Path) -> Result<Self, ModelDownloadError> {
+    fn open(path: &Path) -> Result<Self, ModelDownloadError> {
         if path.is_dir() {
             let root = path.canonicalize().map_err(|e| file_error(path, e))?;
             let mut candidates = vec![root.clone()];
+            let mut roots = Vec::new();
             // Accept the model itself, its containing folder, or models/<model>.
             for depth in 0..=2 {
-                let matching: Vec<_> = candidates
-                    .iter()
-                    .filter(|candidate| {
-                        package.check(candidate).unwrap_or(false)
-                            && package.files.iter().all(|file| {
-                                candidate
-                                    .join(&file.path)
-                                    .canonicalize()
-                                    .is_ok_and(|p| p.starts_with(candidate))
-                            })
-                    })
-                    .cloned()
-                    .collect();
-                if !matching.is_empty() {
-                    return unique(matching, &package.id).map(Self::Directory);
-                }
+                roots.extend(candidates.iter().cloned());
                 if depth == 2 {
                     break;
                 }
@@ -145,7 +161,26 @@ impl Source {
                 }
                 candidates = children;
             }
-            return Err(missing(&package.id));
+            return Ok(Self::Directory {
+                roots,
+                selected_file: None,
+            });
+        }
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            let selected_file = path.canonicalize().map_err(|e| file_error(path, e))?;
+            let roots = selected_file
+                .ancestors()
+                .skip(1)
+                .take(3)
+                .map(Path::to_path_buf)
+                .collect();
+            return Ok(Self::Directory {
+                roots,
+                selected_file: Some(selected_file),
+            });
         }
         let file = File::open(path).map_err(|e| file_error(path, e))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| archive_error(path, e))?;
@@ -174,56 +209,87 @@ impl Source {
                 ));
             }
         }
-        let first = &package.files[0].path;
-        let prefixes: Vec<_> = files
-            .keys()
-            .filter_map(|name| {
-                if name == first {
-                    Some(String::new())
-                } else {
-                    name.strip_suffix(&format!("/{first}"))
-                        .map(|p| format!("{p}/"))
-                }
-            })
-            .filter(|prefix| {
-                package.files.iter().all(|file| {
-                    files
-                        .get(&format!("{prefix}{}", file.path))
-                        .is_some_and(|(_, bytes)| *bytes == file.bytes)
-                })
-            })
-            .collect();
-        let prefix = unique(prefixes, &package.id)?;
         Ok(Self::Zip {
             archive,
-            entries: files
-                .into_iter()
-                .map(|(p, (index, _))| (p, index))
-                .collect(),
-            prefix,
+            entries: files,
         })
     }
 
-    fn read(&mut self, relative: &str) -> Result<Box<dyn Read + '_>, ModelDownloadError> {
-        match self {
-            Self::Directory(root) => {
+    fn locate(&self, package: &ModelPackage) -> Result<Option<Location>, ModelDownloadError> {
+        let matching: Vec<_> = match self {
+            Self::Directory {
+                roots,
+                selected_file,
+            } => roots
+                .iter()
+                .filter(|root| {
+                    package.check(root).unwrap_or(false)
+                        && package.files.iter().all(|file| {
+                            root.join(&file.path)
+                                .canonicalize()
+                                .is_ok_and(|p| p.starts_with(root))
+                        })
+                        && selected_file.as_ref().is_none_or(|selected| {
+                            package.files.iter().any(|file| {
+                                root.join(&file.path)
+                                    .canonicalize()
+                                    .is_ok_and(|p| p == *selected)
+                            })
+                        })
+                })
+                .cloned()
+                .map(Location::Directory)
+                .collect(),
+            Self::Zip { entries, .. } => {
+                let first = &package.files[0].path;
+                entries
+                    .keys()
+                    .filter_map(|name| {
+                        if name == first {
+                            Some(String::new())
+                        } else {
+                            name.strip_suffix(&format!("/{first}"))
+                                .map(|p| format!("{p}/"))
+                        }
+                    })
+                    .filter(|prefix| {
+                        package.files.iter().all(|file| {
+                            entries
+                                .get(&format!("{prefix}{}", file.path))
+                                .is_some_and(|(_, bytes)| *bytes == file.bytes)
+                        })
+                    })
+                    .map(Location::Zip)
+                    .collect()
+            }
+        };
+        if matching.is_empty() {
+            return Ok(None);
+        }
+        unique(matching, &package.id).map(Some)
+    }
+
+    fn read(
+        &mut self,
+        location: &Location,
+        relative: &str,
+    ) -> Result<Box<dyn Read + '_>, ModelDownloadError> {
+        match (self, location) {
+            (Self::Directory { .. }, Location::Directory(root)) => {
                 let path = root.join(relative);
                 Ok(Box::new(
                     File::open(&path).map_err(|e| file_error(&path, e))?,
                 ))
             }
-            Self::Zip {
-                archive,
-                entries,
-                prefix,
-            } => {
+            (Self::Zip { archive, entries }, Location::Zip(prefix)) => {
                 let name = format!("{prefix}{relative}");
                 Ok(Box::new(
                     archive
-                        .by_index(entries[&name])
+                        .by_index(entries[&name].0)
                         .map_err(|e| archive_error(Path::new(&name), e))?,
                 ))
             }
+            _ => unreachable!("model location belongs to its source"),
         }
     }
 }

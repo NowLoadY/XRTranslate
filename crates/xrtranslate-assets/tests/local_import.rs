@@ -3,7 +3,7 @@ use std::{
     io::{Seek, Write},
     path::Path,
 };
-use xrtranslate_assets::{ModelPackage, PackageFile};
+use xrtranslate_assets::{ModelPackage, PackageFile, identify_model_package};
 use xrtranslate_download::DownloadCancellation;
 use zip::write::SimpleFileOptions;
 
@@ -60,6 +60,106 @@ fn import(
         &DownloadCancellation::default(),
         |_, _, _| {},
     )
+}
+
+#[test]
+fn the_builtin_catalog_can_be_checked_without_an_active_model_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let packages: Vec<_> = xrtranslate_assets::MODEL_ASSET_CATALOG
+        .iter()
+        .map(ModelPackage::from)
+        .collect();
+    assert_eq!(
+        identify_model_package(root.path(), &packages)
+            .unwrap_err()
+            .to_string(),
+        "Unsupported model."
+    );
+}
+
+#[test]
+fn detection_matches_complete_folders_archives_and_individual_files() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("models/received");
+    folder(&source);
+    let zip = root.path().join("received.zip");
+    archive(&zip, "models/received/", None);
+    let expected = package();
+    let mut other = package();
+    other.id = "other-variant".into();
+    other.files[0].bytes += 1;
+    for path in [
+        root.path().join("models"),
+        zip,
+        source.join(FILES[0].0),
+        source.join(FILES[1].0),
+    ] {
+        assert_eq!(
+            identify_model_package(&path, [&other, &expected]).unwrap(),
+            &expected
+        );
+    }
+    let target = root.path().join("imported");
+    import(&source.join(FILES[0].0), &target).unwrap();
+    assert!(expected.check(&target).unwrap());
+}
+
+#[test]
+fn detection_rejects_unknown_files_and_incomplete_or_wrong_sized_models() {
+    let root = tempfile::tempdir().unwrap();
+    folder(root.path());
+    let package = package();
+    let unrelated = root.path().join("notes.txt");
+    fs::write(&unrelated, "not a model").unwrap();
+    assert_eq!(
+        identify_model_package(&unrelated, [&package])
+            .unwrap_err()
+            .to_string(),
+        "Unsupported model."
+    );
+    fs::remove_file(root.path().join(FILES[1].0)).unwrap();
+    assert_eq!(
+        identify_model_package(&root.path().join(FILES[0].0), [&package])
+            .unwrap_err()
+            .to_string(),
+        "Unsupported model."
+    );
+    folder(root.path());
+    fs::write(root.path().join(FILES[0].0), "wrong size").unwrap();
+    assert_eq!(
+        identify_model_package(root.path(), [&package])
+            .unwrap_err()
+            .to_string(),
+        "Unsupported model."
+    );
+}
+
+#[test]
+fn detection_does_not_guess_between_models_and_selected_file_disambiguates() {
+    let root = tempfile::tempdir().unwrap();
+    folder(root.path());
+    fs::write(root.path().join("other.gguf"), "weights").unwrap();
+    let first = package();
+    let second = ModelPackage {
+        id: "second".into(),
+        revision: "v1".into(),
+        archive: None,
+        files: vec![PackageFile {
+            path: "other.gguf".into(),
+            bytes: 7,
+            url: "https://example.invalid/unused".into(),
+        }],
+    };
+    assert_eq!(
+        identify_model_package(root.path(), [&first, &second])
+            .unwrap_err()
+            .to_string(),
+        "Multiple models found. Select one model file or folder."
+    );
+    assert_eq!(
+        identify_model_package(&root.path().join("other.gguf"), [&first, &second]).unwrap(),
+        &second
+    );
 }
 
 #[test]

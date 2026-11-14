@@ -5375,8 +5375,11 @@ impl eframe::App for XRTranslateApp {
                 .collect(),
         );
         self.model_task_manager.poll();
-        for id in self.model_task_manager.take_changed_resources() {
-            self.plugin_host.model_resource_changed(&id);
+        for change in self.model_task_manager.take_changed_resources() {
+            self.plugin_host.model_resource_changed(&change.id);
+            if change.imported && let model_install::ResourceId::BuiltIn(id) = change.id {
+                ui::pages::onboarding::select_imported_model(self, id);
+            }
         }
         if self.model_task_manager.needs_discovery()
             && let Err(error) = self

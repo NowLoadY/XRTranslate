@@ -144,9 +144,8 @@ impl Cue {
                 Self::ModelDownload
             }),
             (_, RuntimeInstallState::Downloading { .. }) => Some(Self::RuntimeDownload),
-            (NativeModelTaskState::Discovering, _) | (_, RuntimeInstallState::Detecting) => {
-                Some(Self::Checking)
-            }
+            (NativeModelTaskState::Discovering | NativeModelTaskState::Identifying, _)
+            | (_, RuntimeInstallState::Detecting) => Some(Self::Checking),
             (NativeModelTaskState::Failed(_), _) | (_, RuntimeInstallState::Failed(_)) => {
                 Some(Self::Failed)
             }

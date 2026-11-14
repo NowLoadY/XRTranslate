@@ -51,6 +51,12 @@ pub struct RegisteredModel {
     pub directory: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelResourceChange {
+    pub id: ResourceId,
+    pub imported: bool,
+}
+
 #[derive(Debug)]
 struct ResourceProgress {
     asset_id: ResourceId,
@@ -63,6 +69,7 @@ struct ResourceProgress {
 pub enum NativeModelTaskState {
     Idle,
     Discovering,
+    Identifying,
     Detected,
     Installing {
         asset_id: ResourceId,
@@ -107,7 +114,10 @@ pub struct NativeModelBatchSnapshot {
 impl NativeModelTaskState {
     #[must_use]
     pub const fn is_busy(&self) -> bool {
-        matches!(self, Self::Discovering | Self::Installing { .. })
+        matches!(
+            self,
+            Self::Discovering | Self::Identifying | Self::Installing { .. }
+        )
     }
 }
 
@@ -115,7 +125,7 @@ impl NativeModelTaskState {
 enum NativeModelTask {
     Discover,
     Install(ResourceId),
-    Import(ResourceId, PathBuf),
+    Import(PathBuf),
 }
 
 #[derive(Debug)]
@@ -161,7 +171,7 @@ pub struct NativeModelTaskManager {
     install_batch: Option<ModelInstallBatch>,
     known_ready: HashSet<ResourceId>,
     plugin_models: HashMap<ResourceId, RegisteredModel>,
-    changed_resources: Vec<ResourceId>,
+    changed_resources: Vec<ModelResourceChange>,
 }
 
 impl Default for NativeModelTaskManager {
@@ -205,7 +215,7 @@ impl NativeModelTaskManager {
         }
     }
 
-    pub fn take_changed_resources(&mut self) -> Vec<ResourceId> {
+    pub fn take_changed_resources(&mut self) -> Vec<ModelResourceChange> {
         std::mem::take(&mut self.changed_resources)
     }
 
@@ -252,22 +262,22 @@ impl NativeModelTaskManager {
         self.state.is_busy()
     }
 
-    pub fn is_importing(&self, id: impl Into<ResourceId>) -> bool {
-        let id = id.into();
-        matches!(&self.active_task, Some((_, NativeModelTask::Import(current, _))) if *current == id)
+    pub fn is_importing(&self) -> bool {
+        matches!(self.active_task, Some((_, NativeModelTask::Import(_))))
     }
 
-    pub fn import(
-        &mut self,
-        project_root: PathBuf,
-        id: impl Into<ResourceId>,
-        source: PathBuf,
-    ) -> Result<(), String> {
-        self.start(project_root, NativeModelTask::Import(id.into(), source))
+    pub fn is_importing_resource(&self, id: impl Into<ResourceId>) -> bool {
+        let id = id.into();
+        self.is_importing()
+            && matches!(&self.state, NativeModelTaskState::Installing { asset_id, .. } if *asset_id == id)
+    }
+
+    pub fn import(&mut self, project_root: PathBuf, source: PathBuf) -> Result<(), String> {
+        self.start(project_root, NativeModelTask::Import(source))
     }
 
     pub fn cancel_import(&self) {
-        if matches!(self.active_task, Some((_, NativeModelTask::Import(..))))
+        if self.is_importing()
             && let Some(cancellation) = &self.cancellation
         {
             cancellation.cancel();
@@ -547,6 +557,10 @@ impl NativeModelTaskManager {
         self.events = None;
         self.cancellation = None;
         let active_task = self.active_task.take();
+        let imported = matches!(active_task, Some((_, NativeModelTask::Import(_))));
+        if imported && let NativeModelTaskState::Installing { asset_id, .. } = &self.state {
+            self.download_progress.remove(asset_id);
+        }
         // A failure may already be queued when the user pauses or switches
         // source. Its delayed delivery must not override that newer intent.
         let result = if matches!(
@@ -573,7 +587,10 @@ impl NativeModelTaskManager {
             NativeModelTaskResult::Installed { asset_id } => {
                 self.restart_after_source_switch = false;
                 self.known_ready.insert(asset_id.clone());
-                self.changed_resources.push(asset_id.clone());
+                self.changed_resources.push(ModelResourceChange {
+                    id: asset_id.clone(),
+                    imported,
+                });
                 self.paused.remove(&asset_id);
                 self.download_progress.remove(&asset_id);
                 if let Some(batch) = &mut self.install_batch {
@@ -602,9 +619,6 @@ impl NativeModelTaskManager {
                 return;
             }
             NativeModelTaskResult::Cancelled => {
-                if let Some((_, NativeModelTask::Import(id, _))) = &active_task {
-                    self.download_progress.remove(id);
-                }
                 self.state = NativeModelTaskState::Detected;
                 if let Err(error) = self.start_next_queued() {
                     self.state = NativeModelTaskState::Failed(error);
@@ -622,9 +636,6 @@ impl NativeModelTaskManager {
                 }
             }
             NativeModelTaskResult::Failed(error) | NativeModelTaskResult::SourceFailed(error) => {
-                if let Some((_, NativeModelTask::Import(id, _))) = &active_task {
-                    self.download_progress.remove(id);
-                }
                 if let Some((_, NativeModelTask::Install(id))) = active_task
                     && let Some(batch) = &mut self.install_batch
                 {
@@ -689,12 +700,7 @@ impl NativeModelTaskManager {
             .map_err(|error| format!("Cannot start native model worker: {error}"))?;
         self.state = match &task {
             NativeModelTask::Discover => NativeModelTaskState::Discovering,
-            NativeModelTask::Import(asset_id, _) => NativeModelTaskState::Installing {
-                asset_id: asset_id.clone(),
-                relative_path: None,
-                downloaded_bytes: 0,
-                total_bytes: 0,
-            },
+            NativeModelTask::Import(_) => NativeModelTaskState::Identifying,
             NativeModelTask::Install(asset_id) => {
                 let (downloaded_bytes, total_bytes) = self
                     .download_progress
@@ -748,29 +754,43 @@ fn run_task(
 ) {
     let result = match task {
         NativeModelTask::Discover => discover_models(project_root, &plugins),
-        NativeModelTask::Import(asset_id, source) => {
+        NativeModelTask::Import(source) => {
             let cancellation = cancellation.expect("import tasks have a cancellation token");
-            let result = resolve_model(&project_root, &asset_id, &plugins).and_then(|model| {
+            let mut models: Vec<(ResourceId, ModelPackage)> =
+                xrtranslate_assets::MODEL_ASSET_CATALOG
+                    .iter()
+                    .map(|manifest| (ResourceId::BuiltIn(manifest.id), manifest.into()))
+                    .collect();
+            models.extend(
+                plugins
+                    .iter()
+                    .map(|(id, model)| (id.clone(), model.package.clone())),
+            );
+            let result = xrtranslate_assets::identify_model_package(
+                &source,
+                models.iter().map(|(_, package)| package),
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|package| {
+                let (asset_id, model) = models
+                    .iter()
+                    .find(|(_, model)| model == package)
+                    .expect("identified package belongs to the catalog");
+                let destination = resolve_model(&project_root, asset_id, &plugins)?.directory;
                 model
-                    .package
-                    .import(
-                        &source,
-                        &model.directory,
-                        &cancellation,
-                        |path, done, total| {
-                            let _ =
-                                event_tx.send(NativeModelTaskEvent::Progress(ResourceProgress {
-                                    asset_id: asset_id.clone(),
-                                    relative_path: path.into(),
-                                    downloaded_bytes: done,
-                                    total_bytes: total,
-                                }));
-                        },
-                    )
+                    .import(&source, &destination, &cancellation, |path, done, total| {
+                        let _ = event_tx.send(NativeModelTaskEvent::Progress(ResourceProgress {
+                            asset_id: asset_id.clone(),
+                            relative_path: path.into(),
+                            downloaded_bytes: done,
+                            total_bytes: total,
+                        }));
+                    })
+                    .map(|_| asset_id.clone())
                     .map_err(|e| e.to_string())
             });
             match result {
-                Ok(_) => NativeModelTaskResult::Installed { asset_id },
+                Ok(asset_id) => NativeModelTaskResult::Installed { asset_id },
                 Err(_) if cancellation.is_cancelled() => NativeModelTaskResult::Cancelled,
                 Err(error) => NativeModelTaskResult::Failed(error),
             }
@@ -1148,7 +1168,13 @@ mod tests {
             manager.poll();
         }
         assert!(manager.is_model_ready(&id), "{:?}", manager.state());
-        assert_eq!(manager.take_changed_resources(), [id.clone()]);
+        assert_eq!(
+            manager.take_changed_resources(),
+            [ModelResourceChange {
+                id: id.clone(),
+                imported: false
+            }]
+        );
         assert_eq!(
             std::fs::read(model.directory.join("model.onnx")).unwrap(),
             b"test"
@@ -1169,10 +1195,8 @@ mod tests {
         let (id, model) = plugin_model(root.path());
         let mut manager = NativeModelTaskManager::default();
         manager.set_plugin_models(HashMap::from([(id.clone(), model.clone())]));
-        manager
-            .import(root.path().into(), &id, source.clone())
-            .unwrap();
-        assert!(manager.is_importing(&id));
+        manager.import(root.path().into(), source.clone()).unwrap();
+        assert!(manager.is_importing());
         // Changing the network source must not restart a local copy.
         manager
             .switch_download_source(root.path().into(), true)
@@ -1184,8 +1208,14 @@ mod tests {
             manager.poll();
         }
         assert!(manager.is_model_ready(&id), "{:?}", manager.state());
-        assert!(!manager.is_importing(&id));
-        assert_eq!(manager.take_changed_resources(), [id.clone()]);
+        assert!(!manager.is_importing());
+        assert_eq!(
+            manager.take_changed_resources(),
+            [ModelResourceChange {
+                id: id.clone(),
+                imported: true
+            }]
+        );
         assert!(model.package.check(&model.directory).unwrap());
         assert!(source.join("model.onnx").exists());
         manager.enqueue_many(root.path().into(), [&id]).unwrap();
@@ -1205,9 +1235,7 @@ mod tests {
             if valid {
                 std::fs::write(source.join("model.onnx"), b"test").unwrap();
             }
-            manager
-                .import(root.path().into(), &id, source.clone())
-                .unwrap();
+            manager.import(root.path().into(), source.clone()).unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while manager.is_busy() && std::time::Instant::now() < deadline {
                 thread::sleep(std::time::Duration::from_millis(5));
@@ -1216,7 +1244,9 @@ mod tests {
             assert_eq!(manager.is_model_ready(&id), valid, "{:?}", manager.state());
             assert_eq!(model.directory.exists(), valid);
             if !valid {
-                assert!(matches!(manager.state(), NativeModelTaskState::Failed(_)));
+                assert!(
+                    matches!(manager.state(), NativeModelTaskState::Failed(error) if error == "Unsupported model.")
+                );
                 assert!(!manager.use_mirror());
                 assert!(manager.take_changed_resources().is_empty());
             }

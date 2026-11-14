@@ -12,6 +12,7 @@ mod bundled;
 mod catalog;
 pub mod distribution;
 mod import;
+pub use import::identify_model_package;
 mod install;
 mod package;
 pub use package::{ModelPackage, PackageArchive, PackageFile};

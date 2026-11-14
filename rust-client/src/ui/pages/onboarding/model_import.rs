@@ -1,15 +1,54 @@
 use super::{components, egui, i18n, theme};
-use crate::model_install::{NativeModelTaskManager, ResourceId};
+use crate::model_install::NativeModelTaskState;
 
 #[derive(Clone, Copy)]
-pub(super) enum Choice {
+enum Choice {
     #[cfg(any(windows, target_os = "linux"))]
     Folder,
-    Zip,
+    File,
     Cancel,
 }
 
-pub(super) fn button(
+pub(super) fn controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let language = app.ui_language;
+    let tasks = &app.model_task_manager;
+    let importing = tasks.is_importing();
+    let choice = ui
+        .horizontal_wrapped(|ui| {
+            let choice = button(ui, language, !tasks.is_busy(), importing);
+            if importing {
+                match tasks.state() {
+                    NativeModelTaskState::Installing {
+                        downloaded_bytes,
+                        total_bytes,
+                        ..
+                    } => {
+                        let fraction = *downloaded_bytes as f32 / (*total_bytes).max(1) as f32;
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .desired_width(160.0)
+                                .desired_height(3.0),
+                        );
+                        ui.weak(format!(
+                            "{} · {:.0}%",
+                            i18n::tr(language, "Importing"),
+                            fraction * 100.0
+                        ));
+                    }
+                    _ => {
+                        ui.weak(i18n::tr(language, "Identifying model…"));
+                    }
+                }
+            }
+            choice
+        })
+        .inner;
+    if let Some(choice) = choice {
+        choose(app, choice);
+    }
+}
+
+fn button(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
     enabled: bool,
@@ -35,10 +74,11 @@ pub(super) fn button(
             ui.spacing_mut().button_padding = egui::vec2(5.0, 4.0);
             let response = ui.add_enabled(
                 enabled || importing,
-                egui::Button::image(
+                egui::Button::image_and_text(
                     egui::Image::new(icon)
                         .fit_to_exact_size(egui::vec2(16.0, 16.0))
                         .tint(theme::text_weak()),
+                    label,
                 )
                 .min_size(egui::vec2(28.0, 28.0))
                 .corner_radius(9),
@@ -63,45 +103,15 @@ pub(super) fn button(
             choice = Some(Choice::Folder);
             ui.close();
         }
-        if components::button(ui, i18n::tr(language, "ZIP archive…")).clicked() {
-            choice = Some(Choice::Zip);
+        if components::button(ui, i18n::tr(language, "Model file or ZIP…")).clicked() {
+            choice = Some(Choice::File);
             ui.close();
         }
     });
     choice
 }
 
-pub(super) fn progress(
-    ui: &mut egui::Ui,
-    language: i18n::UiLanguage,
-    tasks: &NativeModelTaskManager,
-    id: ResourceId,
-) {
-    if !tasks.is_importing(&id) {
-        return;
-    }
-    let fraction = tasks
-        .model_download_progress(id)
-        .filter(|(_, total)| *total > 0)
-        .map_or(0.0, |(bytes, total)| bytes as f32 / total as f32);
-    ui.add_space(4.0);
-    ui.add(
-        egui::ProgressBar::new(fraction)
-            .desired_width(ui.available_width())
-            .desired_height(3.0),
-    );
-    ui.label(
-        egui::RichText::new(format!(
-            "{} · {:.0}%",
-            i18n::tr(language, "Importing"),
-            fraction * 100.0
-        ))
-        .size(11.0)
-        .color(theme::text_weak()),
-    );
-}
-
-pub(super) fn choose(app: &mut crate::XRTranslateApp, id: ResourceId, choice: Choice) {
+fn choose(app: &mut crate::XRTranslateApp, choice: Choice) {
     let request = match choice {
         Choice::Cancel => {
             app.model_task_manager.cancel_import();
@@ -109,14 +119,14 @@ pub(super) fn choose(app: &mut crate::XRTranslateApp, id: ResourceId, choice: Ch
         }
         #[cfg(any(windows, target_os = "linux"))]
         Choice::Folder => crate::file_dialog::FileDialog::new().start_pick_folder(),
-        Choice::Zip => crate::file_dialog::FileDialog::new()
-            .add_filter("ZIP", &["zip"])
+        Choice::File => crate::file_dialog::FileDialog::new()
+            .add_filter("Model", &["gguf", "onnx", "bin", "zip"])
             .start_pick(),
     };
     app.pending_file_dialogs.push((
         request,
         Box::new(move |app, path| {
-            if let Err(error) = app.model_task_manager.import(app.project_root(), id, path) {
+            if let Err(error) = app.model_task_manager.import(app.project_root(), path) {
                 app.notify_error("Could not import model.", error);
             }
         }),

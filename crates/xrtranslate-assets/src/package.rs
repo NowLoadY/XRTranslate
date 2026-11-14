@@ -288,11 +288,13 @@ impl ModelPackage {
         Ok(destination.into())
     }
     pub(crate) fn validate(&self) -> Result<(), ModelDownloadError> {
-        for name in [&self.id, &self.revision] {
+        // Upstream revision labels can contain spaces, such as "OpenVoice v2".
+        for (name, punctuation) in [(&self.id, "._-"), (&self.revision, "._- ")] {
             if name.is_empty()
+                || name.trim() != name
                 || !name
                     .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+                    .all(|c| c.is_ascii_alphanumeric() || punctuation.as_bytes().contains(&c))
                 || name == "."
                 || name == ".."
             {
