@@ -10,11 +10,14 @@ runtime/
 data-directory.txt
 # Manually created local editor access marker; never ship or track it.
 **/runtime/debug.md
-models/
+/models/
 target/
 **/target/
 *-target/
 dist/
+backups/
+# Optional large runtime bundles used only for offline installers.
+/third_party/llama.cpp/*.zip
 
 # Rust build artifacts
 *.pdb
@@ -61,7 +64,7 @@ deepthink/
 # Installed plugins; public source lives in plugin-src/.
 /plugins/
 
-# Local demo screenplays and their input assets
+# Local demo files
 /tools/demos/local/
 
 # Android local configuration and generated output

@@ -3,13 +3,14 @@
 .SYNOPSIS
 Preview or remove reproducible files in this checkout.
 .DESCRIPTION
-All (default): Build and Packages combined. Nothing is removed without -Apply.
-Common: Smaller cleanup of Debug/Python caches and unused packages in .temp.
-Build: All Cargo and Python caches. Packages: Only temporary staged packages.
+All (default): Build and Temp combined. Nothing is removed without -Apply.
+Common: Debug/Python caches and temporary files, keeping Release caches.
+Build: All Cargo and Python caches. Temp: Only disposable files in .temp.
+Third-party dependencies, personal backups and dist are always kept.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Common', 'Build', 'Packages', 'All')]
+    [ValidateSet('Common', 'Build', 'Temp', 'All')]
     [string]$Scope = 'All',
     [switch]$Apply
 )
@@ -59,12 +60,12 @@ function Measure-Candidate([string]$Path) {
     return $bytes
 }
 
-function Add-Candidate([string]$Path, [string]$Kind, [string]$PackageRoot = '') {
+function Add-Candidate([string]$Path, [string]$Kind) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     try {
         $bytes = Measure-Candidate $Path
         $candidates.Add([pscustomobject]@{
-            Path = $Path; Kind = $Kind; Bytes = $bytes; PackageRoot = $PackageRoot
+            Path = $Path; Kind = $Kind; Bytes = $bytes
         })
     } catch {
         Write-Warning "Keeping $Path -- $($_.Exception.Message)"
@@ -75,7 +76,7 @@ function Find-BuildCaches {
     $pending = [Collections.Generic.Stack[string]]::new()
     $pending.Push($projectRoot)
     # Do not traverse user data, installed plugins, downloads or dependencies.
-    $excluded = @('.git', '.temp', 'dist', 'runtime', 'models', 'plugins',
+    $excluded = @('.git', '.temp', 'backups', 'dist', 'runtime', 'models', 'plugins',
         'third_party', 'assets', 'resources', 'node_modules', '.gradle', '.cxx')
     while ($pending.Count) {
         foreach ($directory in Get-ChildItem -LiteralPath $pending.Pop() -Directory -Force) {
@@ -105,60 +106,6 @@ function Find-BuildCaches {
     }
 }
 
-function Test-StagedPackage([string]$Path) {
-    $manifestPath = Join-Path $Path 'release-manifest.json'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
-    Assert-LocalPath $manifestPath
-    try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    } catch {
-        Write-Warning "Keeping package with unreadable manifest: $Path"
-        return $false
-    }
-    if (-not $manifest.layout_version -or -not $manifest.entrypoints.client) { return $false }
-    foreach ($model in $manifest.models.packages) {
-        if ($model.directory -and (Test-Path -LiteralPath (Join-Path $Path $model.directory))) {
-            Write-Warning "Keeping package with downloaded models: $Path"
-            return $false
-        }
-    }
-    # A package used as a portable installation may contain irreplaceable data.
-    $runtime = Join-Path $Path 'runtime'
-    if (Test-Path -LiteralPath $runtime) {
-        Assert-LocalPath $runtime
-        if (@(Get-ChildItem -LiteralPath $runtime -Force |
-                Where-Object Name -ne 'onnxruntime').Count) {
-            Write-Warning "Keeping package with runtime data: $Path"
-            return $false
-        }
-    }
-    return $true
-}
-
-function Find-TemporaryPackages {
-    $temporaryRoot = Join-Path $projectRoot '.temp'
-    if (-not (Test-Path -LiteralPath $temporaryRoot)) { return }
-    Assert-LocalPath $temporaryRoot
-    # Only inspect direct staging folders and packaged content directories.
-    # Never walk into archived records, test profiles, tools or download caches.
-    foreach ($directory in Get-ChildItem -LiteralPath $temporaryRoot -Directory) {
-        if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-        if (Test-StagedPackage $directory.FullName) {
-            Add-Candidate $directory.FullName 'Temporary package' $directory.FullName
-            continue
-        }
-        foreach ($package in Get-ChildItem -LiteralPath $directory.FullName -Directory -Filter 'XRTranslate-*') {
-            if (($package.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-                -not (Test-Path -LiteralPath (Join-Path $package.FullName 'app_build.vdf'))) { continue }
-            $extra = @(Get-ChildItem -LiteralPath $package.FullName -Force |
-                Where-Object Name -notin @('content', 'app_build.vdf'))
-            if (-not $extra.Count -and (Test-StagedPackage (Join-Path $package.FullName 'content'))) {
-                Add-Candidate $package.FullName 'Temporary package' (Join-Path $package.FullName 'content')
-            }
-        }
-    }
-}
-
 function Assert-NotInUse {
     # Do not interrupt programs or compete with a build that may recreate files.
     $builders = @('cargo.exe', 'rustc.exe', 'rustup.exe', 'cl.exe', 'link.exe',
@@ -177,18 +124,11 @@ function Assert-NotInUse {
     }
 }
 
-function Confirm-Candidate($Candidate) {
-    if ($Candidate.PackageRoot -and -not (Test-StagedPackage $Candidate.PackageRoot)) {
-        throw "Package changed since preview: $($Candidate.Path)"
-    }
-    return Measure-Candidate $Candidate.Path
-}
-
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'Cargo.toml'))) {
     throw 'Run the cleanup script from an XRTranslate source checkout.'
 }
-if ($Scope -ne 'Packages') { Find-BuildCaches }
-if ($Scope -ne 'Build') { Find-TemporaryPackages }
+if ($Scope -ne 'Temp') { Find-BuildCaches }
+if ($Scope -ne 'Build') { Add-Candidate (Join-Path $projectRoot '.temp') 'Temporary files' }
 
 if (-not $candidates.Count) {
     Write-Host "No cleanup candidates for scope $Scope."
@@ -212,12 +152,12 @@ if (-not $Apply) {
 
 Assert-NotInUse
 # Validate the complete plan before removing anything, then check each path again.
-foreach ($candidate in $candidates) { $null = Confirm-Candidate $candidate }
+foreach ($candidate in $candidates) { $null = Measure-Candidate $candidate.Path }
 [long]$removed = 0
 $failed = $false
 foreach ($candidate in $candidates) {
     try {
-        $bytes = Confirm-Candidate $candidate
+        $bytes = Measure-Candidate $candidate.Path
         Remove-Item -LiteralPath $candidate.Path -Recurse -Force
         $removed += $bytes
         Write-Host "Removed: $($candidate.Path.Substring($projectPrefix.Length))"
@@ -226,5 +166,5 @@ foreach ($candidate in $candidates) {
         Write-Warning "Could not completely remove $($candidate.Path): $($_.Exception.Message)"
     }
 }
-Write-Host ('Removed {0:N2} GiB. Retained user data, models, downloads and dist.' -f ($removed / 1GB))
+Write-Host ('Removed {0:N2} GiB. Retained third_party, backups, user data, models and dist.' -f ($removed / 1GB))
 if ($failed) { exit 1 }

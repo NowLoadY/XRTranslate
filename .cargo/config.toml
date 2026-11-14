@@ -1,3 +1,7 @@
 [build]
 # Nested workspaces in this checkout share the repository's build cache.
 target-dir = "target"
+
+[env]
+# Native libraries are prepared by the platform build scripts.
+SHERPA_ONNX_ARCHIVE_DIR = { value = "third_party/sherpa-onnx", relative = true }

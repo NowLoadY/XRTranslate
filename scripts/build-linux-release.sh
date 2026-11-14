@@ -26,10 +26,9 @@ source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
 RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
-python3 scripts/prepare-release-cache.py --target linux-x86_64 --cache "${RESOURCE_DIR}" \
-  --runtime-archive onnxruntime-linux-x64-1.28.0.tgz
+mkdir -p "${RESOURCE_DIR}"
 ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
-tar -xzf "${ONNX_DIR}.tgz" -C "${RESOURCE_DIR}" \
+tar -xzf "${ROOT_DIR}/third_party/onnxruntime/onnxruntime-linux-x64-1.28.0.tgz" -C "${RESOURCE_DIR}" \
   onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0 \
   onnxruntime-linux-x64-1.28.0/LICENSE \
   onnxruntime-linux-x64-1.28.0/ThirdPartyNotices.txt
@@ -51,7 +50,7 @@ bash "${ROOT_DIR}/plugin-src/build.sh" "${ROOT_DIR}" "${PLUGIN_DIR}" \
 target/release/xrtranslate-installer --config config.json \
   export-defaults --output "${RESOURCE_DIR}/config.json"
 target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
-  prepare-resources --output "${RESOURCE_DIR}" --cache "${RESOURCE_DIR}/downloads"
+  prepare-resources --output "${RESOURCE_DIR}" --source "${ROOT_DIR}/third_party"
 
 plugin_args=()
 for directory in "${PLUGIN_DIR}"/*; do

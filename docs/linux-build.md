@@ -39,9 +39,9 @@ checkout without local submodule work, run `git submodule update --init XR-Corpu
 after pulling. Preserve any local submodule work before deliberately switching
 revisions. For a fresh clone, use `git clone --recurse-submodules`.
 
-The required speech libraries are included in `third_party/sherpa-onnx`.
-Set `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` to supply matching local
-libraries or an official archive instead.
+Speech libraries are supplied in `third_party/sherpa-onnx`.
+For direct Cargo commands, first run `source scripts/linux-build-env.sh` and
+`prepare_linux_sherpa "$PWD"` to select the same libraries as the release build.
 
 ## Run from source
 
@@ -89,7 +89,7 @@ the linker files along with the MPV runtime.
 
 ## Build a local release
 
-Release builds also require Python 3 and the GitHub CLI (`gh`).
+Release builds also require Python 3.12+.
 
 ```sh
 ./scripts/build-linux-release.sh

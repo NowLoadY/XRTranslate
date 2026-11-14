@@ -16,19 +16,19 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $workspaceManifest = Join-Path $projectRoot 'Cargo.toml'
 $configPath = Join-Path $projectRoot 'config.json'
-$vadModel = Join-Path $projectRoot 'models\silero-vad\src\silero_vad\data\silero_vad.onnx'
-$speakerModel = Join-Path $projectRoot 'models\3D-Speaker-ERes2NetV2\speaker_embedding.onnx'
+$resourceDirectory = Join-Path $projectRoot 'target\release-resources\windows-x86_64'
+$vadModel = Join-Path $resourceDirectory 'models\silero-vad\src\silero_vad\data\silero_vad.onnx'
+$speakerModel = Join-Path $resourceDirectory 'models\3D-Speaker-ERes2NetV2\speaker_embedding.onnx'
 $seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
 $packagerPath = Join-Path $projectRoot 'target\release\xrtranslate-packager.exe'
 $installerPath = Join-Path $projectRoot 'target\release\xrtranslate-installer.exe'
-$runtimeAssetCache = Join-Path $projectRoot '.temp\runtime-assets'
 
 $expectedOnnxBytes = 16277856
 $expectedLicenseBytes = 1094
 $expectedNoticesBytes = 331175
-# Matches RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE.
-$onnxCpuSourceArchive = 'onnxruntime-win-x64-gpu_cuda13-1.28.0.zip'
+# CPU core and licenses retained from the official CUDA archive.
+$onnxCpuSourceArchive = 'onnxruntime-1.28.0-windows-x86_64.zip'
 
 function Resolve-VcRuntimeDirectory {
     param([string]$Directory)
@@ -161,7 +161,7 @@ function Export-ZipEntry {
 
 $explicitOnnxCore = -not [string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)
 if (-not $explicitOnnxCore) {
-    $OnnxRuntimeCpu = Join-Path $runtimeAssetCache 'onnxruntime\cpu\onnxruntime.dll'
+    $OnnxRuntimeCpu = Join-Path $resourceDirectory 'onnxruntime\cpu\onnxruntime.dll'
 }
 $OnnxRuntimeCpu = [System.IO.Path]::GetFullPath($OnnxRuntimeCpu)
 if ($explicitOnnxCore -and (
@@ -171,13 +171,8 @@ if ($explicitOnnxCore -and (
     throw "The supplied ONNX Runtime core is missing or has an unexpected size: $OnnxRuntimeCpu"
 }
 
-if (-not $ValidateOnly) {
-    & python (Join-Path $projectRoot 'scripts/prepare-release-cache.py') --target windows-x86_64 --cache $runtimeAssetCache --runtime-archive $onnxCpuSourceArchive
-    if ($LASTEXITCODE -ne 0) { throw 'Release resource preparation failed.' }
-}
-
-$onnxRuntimeLicense = Join-Path $runtimeAssetCache 'licenses\onnxruntime\LICENSE'
-$onnxRuntimeNotices = Join-Path $runtimeAssetCache 'licenses\onnxruntime\ThirdPartyNotices.txt'
+$onnxRuntimeLicense = Join-Path $resourceDirectory 'licenses\onnxruntime\LICENSE'
+$onnxRuntimeNotices = Join-Path $resourceDirectory 'licenses\onnxruntime\ThirdPartyNotices.txt'
 $onnxArchiveRoot = [System.IO.Path]::GetFileNameWithoutExtension($onnxCpuSourceArchive)
 $runtimeFiles = @(
     @{ Entry = 'lib/onnxruntime.dll'; Path = $OnnxRuntimeCpu; Bytes = $expectedOnnxBytes },
@@ -192,7 +187,7 @@ foreach ($file in $runtimeFiles) {
     if ($ValidateOnly) {
         throw "Required release resource is missing or has an unexpected size: $($file.Path). -ValidateOnly never downloads or extracts files."
     }
-    Export-ZipEntry -ArchivePath (Join-Path $runtimeAssetCache $onnxCpuSourceArchive) -EntryPath "$onnxArchiveRoot/$($file.Entry)" -OutFile $file.Path -ExpectedBytes $file.Bytes
+    Export-ZipEntry -ArchivePath (Join-Path $projectRoot "third_party\onnxruntime\$onnxCpuSourceArchive") -EntryPath "$onnxArchiveRoot/$($file.Entry)" -OutFile $file.Path -ExpectedBytes $file.Bytes
 }
 Write-Host "Using verified ONNX Runtime core: $OnnxRuntimeCpu"
 
@@ -222,8 +217,8 @@ if (-not $ValidateOnly) {
         exit $LASTEXITCODE
     }
 
-    Write-Host 'Preparing verified base ONNX models from the shared resource catalogue...'
-    & $installerPath --config $configPath prepare-resources --output $projectRoot --cache (Join-Path $runtimeAssetCache 'downloads')
+    Write-Host 'Preparing bundled ONNX models from local third-party files...'
+    & $installerPath --config $configPath prepare-resources --output $resourceDirectory --source (Join-Path $projectRoot 'third_party')
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

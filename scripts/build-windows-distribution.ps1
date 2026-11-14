@@ -5,6 +5,8 @@ param(
     [ValidateSet('Setup', 'Msix', 'Steam')][string]$Format = 'Setup',
     [string]$OutputDirectory = 'dist',
     [switch]$CompatibilityZip,
+    [switch]$Offline,
+    [ValidateSet('Vulkan', 'Cuda')][string]$OfflineRuntime = 'Vulkan',
     [string]$Iscc,
     [string]$MakeAppx,
     # MSIX identity values come from Partner Center, not the repository name.
@@ -19,6 +21,7 @@ $ErrorActionPreference = 'Stop'
 $packageRoot = (Resolve-Path -LiteralPath $Package).Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $sourceRoot = Split-Path $PSScriptRoot -Parent
+$runtimeDirectory = Join-Path $sourceRoot 'target\offline-runtimes'
 $manifest = Get-Content -LiteralPath (Join-Path $packageRoot 'release-manifest.json') -Raw | ConvertFrom-Json
 $entrypoint = $manifest.entrypoints.client
 if ($entrypoint -cnotmatch '^XRTranslate-v(\d+\.\d+\.\d+)\.exe$') {
@@ -43,6 +46,65 @@ if ($Format -eq 'Msix' -and (-not $IdentityName -or -not $Publisher -or -not $Pu
 if ($Format -eq 'Steam' -and (-not $SteamAppId -or -not $SteamDepotId)) {
     throw 'Steam requires the application and Windows depot IDs from Steamworks.'
 }
+& (Join-Path $PSScriptRoot 'test-windows-user-processes.ps1') -Directory (Join-Path $packageRoot 'bin')
+$offlineFiles = [Collections.Generic.List[object]]::new()
+if ($Offline) {
+    if ($Format -ne 'Setup' -or $CompatibilityZip) {
+        throw 'Offline resources require Setup without CompatibilityZip.'
+    }
+    foreach ($model in $manifest.models.packages) {
+        foreach ($file in $model.files) {
+            $relative = Join-Path $model.directory $file.path
+            $source = Get-Item -LiteralPath (Join-Path $sourceRoot $relative)
+            if ($source.Length -ne $file.bytes) { throw "Incomplete offline model: $relative" }
+            $offlineFiles.Add(@{ Source = $source.FullName; Destination = $relative })
+        }
+    }
+    $config = Get-Content -LiteralPath (Join-Path $packageRoot 'config.json') -Raw | ConvertFrom-Json
+    $downloads = @($config.model_manager.llama_cpp.downloads | Where-Object { $_.target -eq 'windows-x86_64' })
+    $server = $downloads | Where-Object { $_.kind -eq "server-$($OfflineRuntime.ToLowerInvariant())" } |
+        Sort-Object { [version]$(if ($_.cuda_version) { $_.cuda_version } else { '0.0' }) } -Descending |
+        Select-Object -First 1
+    if (-not $server) { throw "The package does not declare a Windows $OfflineRuntime runtime." }
+    $runtimes = @(@{ Asset = $server; Destination = 'runtime/llama.cpp' })
+    if ($OfflineRuntime -eq 'Cuda') {
+        $cuda = $downloads | Where-Object { $_.kind -eq 'cuda-runtime' -and $_.cuda_version -eq $server.cuda_version }
+        if (-not $cuda) { throw "Missing CUDA $($server.cuda_version) redistributable declaration." }
+        $runtimes += @{ Asset = $cuda; Destination = "runtime/cuda/$($server.cuda_version)" }
+    }
+    # Keep the complete shared-library closure, including optional CPU kernels
+    # and CUDA libraries used by audio models, without bundling command-line tools.
+    foreach ($runtime in $runtimes) {
+        $archive = Join-Path $sourceRoot "third_party/llama.cpp/$($runtime.Asset.name)"
+        if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Missing offline runtime archive: $archive" }
+        $directory = Join-Path $runtimeDirectory ([IO.Path]::GetFileNameWithoutExtension($runtime.Asset.name))
+        Expand-Archive -LiteralPath $archive -DestinationPath $directory -Force
+        if ($runtime.Asset.executable) {
+            Copy-Item -LiteralPath (Join-Path $sourceRoot 'third_party/llama.cpp/LICENSE') -Destination $directory -Force
+        }
+        foreach ($name in @($runtime.Asset.executable) + @($runtime.Asset.required_files) | Where-Object { $_ }) {
+            Get-Item -LiteralPath (Join-Path $directory $name) | Out-Null
+        }
+        foreach ($prefix in $runtime.Asset.required_file_prefixes) {
+            if (-not (Get-ChildItem -LiteralPath $directory -File -Filter "$prefix*.dll")) {
+                throw "Missing CUDA dependency: $directory/$prefix*.dll"
+            }
+        }
+        if (-not (Get-ChildItem -LiteralPath $directory -File -Filter 'LICENSE*')) {
+            throw "Missing runtime license: $directory"
+        }
+        foreach ($file in Get-ChildItem -LiteralPath $directory -File |
+            Where-Object { $_.Extension -eq '.dll' -or $_.Name -eq $server.executable -or $_.Name -like 'LICENSE*' }) {
+            $offlineFiles.Add(@{ Source = $file.FullName; Destination = Join-Path $runtime.Destination $file.Name })
+        }
+    }
+    foreach ($directory in $manifest.models.packages.directory) {
+        $relative = Join-Path $directory 'LICENSE'
+        $source = Get-Item -LiteralPath (Join-Path $sourceRoot $relative)
+        $offlineFiles.Add(@{ Source = $source.FullName; Destination = $relative })
+    }
+    $manifest.models.included = $true
+}
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $work = Join-Path ([IO.Path]::GetTempPath()) "xrtranslate-distribution-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Path $work | Out-Null
@@ -65,20 +127,32 @@ try {
     switch ($Format) {
         Setup {
             if (-not $Iscc) {
-                $Iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
-                if (-not $Iscc) {
-                    $Iscc = @('C:\Program Files\Inno Setup 7\ISCC.exe', 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe') |
-                        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-                }
+                $compilerDirectory = Join-Path $sourceRoot 'target/tools/inno-setup-7.1.1'
+                $Iscc = Join-Path $compilerDirectory 'ISCC.exe'
+                Expand-Archive -LiteralPath (Join-Path $sourceRoot 'third_party/inno-setup/inno-setup-7.1.1.zip') -DestinationPath $compilerDirectory -Force
             }
-            if (-not $Iscc) { throw 'Install Inno Setup 6.6 or newer, or pass -Iscc <ISCC.exe>.' }
             $files | ForEach-Object {
                 $directory = [IO.Path]::GetDirectoryName($_.Destination)
                 $destination = '{app}' + $(if ($directory) { "\$directory" })
                 $check = if ($_.Destination -eq 'distribution.json') { '; Check: UseSharedData' } else { '' }
+                # Plugins and native DLLs may retain their upstream file version.
                 'Source: "{0}"; DestDir: "{1}"; DestName: "{2}"; Flags: ignoreversion{3}' -f
                     $_.Source, $destination, [IO.Path]::GetFileName($_.Destination), $check
             } | Set-Content -LiteralPath (Join-Path $work 'files.iss') -Encoding utf8
+            foreach ($file in $offlineFiles) {
+                $directory = [IO.Path]::GetDirectoryName($file.Destination)
+                # Data belongs to the user, including when a portable copy is upgraded.
+                'Source: "{0}"; DestDir: "{{code:OfflineDataDirectory}}\{1}"; DestName: "{2}"; Flags: ignoreversion uninsneveruninstall' -f
+                    $file.Source, $directory, [IO.Path]::GetFileName($file.Destination) |
+                    Add-Content -LiteralPath (Join-Path $work 'files.iss') -Encoding utf8
+            }
+            if ($Offline) {
+                # Keep these bundled model choices on first launch; existing preferences win.
+                $defaults = Join-Path $work 'rust-client-settings.json'
+                '{"model_defaults_initialized":true}' | Set-Content -LiteralPath $defaults -Encoding utf8NoBOM
+                'Source: "{0}"; DestDir: "{{code:OfflineDataDirectory}}\runtime"; DestName: "rust-client-settings.json"; Flags: onlyifdoesntexist uninsneveruninstall' -f $defaults |
+                    Add-Content -LiteralPath (Join-Path $work 'files.iss') -Encoding utf8
+            }
             # The same package inventory also removes a pre-installer ZIP copy.
             # Writable storage stays in place, including downloaded models.
             $files.Destination | Where-Object {
@@ -90,7 +164,10 @@ try {
                     'Type: filesandordirs; Name: "{{app}}\plugins\{0}"' -f $_.Name
                 }
             )
-            & $Iscc "/I$work" "/DInventoryFile=$(Join-Path $work 'portable-files.txt')" "/DPackageDir=$packageRoot" "/DAppVersion=$version" "/DOutputDir=$outputRoot" (Join-Path $sourceRoot 'packaging\windows\setup.iss')
+            $variant = if ($Offline) {
+                "-offline-$($OfflineRuntime.ToLowerInvariant())"
+            } else { '' }
+            & $Iscc "/I$work" "/DInventoryFile=$(Join-Path $work 'portable-files.txt')" "/DPackageDir=$packageRoot" "/DAppVersion=$version" "/DOutputDir=$outputRoot" "/DOutputName=XRTranslate-v$version-win-x64$variant-setup" (Join-Path $sourceRoot 'packaging\windows\setup.iss')
             if ($LASTEXITCODE -ne 0) { throw 'Windows setup compilation failed.' }
             if ($CompatibilityZip) {
                 # Old clients already understand these two entrypoints. Their

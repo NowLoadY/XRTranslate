@@ -36,12 +36,12 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Prepare verified shared application resources for packaging.
+    /// Prepare shared application resources from local third-party files.
     PrepareResources {
         #[arg(long)]
         output: PathBuf,
-        #[arg(long, default_value = "target/resource-downloads")]
-        cache: PathBuf,
+        #[arg(long, default_value = "third_party")]
+        source: PathBuf,
     },
     /// Download one immutable model package, verify it, and atomically enable it.
     Install {
@@ -103,9 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Command::ExportDefaults { .. } => unreachable!("handled before asset resolution"),
-        Command::PrepareResources { output, cache } => {
-            prepare_resources(&config, &output, &cache).await?
-        }
+        Command::PrepareResources { output, source } => prepare_resources(&output, &source)?,
         Command::Install { package } => install(assets, package_id(&package)).await?,
         Command::Verify { package } => {
             verify(&assets, package.as_deref().map(package_id))?;
@@ -169,95 +167,37 @@ fn verify(
     Err(message.into())
 }
 
-async fn prepare_resources(
-    config: &AppConfig,
+fn prepare_resources(
     output: &std::path::Path,
-    cache: &std::path::Path,
+    source: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use xrtranslate_download::{DownloadClient, DownloadSpec};
-    xrtranslate_assets::ensure_bundled_gtcrn(
-        &ModelAssetsConfig::default().resolve_selected(output),
-    )?;
-    let client = DownloadClient::new("XRTranslate-build")?;
-    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let mut included = std::collections::HashSet::new();
-    for asset in config.model_manager.resolved_bundled_models() {
-        if asset.target.as_deref().is_some_and(|value| value != target) {
-            continue;
-        }
-        if !included.insert(asset.relative_path.clone()) {
-            continue;
-        }
-        let relative = std::path::Path::new(&asset.relative_path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
-            return Err("Invalid resource path".into());
+    for (relative, bytes) in [
+        (
+            RuntimeLayout::VAD_MODEL_PATH,
+            RuntimeLayout::VAD_MODEL_BYTES,
+        ),
+        (
+            RuntimeLayout::SPEAKER_MODEL_PATH,
+            RuntimeLayout::SPEAKER_MODEL_BYTES,
+        ),
+    ] {
+        let original = source.join(relative);
+        if !original.is_file() || original.metadata()?.len() != bytes {
+            return Err(format!(
+                "Missing or incomplete bundled dependency: {}",
+                original.display()
+            )
+            .into());
         }
         let destination = output.join(relative);
-        let bytes = match asset.relative_path.as_str() {
-            RuntimeLayout::VAD_MODEL_PATH => RuntimeLayout::VAD_MODEL_BYTES,
-            RuntimeLayout::SPEAKER_MODEL_PATH => RuntimeLayout::SPEAKER_MODEL_BYTES,
-            _ => return Err("Unknown bundled resource".into()),
-        };
         if destination.is_file() && destination.metadata()?.len() == bytes {
             continue;
         }
         std::fs::create_dir_all(destination.parent().ok_or("Resource directory missing")?)?;
-        let spec = DownloadSpec::new(&asset.label, &asset.url, asset.bytes);
-        if let Some(archive_path) = &asset.archive_path {
-            std::fs::create_dir_all(&cache)?;
-            let archive = cache.join(format!("{}.zip", asset.name));
-            client.download_to(spec, &archive, |_| {}).await?;
-            let data = read_bundled_resource(&archive, archive_path, bytes)?;
-            std::fs::write(&destination, data)?;
-        } else {
-            client.download_to(spec, &destination, |_| {}).await?;
-        }
+        std::fs::copy(&original, &destination)?;
     }
+    xrtranslate_assets::ensure_bundled_gtcrn(
+        &ModelAssetsConfig::default().resolve_selected(output),
+    )?;
     Ok(())
-}
-
-/// Read completely before publishing so a failed ZIP/CRC check leaves no resource.
-fn read_bundled_resource(
-    archive: &std::path::Path,
-    entry: &str,
-    expected_bytes: u64,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use std::io::{ErrorKind, Read};
-    use zip::result::ZipError;
-    let result = (|| -> zip::result::ZipResult<Vec<u8>> {
-        let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
-        let file = zip.by_name(entry)?;
-        if file.size() != expected_bytes {
-            return Err(ZipError::InvalidArchive(
-                "Bundled resource size does not match",
-            ));
-        }
-        let mut data = Vec::new();
-        file.take(expected_bytes + 1).read_to_end(&mut data)?;
-        if data.len() as u64 != expected_bytes {
-            return Err(ZipError::InvalidArchive(
-                "Bundled resource size does not match",
-            ));
-        }
-        Ok(data)
-    })();
-    if let Err(error) = &result {
-        let invalid = match error {
-            ZipError::InvalidArchive(_) | ZipError::FileNotFound => true,
-            ZipError::Io(error) => matches!(
-                error.kind(),
-                ErrorKind::InvalidData | ErrorKind::UnexpectedEof
-            ),
-            _ => false,
-        };
-        if invalid {
-            // Only the completed cache is discarded; download progress remains resumable.
-            std::fs::remove_file(archive)?;
-        }
-    }
-    result.map_err(Into::into)
 }

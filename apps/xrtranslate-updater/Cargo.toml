@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Applies staged XRTranslate application updates."
+build = "../windows-user-manifest.rs"
 
 [dependencies]
 clap = { version = "4.5.58", features = ["derive"] }

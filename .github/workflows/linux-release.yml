@@ -122,19 +122,7 @@ jobs:
             release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-
             release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-${{ steps.toolchain.outputs.image }}-
 
-      - name: Cache fixed release resources
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Cache only verified resources and their reusable download archives.
-          path: |
-            target/release-resources/linux-x86_64/models
-            target/release-resources/linux-x86_64/downloads/*.zip
-            target/release-resources/linux-x86_64/onnxruntime-linux-x64-*.tgz
-          key: resources-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-${{ hashFiles('config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**', 'scripts/build-linux-release.sh', 'scripts/prepare-release-cache.py') }}
-
       - name: Build the standard Linux release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export XRTRANSLATE_RELEASE_DIR="$GITHUB_WORKSPACE/dist/$PACKAGE_NAME"

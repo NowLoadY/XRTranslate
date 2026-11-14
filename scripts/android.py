@@ -13,10 +13,10 @@ import struct
 import shlex
 import re
 import tomllib
+from sherpa_libraries import prepare as prepare_sherpa
 
 ROOT = Path(__file__).resolve().parent.parent
 NDK_VERSION = '29.0.14206865'
-SHERPA_ARCHIVE = ROOT / 'third_party/sherpa-onnx/sherpa-onnx-v1.13.8-android.tar.bz2'
 TARGETS = {'arm64-v8a': ('aarch64-linux-android', 'aarch64-linux-android'), 'x86_64': ('x86_64-linux-android', 'x86_64-linux-android')}
 
 def release_metadata(abis):
@@ -73,8 +73,7 @@ def toolchain(sdk, abi):
     for variable in ['CFLAGS', 'CXXFLAGS']:
         variable += '_' + key
         environment[variable] = environment.get(variable, '') + ' ' + ' '.join(shlex.quote(flag) for flag in prefix_flags)
-    if not SHERPA_ARCHIVE.is_file(): raise SystemExit(f'Missing bundled Android library: {SHERPA_ARCHIVE}. Restore it from the repository.')
-    environment['SHERPA_ONNX_ARCHIVE_DIR'] = str(SHERPA_ARCHIVE.parent)
+    environment['SHERPA_ONNX_LIB_DIR'] = str(prepare_sherpa('android', abi))
     return target, environment
 
 def fetch(url, size, destination):
@@ -186,11 +185,9 @@ def native(sdk, args):
         shutil.copy2(ROOT / 'target' / target / output_profile / 'xr-corpus-server', destination / 'libxr-corpus-server.so')
         build_plugins(target, environment, args.profile, destination, plugin_assets)
         llama_server(sdk, abi, destination)
-        with tarfile.open(SHERPA_ARCHIVE) as archive:
-            for name in ['libsherpa-onnx-c-api.so', 'libonnxruntime.so']:
-                library = next(member for member in archive.getmembers() if member.isfile() and abi in Path(member.name).parts and Path(member.name).name == name)
-                with archive.extractfile(library) as source, (destination / name).open('wb') as output:
-                    shutil.copyfileobj(source, output)
+        # Package the exact libraries used for linking, without a second extraction.
+        for name in ['libsherpa-onnx-c-api.so', 'libonnxruntime.so']:
+            shutil.copy2(Path(environment['SHERPA_ONNX_LIB_DIR']) / name, destination / name)
         for unused in ['libsherpa-onnx-cxx-api.so', 'libsherpa-onnx-jni.so']:
             (destination / unused).unlink(missing_ok=True)
         for library in destination.glob('*.so'): prepare_elf(library)
@@ -207,9 +204,15 @@ def native(sdk, args):
     for path in assets.parent.rglob('*'):
         if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets and 'plugins' not in path.relative_to(assets.parent).parts[:1]):
             path.unlink()
+    notices = assets / 'licenses/sherpa-onnx'
+    notices.mkdir(parents=True, exist_ok=True)
+    bundled = ROOT / 'third_party/sherpa-onnx'
+    shutil.copy2(bundled / 'LICENSE', notices / 'LICENSE')
+    for path in (bundled / 'licenses').iterdir():
+        if path.is_file(): shutil.copy2(path, notices / path.name)
     # Export the same public service defaults used by desktop releases; never runtime.
     run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', ROOT / 'config.json', 'export-defaults', '--output', assets / 'config.json')
-    run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', assets / 'config.json', 'prepare-resources', '--output', assets, '--cache', ROOT / 'target/android/resources-cache')
+    run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', assets / 'config.json', 'prepare-resources', '--output', assets, '--source', ROOT / 'third_party')
     seed = assets / 'XR-Corpus/corpora/default.sqlite'
     seed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'XR-Corpus/corpora/default.sqlite', seed)

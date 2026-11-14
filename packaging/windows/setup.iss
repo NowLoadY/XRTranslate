@@ -3,6 +3,9 @@
   #error PackageDir is required
 #endif
 #define AppId "{3C663FA0-7FD7-46C4-9C95-2BCA36A865B2}"
+#ifndef OutputName
+  #define OutputName "XRTranslate-v" + AppVersion + "-win-x64-setup"
+#endif
 
 [Setup]
 AppId={{#AppId}
@@ -30,11 +33,11 @@ WizardSmallImageFile={#PackageDir}\resources\branding\xrtranslate-logo.png
 UninstallDisplayIcon={app}\XRTranslate.exe
 UninstallDisplayName=XRTranslate
 CloseApplications=yes
-; The host owns plugin processes and shuts them down with the application.
-CloseApplicationsFilter=XRTranslate.exe,XRTranslate-v*.exe
+; Include helpers and loaded libraries so an orphaned plugin cannot keep an old DLL locked.
+CloseApplicationsFilter=*.exe,*.dll
 RestartApplications=no
 OutputDir={#OutputDir}
-OutputBaseFilename=XRTranslate-v{#AppVersion}-win-x64-setup
+OutputBaseFilename={#OutputName}
 Compression=lzma2/normal
 SolidCompression=yes
 
@@ -103,6 +106,8 @@ Source: "{#InventoryFile}"; DestDir: "{tmp}"; Flags: dontcopy
 #include "files.iss"
 
 [InstallDelete]
+; bin is application-owned. Drop renamed/removed native dependencies before copying.
+Type: filesandordirs; Name: "{app}\bin"
 ; Refresh bundled plugin directories without touching independently installed ones.
 #include "plugins.iss"
 Type: files; Name: "{app}\XRTranslate-v*.exe"
@@ -143,6 +148,13 @@ var
 function UseSharedData: Boolean;
 begin
   Result := not LocalData;
+end;
+
+function OfflineDataDirectory(Param: String): String;
+begin
+  // Existing data moves together after the application has been upgraded.
+  Result := DataDirectory;
+  if NewData and (MoveDataDirectory <> '') then Result := MoveDataDirectory;
 end;
 
 function SameDirectory(const Left, Right: String): Boolean;
@@ -795,6 +807,12 @@ begin
      not EmptyDirectory(Destination) then begin
     Result := CustomMessage('EmptyFolder');
     Exit;
+  end;
+  // A new installation has nothing to migrate. Write bundled models directly
+  // to the chosen drive instead of first extracting them into the user profile.
+  if NewData and (MoveDataDirectory <> '') then begin
+    DataDirectory := MoveDataDirectory;
+    MoveDataDirectory := '';
   end;
   if not SaveDataLocation then
     Result := CustomMessage('DataError');

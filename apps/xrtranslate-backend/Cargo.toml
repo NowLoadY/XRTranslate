@@ -46,4 +46,4 @@ xrtranslate-vad = { path = "../../crates/xrtranslate-vad" }
 zhconv = "0.3"
 
 [dev-dependencies]
-sherpa-onnx = "1.13.8"
+sherpa-onnx.workspace = true

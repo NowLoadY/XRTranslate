@@ -20,11 +20,10 @@ same default build as a local Windows release:
 .\build_release.ps1 -Output dist\XRTranslate-v0.3.5-win-x64
 ```
 
-Release builds require Python 3 and the GitHub CLI (`gh`). The script prepares
-resources and builds the application and current
-public plugins. Locally installed and private plugins are not included. Optional
+Release builds require Python 3.12+. The script builds the application and
+current public plugins. Locally installed and private plugins are not included. Optional
 offline GGUF models are not included. The workflow creates
-`XRTranslate-v0.3.5-win-x64-setup.exe`, using the runner's Inno Setup compiler.
+`XRTranslate-v0.3.5-win-x64-setup.exe`, using Inno Setup.
 With **compatibility_zip** enabled, it also creates
 `XRTranslate-v0.3.5-win-x64.zip` for older clients. This ZIP opens the same installer
 at the existing application location, preserving user data and registering the
@@ -32,6 +31,9 @@ installation. Cancelling Setup leaves the old application unchanged.
 The selected packages are uploaded using GitHub's automatic workflow token.
 The workflow does not create a Release or edit its title,
 notes, or other platform assets.
+
+Setup refreshes application files and bundled plugins. User settings, downloaded
+models, GPU runtimes and independently installed plugins are preserved.
 
 Before uploading, the Windows job runs the packaged backend, installer and
 updater with `--version`, starts the packaged XR-Corpus service, and checks its
@@ -60,16 +62,22 @@ $package = 'dist\XRTranslate-v0.4.5-win-x64'
 .\scripts\build-windows-distribution.ps1 -Package $package -Format Setup -CompatibilityZip
 ```
 
-Setup requires Inno Setup 6.6 or newer (`-Iscc` can specify its compiler).
+Setup uses the bundled Inno Setup compiler. Use `-Iscc` to select another compiler.
 It installs for the current Windows user, registers XRTranslate in Installed
 Apps, and keeps upgrades at the registered location. The installer also offers
 moving the installation or uninstalling it while keeping user data. New installations keep
-settings, downloads and personal plugins in the Windows user profile; portable
+settings, downloads and personal plugins in the chosen data folder; portable
 copies upgraded in place retain their existing data location. The installer only
 replaces its own files.
 
 User data can be moved from either the installer or **Settings > General > Folders**.
 Settings also shows both folders and opens them in the system file manager.
+
+For an offline Setup, use `-Offline -OfflineRuntime Vulkan` or
+`-Offline -OfflineRuntime Cuda`. Supply the configured GGUF models in `models/`
+and runtime ZIPs in `third_party/llama.cpp`, including the matching CUDA
+redistributable for CUDA builds. Include their licenses. The command produces
+an `-offline-vulkan-setup.exe` or `-offline-cuda-setup.exe` package.
 
 For Microsoft Store, supply the exact identity from Partner Center:
 

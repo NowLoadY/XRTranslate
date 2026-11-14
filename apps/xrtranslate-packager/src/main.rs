@@ -30,6 +30,24 @@ const DENOISE_RELATIVE_PATH: &str = RuntimeLayout::DENOISE_MODEL_PATH;
 const INTERNAL_BIN_DIRECTORY: &str = "bin";
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
 const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices.txt";
+const SHERPA_LICENSES: &[(&str, &str)] = &[
+    (
+        "LICENSE",
+        include_str!("../../../third_party/sherpa-onnx/LICENSE"),
+    ),
+    (
+        "sherpa-ThirdPartyNotices.txt",
+        include_str!("../../../third_party/sherpa-onnx/licenses/sherpa-ThirdPartyNotices.txt"),
+    ),
+    (
+        "onnxruntime-LICENSE",
+        include_str!("../../../third_party/sherpa-onnx/licenses/onnxruntime-LICENSE"),
+    ),
+    (
+        "onnxruntime-ThirdPartyNotices.txt",
+        include_str!("../../../third_party/sherpa-onnx/licenses/onnxruntime-ThirdPartyNotices.txt"),
+    ),
+];
 
 #[derive(Debug)]
 struct VcRuntimeFile {
@@ -467,6 +485,17 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
+        let sherpa_licenses = staging.join("licenses/sherpa-onnx");
+        fs::create_dir_all(&sherpa_licenses).map_err(|source| PackageError::Io {
+            context: "cannot create sherpa license directory".into(),
+            source,
+        })?;
+        for (name, contents) in SHERPA_LICENSES {
+            fs::write(sherpa_licenses.join(name), contents).map_err(|source| PackageError::Io {
+                context: format!("cannot write sherpa license {name}"),
+                source,
+            })?;
+        }
         for plugin in &plan.plugin_directories {
             copy_native_directory(
                 plugin,

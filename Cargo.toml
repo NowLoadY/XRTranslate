@@ -35,6 +35,10 @@ edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/NowLoadY/XRTranslate"
 
+[workspace.dependencies]
+# The Rust ABI must match the native archives in third_party/sherpa-onnx.
+sherpa-onnx = "=2.0.1"
+
 # Keep useful file/line backtraces without retaining full debugger metadata.
 # Development remains incremental; test artifacts favor bounded disk usage.
 [profile.dev]

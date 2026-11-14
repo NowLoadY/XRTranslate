@@ -30,7 +30,7 @@ prepare_linux_system_deps() {
   local features="${1//,/ }" feature package architecture
   local -a missing=() apt=(apt-get)
   local -a packages=(
-    build-essential pkg-config curl bzip2
+    build-essential pkg-config curl bzip2 python3
     libx11-dev libxcursor-dev libxrandr-dev libxi-dev
     libwayland-dev libxkbcommon-dev libasound2-dev libpipewire-0.3-dev libclang-dev
     libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev
@@ -77,23 +77,12 @@ prepare_linux_system_deps() {
 }
 
 prepare_linux_sherpa() {
-  if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" || -n "${SHERPA_ONNX_ARCHIVE_DIR:-}" ]]; then
-    return 0
-  fi
-  local root="$1" version arch name archive
-  version="$(awk '$0 == "name = \"sherpa-onnx-sys\"" {found=1; next}
-    found && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' "${root}/Cargo.lock")"
-  [[ -n "${version}" ]] || { printf '%s\n' 'sherpa-onnx-sys is missing from Cargo.lock.' >&2; return 1; }
+  local root="$1" arch libraries
   case "$(uname -m)" in
     x86_64) arch=x64 ;;
     aarch64) arch=aarch64 ;;
     *) return 0 ;; # Let the crate report unsupported targets.
   esac
-  name="sherpa-onnx-v${version}-linux-${arch}-static-lib"
-  archive="${root}/third_party/sherpa-onnx/${name}.tar.bz2"
-  if [[ ! -f "${archive}" ]]; then
-    printf 'Missing bundled speech libraries. Restore this file from the repository: %s\n' "${archive}" >&2
-    return 1
-  fi
-  export SHERPA_ONNX_ARCHIVE_DIR="${root}/third_party/sherpa-onnx"
+  libraries="$(python3 "${root}/scripts/sherpa_libraries.py" --platform "linux-${arch}")" || return
+  export SHERPA_ONNX_LIB_DIR="${libraries}"
 }
