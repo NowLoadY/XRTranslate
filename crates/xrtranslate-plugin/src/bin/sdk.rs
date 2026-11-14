@@ -333,7 +333,12 @@ fn build(arguments: &[OsString]) -> Result<()> {
         return Err("Plugin artifact was not produced".into());
     }
     for (name, (directory, destination)) in plugins {
-        super::stage(&directory, &artifacts[&name], &destination, true)?;
+        super::stage(&directory, &artifacts[&name], &destination, true).map_err(|error| {
+            format!(
+                "Cannot package {name} at {}: {error}",
+                destination.display()
+            )
+        })?;
         println!("Plugin package created at {}", destination.display());
     }
     Ok(())

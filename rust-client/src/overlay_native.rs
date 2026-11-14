@@ -1,5 +1,6 @@
 //! Shared desktop surfaces: subtitles and a transparent screen-translation frame.
 mod composer;
+mod ocr;
 mod platform;
 mod quick;
 #[cfg(target_os = "linux")]
@@ -142,9 +143,8 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 ocr: None,
                 collapsed: false,
                 companion: avatar::Surface::default(),
-                companion_region: None,
-                pending_region: None,
-                sent_region: None,
+                controller_region: None,
+                recognition: ocr::OcrWindow::default(),
                 closing: false,
                 shown: false,
                 stacking: WindowStacking::default(),
@@ -166,9 +166,8 @@ struct OverlayWindow {
     ocr: Option<OcrOverlayState>,
     collapsed: bool,
     companion: avatar::Surface,
-    companion_region: Option<OverlayRegion>,
-    pending_region: Option<(OverlayRegion, Instant)>,
-    sent_region: Option<OverlayRegion>,
+    controller_region: Option<OverlayRegion>,
+    recognition: ocr::OcrWindow,
     closing: bool,
     shown: bool,
     stacking: WindowStacking,
@@ -263,13 +262,6 @@ impl ResultWindow {
 }
 
 impl OverlayWindow {
-    fn invalidate_region(&mut self) {
-        self.pending_region = None;
-        if self.sent_region.take().is_some() {
-            send_event(OverlayEvent::RegionChanging);
-        }
-    }
-
     fn close(&mut self, ctx: &egui::Context) {
         if !self.closing {
             send_event(OverlayEvent::CloseRequested);
@@ -289,7 +281,6 @@ impl OverlayWindow {
             style.interaction.tooltip_grace_time = 0.0;
         });
         if self.collapsed {
-            // Keep the header height unchanged so folding never moves the OCR area.
             let (rect, response) = ui.allocate_exact_size(
                 Vec2::splat(components::INPUT_TOGGLE_SIZE + 14.0),
                 egui::Sense::click_and_drag(),
@@ -469,7 +460,7 @@ impl OverlayWindow {
                         .inner;
                     if response.clicked() {
                         if matches!(icon, InputIcon::Text) {
-                            self.invalidate_region();
+                            self.recognition.invalidate();
                         }
                         send_event(match icon {
                             InputIcon::Microphone => OverlayEvent::MicrophoneEnabled(!enabled),
@@ -591,34 +582,7 @@ impl OverlayWindow {
                 let child_scale = ui.ctx().pixels_per_point();
                 let actual = ui.ctx().input(|input| input.viewport().inner_rect);
                 close_requested = ui.ctx().input(|input| input.viewport().close_requested());
-                if !result.shown {
-                    let desired = desired / child_scale;
-                    let aligned = actual
-                        .is_some_and(|actual| rect_matches(actual, desired, 1.0 / child_scale));
-                    if aligned != result.shown {
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Visible(aligned));
-                        result.shown = aligned;
-                    }
-                    if !aligned {
-                        if actual.is_none_or(|actual| {
-                            actual.min.distance(desired.min) > 1.0 / child_scale
-                        }) {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                                    desired.min,
-                                ));
-                        }
-                        if actual.is_none_or(|actual| {
-                            (actual.size() - desired.size()).length() > 1.0 / child_scale
-                        }) {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                                desired.size(),
-                            ));
-                        }
-                        ui.ctx().request_repaint_after(Duration::from_millis(16));
-                    }
-                }
+                place_viewport(ui.ctx(), desired, &mut result.shown);
                 ui.painter()
                     .rect_filled(ui.max_rect().expand(1.0), 0, Color32::from_gray(250));
                 egui::CentralPanel::default()
@@ -711,7 +675,7 @@ impl eframe::App for OverlayWindow {
                 OverlayCommand::Language(language) => self.language = language,
                 OverlayCommand::Controls(controls) => {
                     if controls.ocr_enabled != self.controls.ocr_enabled {
-                        self.invalidate_region();
+                        self.recognition.invalidate();
                     }
                     self.controls = controls;
                 }
@@ -745,7 +709,6 @@ impl eframe::App for OverlayWindow {
             return;
         }
         let mut regions = Vec::new();
-        let mut selection = None;
         let mut anchor = Rect::NOTHING;
         let collapsed = self.collapsed;
         let mut header_rect = Rect::NOTHING;
@@ -761,12 +724,6 @@ impl eframe::App for OverlayWindow {
                     regions.push((rect.expand(3.0), 0.0));
                     anchor = anchor.union(rect);
                     ui.add_space(GAP);
-                }
-                if let Some(rect) =
-                    recognition_area(ui, self.controls.ocr_enabled == Some(true), &mut regions)
-                {
-                    selection = Some(rect.shrink(12.0));
-                    anchor = anchor.union(rect);
                 }
             });
         let Some(window) = frame.winit_window() else {
@@ -784,21 +741,6 @@ impl eframe::App for OverlayWindow {
         let bubble = bubble.map(|rect| rect.intersect(ui.ctx().viewport_rect()));
         if let Some(rect) = bubble {
             regions.push((rect, 0.0));
-        }
-        if let Ok(position) = window.inner_position() {
-            let region = bubble.map(|rect| {
-                let rect = rect * ui.ctx().pixels_per_point();
-                OverlayRegion {
-                    x: position.x + rect.left().floor() as i32,
-                    y: position.y + rect.top().floor() as i32,
-                    width: (rect.right().ceil() - rect.left().floor()) as u32,
-                    height: (rect.bottom().ceil() - rect.top().floor()) as u32,
-                }
-            });
-            if self.companion_region != region {
-                self.companion_region = region;
-                send_event(OverlayEvent::CompanionRegionChanged(region));
-            }
         }
         // Windows clips painting as well as input to this region. Include only
         // popups painted this pass, with their shadows, until they disappear.
@@ -835,141 +777,45 @@ impl eframe::App for OverlayWindow {
             self.shown = true;
         }
         self.stacking.update(ui.ctx());
-        if let Some(selection) = selection {
-            let Ok(position) = window.inner_position() else {
+        let Ok(position) = window.inner_position() else {
+            return;
+        };
+        let scale = ui.ctx().pixels_per_point();
+        let origin = egui::vec2(position.x as f32, position.y as f32);
+        let bounds = regions
+            .iter()
+            .fold(Rect::NOTHING, |bounds, (rect, _)| bounds.union(*rect));
+        let bounds = bounds * scale;
+        let region = Some(OverlayRegion {
+            x: position.x + bounds.left().floor() as i32,
+            y: position.y + bounds.top().floor() as i32,
+            width: (bounds.right().ceil() - bounds.left().floor()) as u32,
+            height: (bounds.bottom().ceil() - bounds.top().floor()) as u32,
+        });
+        if self.controller_region != region {
+            self.controller_region = region;
+            send_event(OverlayEvent::ControllerRegionChanged(region));
+        }
+        if self.controls.ocr_enabled == Some(true) {
+            let work = self.input.work_area(window).shrink(8.0 * scale);
+            let size = egui::vec2(440.0, 220.0) * scale;
+            let center = anchor.center_bottom() * scale
+                + origin
+                + egui::vec2(0.0, size.y * 0.5 + 8.0 * scale);
+            let initial = fit_rect(size.min(work.size()), center, work);
+            if let Err(error) = self.recognition.show(ui.ctx(), initial) {
+                send_event(OverlayEvent::Failed(error));
+                self.close(ui.ctx());
                 return;
-            };
-            let scale = ui.ctx().pixels_per_point();
-            let rect = selection * scale;
-            let region = OverlayRegion {
-                x: position.x + rect.left().ceil() as i32,
-                y: position.y + rect.top().ceil() as i32,
-                width: (rect.right().floor() - rect.left().ceil()).max(1.0) as u32,
-                height: (rect.bottom().floor() - rect.top().ceil()).max(1.0) as u32,
-            };
-            let now = Instant::now();
-            if self
-                .pending_region
-                .as_ref()
-                .is_none_or(|(pending, _)| *pending != region)
-            {
-                if self.sent_region.take().is_some() {
-                    send_event(OverlayEvent::RegionChanging);
-                }
-                self.pending_region = Some((region, now));
             }
-            if self.sent_region != Some(region)
-                && self.pending_region.is_some_and(|(_, changed)| {
-                    now.duration_since(changed) >= Duration::from_millis(300)
-                })
-            {
-                self.sent_region = Some(region);
-                send_event(OverlayEvent::RegionChanged(region));
+            if let Some(geometry) = self.recognition.geometry {
+                anchor = geometry.translate(-origin) / scale;
             }
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        } else {
+            self.recognition.hide();
         }
         self.result(ui.ctx(), frame, anchor);
     }
-}
-
-/// The OCR toggle owns both the visible frame and its resize handles. Keep the
-/// middle out of the native input region so the captured application stays usable.
-fn recognition_area(
-    ui: &mut egui::Ui,
-    enabled: bool,
-    regions: &mut Vec<(Rect, f32)>,
-) -> Option<Rect> {
-    if !enabled {
-        return None;
-    }
-    let rect = ui.available_rect_before_wrap().shrink(2.0);
-    let painter = ui.painter();
-    // Inward grey shadows stay within the native window's narrow input mask.
-    // The capture inset below the caller's frame excludes all of these pixels.
-    let shadow_rect = rect.shrink(1.0).translate(egui::vec2(0.0, 0.75));
-    for (width, alpha) in [(4.0, 36), (2.5, 80)] {
-        painter.rect_stroke(
-            shadow_rect,
-            0.0,
-            Stroke::new(width, Color32::from_rgba_unmultiplied(96, 96, 96, alpha)),
-            egui::StrokeKind::Inside,
-        );
-    }
-    painter.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, Color32::WHITE),
-        egui::StrokeKind::Inside,
-    );
-    for (corner, direction) in [
-        (rect.left_top(), egui::vec2(1.0, 1.0)),
-        (rect.right_top(), egui::vec2(-1.0, 1.0)),
-        (rect.left_bottom(), egui::vec2(1.0, -1.0)),
-        (rect.right_bottom(), egui::vec2(-1.0, -1.0)),
-    ] {
-        let corner = corner + direction * 1.5;
-        let points = [
-            corner + egui::vec2(direction.x * 9.0, 0.0),
-            corner,
-            corner + egui::vec2(0.0, direction.y * 9.0),
-        ];
-        painter.add(egui::Shape::line(
-            points.map(|point| point + direction * 1.0).to_vec(),
-            Stroke::new(4.0, Color32::from_rgba_unmultiplied(96, 96, 96, 100)),
-        ));
-        painter.add(egui::Shape::line(
-            points.to_vec(),
-            Stroke::new(3.0, Color32::WHITE),
-        ));
-    }
-
-    use egui::viewport::ResizeDirection::*;
-    // Wider invisible handles keep the thin outline easy to grab. Register
-    // corners last so diagonal resizing wins where handles overlap.
-    for (edge, direction) in [
-        (
-            Rect::from_min_max(rect.left_top(), rect.right_top() + egui::vec2(0.0, GAP)),
-            North,
-        ),
-        (
-            Rect::from_min_max(
-                rect.left_bottom() - egui::vec2(0.0, GAP),
-                rect.right_bottom(),
-            ),
-            South,
-        ),
-        (
-            Rect::from_min_max(rect.left_top(), rect.left_bottom() + egui::vec2(GAP, 0.0)),
-            West,
-        ),
-        (
-            Rect::from_min_max(rect.right_top() - egui::vec2(GAP, 0.0), rect.right_bottom()),
-            East,
-        ),
-        (
-            Rect::from_min_size(rect.left_top(), Vec2::splat(12.0)),
-            NorthWest,
-        ),
-        (
-            Rect::from_min_size(rect.right_top() - egui::vec2(12.0, 0.0), Vec2::splat(12.0)),
-            NorthEast,
-        ),
-        (
-            Rect::from_min_size(
-                rect.left_bottom() - egui::vec2(0.0, 12.0),
-                Vec2::splat(12.0),
-            ),
-            SouthWest,
-        ),
-        (
-            Rect::from_min_size(rect.right_bottom() - Vec2::splat(12.0), Vec2::splat(12.0)),
-            SouthEast,
-        ),
-    ] {
-        resize(ui, edge, direction);
-        regions.push((edge, 0.0));
-    }
-    Some(rect)
 }
 
 fn result_contents(
@@ -1123,6 +969,35 @@ fn resize(ui: &mut egui::Ui, rect: Rect, direction: egui::viewport::ResizeDirect
             .send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
     }
     response.drag_started()
+}
+
+fn place_viewport(ctx: &egui::Context, desired: Rect, shown: &mut bool) {
+    if *shown {
+        return;
+    }
+    let scale = ctx.pixels_per_point();
+    let desired = desired.round() / scale;
+    let (actual, outer) = ctx.input(|input| {
+        let viewport = input.viewport();
+        (viewport.inner_rect, viewport.outer_rect)
+    });
+    if actual.is_some_and(|actual| rect_matches(actual, desired, 1.0 / scale)) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        *shown = true;
+    } else {
+        if actual.is_none_or(|actual| actual.min.distance(desired.min) > 1.0 / scale) {
+            // Borderless Windows windows can still have a one-pixel client
+            // inset. Position the client area, not the invisible native border.
+            let inset = actual
+                .zip(outer)
+                .map_or(Vec2::ZERO, |(inner, outer)| inner.min - outer.min);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(desired.min - inset));
+        }
+        if actual.is_none_or(|actual| (actual.size() - desired.size()).length() > 1.0 / scale) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(desired.size()));
+        }
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
 }
 
 fn rect_matches(a: Rect, b: Rect, tolerance: f32) -> bool {

@@ -95,6 +95,12 @@ remain available through `current` for custom renderers. Hidden targets have no
 rectangle; coordinates refresh every frame. Feedback is bounded and transient,
 without changing component layout or adding messages to the agent's context.
 
+Hosts can also paint read-only tutorials from `driver().rendered_snapshot()`
+after page layout with `egui::feedback::paint_guidance`. It shares the same
+clipped geometry and renderer without replacing execution feedback. The host
+owns tutorial timing and navigation; guidance can stop its animation between
+operations and let the UI sleep.
+
 ## Protocol
 
 In-process callers and the local HTTP server use the same `ToolCall`:
@@ -107,6 +113,9 @@ POST a call to the loopback server. Responses contain `success`, `message` and
 optional `data`. A pending result supplies its own polling and cancellation
 calls; poll for completion before relying on the operation's result. The native
 CLI prints one response per invocation, including pending receipts.
+
+Native automation clients can reuse `client::send` with a port and timeout;
+the CLI uses the same loopback transport. Callers own polling and cancellation.
 
 `GET /frame` and the timed frame stream support capture and reproducible recording.
 There are no alternate mutation protocols.

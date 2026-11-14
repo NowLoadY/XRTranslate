@@ -26,6 +26,8 @@ impl Server {
             while !worker_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Accepted sockets inherit nonblocking mode on Windows.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -252,10 +254,11 @@ fn mpv_network_audio_applies_channel_selection_before_downmixing() {
         while let Ok(chunk) = rx.recv_timeout(Duration::from_secs(3)) {
             samples.extend(chunk);
         }
-        assert!(matches!(
-            terminal(&import),
-            AudioImportEvent::Completed { .. }
-        ));
+        let result = terminal(&import);
+        assert!(
+            matches!(result, AudioImportEvent::Completed { .. }),
+            "channels={channels}, selected={selected:?}: {result:?}"
+        );
         // MPV can pad the final codec block; it must still end near one second.
         assert!((16_000..=17_024).contains(&(samples.len() / channels)));
         let left_audible = selected == [1];

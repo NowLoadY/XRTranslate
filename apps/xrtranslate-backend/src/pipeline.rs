@@ -480,7 +480,7 @@ enum FixedWindowEvent {
     StreamEnded,
 }
 
-/// Cloneable, stateless network side of the native pipeline.
+/// Cloneable network side of the native pipeline, with session-local history allowance.
 ///
 /// A session actor keeps [`NativePipeline`] on its audio/VAD owner task while
 /// moving this value to a bounded inference worker.  That prevents slow local
@@ -1657,10 +1657,14 @@ impl NativeInference {
                     warn!(
                         %error,
                         max_tokens = options.max_tokens,
-                        "translation exceeded its limits or failed validation; regenerating current segment once without optional context"
+                        "translation exceeded its limits or failed validation; regenerating current segment once"
                     );
                     output_retried = true;
-                    options.prompt_context = options.prompt_context.without_reference_context();
+                    // Rejected output has already reduced the adapter's history
+                    // allowance. Keep the other references and the full prompt/style.
+                    if !error.is_rejected_output() {
+                        options.prompt_context = options.prompt_context.without_reference_context();
+                    }
                     on_update(String::new()).await;
                 }
                 Err(error) if error.is_rejected_output() => {
@@ -1819,6 +1823,51 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
         Err(format!(
             "PCM WebSocket message is {bytes} bytes; the native backend limit is {MAX_INPUT_PCM_BYTES} bytes"
         ))
+    }
+}
+
+#[cfg(test)]
+mod translation_budget_tests {
+    use super::*;
+
+    #[test]
+    fn short_text_reuses_output_space_for_context_across_window_sizes() {
+        let provider = serde_json::json!({
+            "provider": "google", "providers": {"google": {"api_key": "test-only"}}
+        });
+        let config = AppConfig::from_value(serde_json::json!({
+            "asr": provider, "translation": provider,
+        }))
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let plan = NativeProviderPlan::resolve(&config, root.path()).unwrap();
+        let mut inference = NativeInference::for_text(&plan).unwrap();
+        inference.translation_max_output_tokens = 256;
+        let mut graph = PromptNodeGraph::default();
+        let style = "Keep the meaning and the speaker's tone. ".repeat(12);
+        assert!(graph.set_style_text(&style));
+        let mut previous_context = 0;
+
+        for window in [2_048, 4_700, 8_192, 32_768, 1_048_576] {
+            inference.translation_context_window_tokens = window;
+            let (short, input_capacity) = inference
+                .for_text_request(&graph, "en", "zh", "Where did she go?")
+                .unwrap();
+            let (_, context_capacity) = short.prompt_context_token_budgets();
+            assert_eq!(short.translation_max_output_tokens, 256);
+            assert!(context_capacity > input_capacity);
+            assert!(context_capacity > previous_context);
+            previous_context = context_capacity;
+
+            let text = "中".repeat(input_capacity);
+            let (long, long_input_capacity) = inference
+                .for_text_request(&graph, "zh", "en", &text)
+                .unwrap();
+            assert_eq!(long_input_capacity, input_capacity);
+            assert!(long.translation_max_output_tokens > short.translation_max_output_tokens);
+            assert!(long.prompt_context_token_budgets().1 < context_capacity);
+            assert_eq!(inference.translation_max_output_tokens, 256);
+        }
     }
 }
 

@@ -28,6 +28,7 @@ pub(super) enum Action {
     DeleteSpeech(String),
     VocalReference(Option<[i64; 2]>),
     AuditionVocals(i64, i64),
+    Voice(super::voices::Action),
     CancelTrim,
 }
 
@@ -50,6 +51,7 @@ impl Action {
             Self::DeleteSpeech(clip) => controller.delete_speech(&clip),
             Self::VocalReference(range) => controller.set_vocal_reference(range),
             Self::AuditionVocals(start, end) => controller.audition_vocals(start, end),
+            Self::Voice(action) => action.apply(controller),
             Self::CancelTrim => controller.cancel_subtitle_trim(),
             Self::Select(_) => {}
         }
@@ -75,6 +77,8 @@ pub(super) fn overview(
     subtitles: &crate::media::subtitles::SubtitleTimeline,
     editable: bool,
     language: crate::i18n::UiLanguage,
+    scope: Option<crate::media::speech::Scope>,
+    can_synthesize: bool,
     ui: &mut egui::Ui,
 ) -> Option<Action> {
     let cues = subtitles.cues();
@@ -454,6 +458,19 @@ pub(super) fn overview(
             2,
             theme::primary().gamma_multiply(if active { 1.0 } else { 0.4 }),
         );
+        if task.is_some_and(|task| scope.is_some_and(|scope| scope.contains(task, cue))) {
+            ui.painter().rect_stroke(
+                span.expand(1.5),
+                3,
+                egui::Stroke::new(2.0, theme::primary()),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if let Some(task) = task
+            && let Some(drop) = super::voices::drop_on(ui, span, task, cue, editable)
+        {
+            action = Some(Action::Voice(drop));
+        }
         if change_strength > 0.0
             && changes.iter().any(|item| {
                 item.feedback.target
@@ -594,6 +611,56 @@ pub(super) fn overview(
             }
         }
     }
+    let menu_id = id.with("speech_menu_clip");
+    if response.secondary_clicked() {
+        ui.data_mut(|data| data.insert_temp(menu_id, speech_hovered.map(|clip| clip.id.clone())));
+    }
+    let menu_clip = ui
+        .data(|data| data.get_temp::<Option<String>>(menu_id))
+        .flatten();
+    response.context_menu(|ui| {
+        if let Some(clip) = clips
+            .iter()
+            .find(|clip| Some(&clip.id) == menu_clip.as_ref())
+        {
+            if crate::ui::components::secondary_button(
+                ui,
+                crate::media::i18n::tr(language, "Listen to speech"),
+            )
+            .clicked()
+            {
+                action = Some(Action::AuditionSpeech(clip.id.clone()));
+                ui.close();
+            }
+            if let Some(cue) = cues.iter().find(|cue| {
+                speech
+                    .and_then(|track| track.clip_for_cue(cue))
+                    .is_some_and(|candidate| candidate.id == clip.id)
+            }) && crate::ui::components::secondary_button_enabled(
+                ui,
+                crate::media::i18n::tr(language, "Redub"),
+                editable && can_synthesize,
+            )
+            .clicked()
+            {
+                action = Some(Action::Voice(super::voices::Action::Generate {
+                    cue: cue.id.clone(),
+                    voice: None,
+                }));
+                ui.close();
+            }
+            if crate::ui::components::secondary_button_enabled(
+                ui,
+                crate::media::i18n::tr(language, "Delete this speech"),
+                editable && controller.speech_job.is_none(),
+            )
+            .clicked()
+            {
+                action = Some(Action::DeleteSpeech(clip.id.clone()));
+                ui.close();
+            }
+        }
+    });
     if controller.can_play() && (view.start..=view.end).contains(&(position as f64)) {
         let position = x(position);
         ui.painter().line_segment(
@@ -667,17 +734,6 @@ pub(super) fn overview(
     }
     if let Some(clip) = speech_hovered {
         let clicked = response.clicked();
-        let click_id = id.with("speech_click");
-        let delete = editable
-            && response.double_clicked()
-            && ui.data(|data| data.get_temp::<String>(click_id)).as_deref() == Some(&clip.id);
-        if clicked {
-            ui.data_mut(|data| data.insert_temp(click_id, clip.id.clone()));
-        }
-        if delete {
-            ui.data_mut(|data| data.remove::<String>(click_id));
-            return Some(Action::DeleteSpeech(clip.id.clone()));
-        }
         response
             .on_hover_cursor(if editable {
                 egui::CursorIcon::Grab

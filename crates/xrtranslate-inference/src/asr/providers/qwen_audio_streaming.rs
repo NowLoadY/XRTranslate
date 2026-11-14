@@ -115,65 +115,75 @@ impl QwenAudioStreamingAdapter {
     {
         let task_id = Uuid::new_v4().to_string();
         let (run_task, requested_language) = build_run_task(&task_id, &self.model, &options)?;
-        let cached = self
-            .idle_socket
-            .lock()
-            .await
-            .take()
-            .filter(|(_, idle_since)| idle_since.elapsed() < IDLE_CONNECTION_TTL);
-        let reused = cached.is_some();
-        let mut socket = match cached {
-            Some((socket, _)) => socket,
-            None => self.connect().await?,
-        };
-        if let Err(error) = self.start_task(&mut socket, &task_id, &run_task).await {
-            if !reused {
-                return Err(error);
+        let record = crate::diagnostics::RequestRecord::start(
+            "Speech recognition",
+            &run_task["payload"],
+            Vec::new(),
+        );
+        let result = async {
+            let cached = self
+                .idle_socket
+                .lock()
+                .await
+                .take()
+                .filter(|(_, idle_since)| idle_since.elapsed() < IDLE_CONNECTION_TTL);
+            let reused = cached.is_some();
+            let mut socket = match cached {
+                Some((socket, _)) => socket,
+                None => self.connect().await?,
+            };
+            if let Err(error) = self.start_task(&mut socket, &task_id, &run_task).await {
+                if !reused {
+                    return Err(error);
+                }
+                // An idle peer may close the connection. No audio was submitted,
+                // so replace it once before beginning this turn, without a probe.
+                socket = self.connect().await?;
+                self.start_task(&mut socket, &task_id, &run_task).await?;
             }
-            // An idle peer may close the connection. No audio was submitted,
-            // so replace it once before beginning this turn, without a probe.
-            socket = self.connect().await?;
-            self.start_task(&mut socket, &task_id, &run_task).await?;
-        }
-        let (mut writer, mut reader) = socket.split();
-        let audio_drained = AtomicBool::new(false);
-        let send_audio = async {
-            let audio = crate::asr::audio::pcm16_frames(audio, PCM_FRAME_BYTES);
-            futures_util::pin_mut!(audio);
-            while let Some(frame) = audio.next().await {
+            let (mut writer, mut reader) = socket.split();
+            let audio_drained = AtomicBool::new(false);
+            let send_audio = async {
+                let audio = crate::asr::audio::pcm16_frames(audio, PCM_FRAME_BYTES);
+                futures_util::pin_mut!(audio);
+                while let Some(frame) = audio.next().await {
+                    writer
+                        .send(Message::Binary(frame?.into()))
+                        .await
+                        .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
+                }
+                audio_drained.store(true, Ordering::Release);
                 writer
-                    .send(Message::Binary(frame?.into()))
+                    .send(Message::Text(finish_task(&task_id).to_string().into()))
                     .await
                     .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
+                Result::<(), InferenceError>::Ok(())
+            };
+            let receive_results = collect_sentences(
+                &mut reader,
+                &self.endpoint,
+                &task_id,
+                &audio_drained,
+                on_update,
+            );
+            let ((), text) = timeout(TASK_TIMEOUT, async {
+                tokio::try_join!(send_audio, receive_results)
+            })
+            .await
+            .map_err(|_| timeout_error(&self.endpoint, "recognition"))??;
+            // Only a normally finished task returns its connection to this session's
+            // one-slot cache. Failed/cancelled tasks never contaminate the next turn.
+            if let Ok(socket) = writer.reunite(reader) {
+                *self.idle_socket.lock().await = Some((socket, tokio::time::Instant::now()));
             }
-            audio_drained.store(true, Ordering::Release);
-            writer
-                .send(Message::Text(finish_task(&task_id).to_string().into()))
-                .await
-                .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
-            Result::<(), InferenceError>::Ok(())
-        };
-        let receive_results = collect_sentences(
-            &mut reader,
-            &self.endpoint,
-            &task_id,
-            &audio_drained,
-            on_update,
-        );
-        let ((), text) = timeout(TASK_TIMEOUT, async {
-            tokio::try_join!(send_audio, receive_results)
-        })
-        .await
-        .map_err(|_| timeout_error(&self.endpoint, "recognition"))??;
-        // Only a normally finished task returns its connection to this session's
-        // one-slot cache. Failed/cancelled tasks never contaminate the next turn.
-        if let Ok(socket) = writer.reunite(reader) {
-            *self.idle_socket.lock().await = Some((socket, tokio::time::Instant::now()));
+            Ok(AsrTranscript {
+                language: requested_language,
+                text,
+            })
         }
-        Ok(AsrTranscript {
-            language: requested_language,
-            text,
-        })
+        .await;
+        record.finish(result.as_ref().map(|transcript| transcript.text.as_str()));
+        result
     }
 
     async fn connect(&self) -> Result<Socket, InferenceError> {

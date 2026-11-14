@@ -137,6 +137,15 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
         ) {
             app.apply_language_route();
         }
+        ui_director::egui::record_output(
+            ui,
+            "Translation languages",
+            ui_director::egui::ElementValue::Text(format!(
+                "{} → {}",
+                app.source_lang, app.target_lang
+            )),
+            ui.min_rect(),
+        );
         let tts_configured = app.service_config.tts_is_configured();
         let compact = ui.available_width() < 600.0;
         let mut details = crate::ui::layout::flow_row(ui, |ui| {
@@ -437,37 +446,52 @@ fn render_input_adaptation(
             language,
         );
         let preprocessing_changed = preprocessing_response.response.changed();
+        ui_director::egui::record_output(
+            ui,
+            "Audio preprocessing",
+            ui_director::egui::ElementValue::None,
+            preprocessing_response.response.rect,
+        );
         preprocessing_action = preprocessing_response.action;
-        let mode_changed = ui
-            .horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(recognition_mode)
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
+        let mode = ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(recognition_mode)
+                    .color(crate::ui::theme::text_strong())
+                    .strong(),
+            );
+            let previous = recognition.continuous_recognition;
+            let selected_mode = if recognition.continuous_recognition {
+                pseudo_streaming
+            } else {
+                &automatic_mode
+            };
+            components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
+                components::selectable_value(
+                    ui,
+                    &mut recognition.continuous_recognition,
+                    false,
+                    &automatic_mode,
                 );
-                let previous = recognition.continuous_recognition;
-                let selected_mode = if recognition.continuous_recognition {
-                    pseudo_streaming
-                } else {
-                    &automatic_mode
-                };
-                components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
-                    components::selectable_value(
-                        ui,
-                        &mut recognition.continuous_recognition,
-                        false,
-                        &automatic_mode,
-                    );
-                    components::selectable_value(
-                        ui,
-                        &mut recognition.continuous_recognition,
-                        true,
-                        pseudo_streaming,
-                    );
-                });
-                recognition.continuous_recognition != previous
-            })
-            .inner;
+                components::selectable_value(
+                    ui,
+                    &mut recognition.continuous_recognition,
+                    true,
+                    pseudo_streaming,
+                );
+            });
+            recognition.continuous_recognition != previous
+        });
+        let mode_changed = mode.inner;
+        ui_director::egui::record_output(
+            ui,
+            "Recognition mode",
+            ui_director::egui::ElementValue::Text(if recognition.continuous_recognition {
+                pseudo_streaming.to_owned()
+            } else {
+                automatic_mode.clone()
+            }),
+            mode.response.rect,
+        );
         let background_response = components::modern_slider_f32(
             ui,
             &mut recognition.background_noise,

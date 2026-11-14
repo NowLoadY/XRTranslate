@@ -47,7 +47,8 @@ pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {
         .color(theme::text_strong())
         .strong();
     if compact {
-        ui.add(egui::Label::new(title).truncate()).on_hover_text(full_title);
+        ui.add(egui::Label::new(title).truncate())
+            .on_hover_text(full_title);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 0.0),
             egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
@@ -154,7 +155,15 @@ pub fn responsive_settings_button(
         )
         .on_hover_text(label);
     if response.clicked()
-        || ui_director::egui::record_button(ui, id, label, ui.is_enabled(), response.rect)
+        || matches!(
+            ui_director::egui::Control::new(
+                label,
+                ui_director::egui::ElementKind::Button,
+                ui_director::egui::ElementValue::Bool(state.is_open())
+            )
+            .record(ui, id, ui.is_enabled(), response.rect),
+            Some(ui_director::egui::ControlAction::Click)
+        )
     {
         state.toggle(ui);
     }
@@ -1526,12 +1535,39 @@ pub fn error_dialog(
 }
 
 pub fn error_actions(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
-    if copy_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
-        ui.ctx().copy_text(details.to_owned());
-    }
+    error_actions_with_log(ui, language, details, None);
+}
+
+pub(crate) fn error_actions_with_log(
+    ui: &mut Ui,
+    language: crate::i18n::UiLanguage,
+    details: &str,
+    log: Option<&str>,
+) {
+    let report = crate::ui::error_report::for_error(ui.ctx(), details, log);
+    let report = report.0.lock();
+    let response = copy_button(ui, crate::i18n::tr(language, "Copy"));
+    egui::Popup::from_toggle_button_response(&response).show(|ui| {
+        if ui.button(crate::i18n::tr(language, "Copy error")).clicked() {
+            ui.ctx().copy_text(details.to_owned());
+            ui.close();
+        }
+        ui.add_enabled_ui(!report.collecting, |ui| {
+            if ui
+                .button(crate::i18n::tr(language, "Copy full log"))
+                .clicked()
+            {
+                ui.ctx().copy_text(report.text.clone());
+                ui.close();
+            }
+        });
+        if report.collecting {
+            ui.spinner();
+        }
+    });
     ui.hyperlink_to(
         crate::i18n::tr(language, "GitHub Issues"),
-        "https://github.com/NowLoadY/XRTranslate/issues/new",
+        &report.issue_url,
     );
 }
 

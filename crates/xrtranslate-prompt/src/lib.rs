@@ -6,6 +6,7 @@
 mod budget;
 mod builtin;
 mod context;
+pub mod diagnostics;
 mod execution;
 mod library;
 mod profile;

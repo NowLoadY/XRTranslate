@@ -11,13 +11,14 @@ use crate::{
 };
 use eframe::egui;
 
-const SINGLE_LINE_HEADER_WIDTH: f32 = 400.0;
+const SINGLE_LINE_HEADER_WIDTH: f32 = 360.0;
 
 pub(super) fn render_subtitles_card(
     controller: &mut MediaController,
     language: crate::i18n::UiLanguage,
     optimizing: bool,
     can_synthesize: bool,
+    can_clone: bool,
     ui: &mut egui::Ui,
 ) {
     let can_play = controller.can_play();
@@ -68,11 +69,31 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     super::detail::files::subtitle_header(controller, language, ui);
+    let scope = super::voices::batch::toolbar(
+        controller,
+        language,
+        optimizing,
+        can_synthesize,
+        can_clone,
+        ui,
+    );
+    super::voices::shelf(controller, language, can_clone && !optimizing, ui);
+    let pending: std::collections::HashMap<_, _> = controller
+        .subtitles
+        .cues()
+        .iter()
+        .filter_map(|cue| {
+            controller
+                .cue_speech(&cue.id)
+                .map(|state| (cue.id.clone(), state))
+        })
+        .collect();
     let measurements_id = egui::Id::unique("media_subtitle_measurements");
     let task = controller
         .active_task_id
         .as_deref()
         .and_then(|id| controller.store.get(id));
+    let show_speech = can_synthesize || task.is_some_and(|task| task.speech_track.is_some());
     let preview = task
         .and_then(|task| task.optimization.as_ref())
         .filter(|workspace| {
@@ -107,7 +128,15 @@ pub(super) fn render_subtitles_card(
             .subtitle_edit
             .as_ref()
             .is_none_or(|edit| edit.dragging_time);
-    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, language, ui);
+    let timeline_action = super::timeline::overview(
+        controller,
+        subtitles,
+        can_trim,
+        language,
+        scope,
+        can_synthesize,
+        ui,
+    );
     if subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
         egui::scroll_area::State::default().store(
@@ -175,13 +204,12 @@ pub(super) fn render_subtitles_card(
     );
     let mut edit = None;
     let mut delete = None;
-    let mut generate_speech = None;
-    let can_generate = can_synthesize
-        && can_edit
-        && controller.speech_edit.is_none()
-        && controller.speech_job.is_none();
+    let mut voice_action = None;
+    let can_generate = can_synthesize && can_edit && controller.speech_edit.is_none();
+    let can_restore = can_edit && controller.speech_job.is_none();
     let mut edit_action = super::subtitle_edit::EditAction::None;
     let task_id = controller.active_task_id.as_deref();
+    let voice_library = &controller.voice_library;
     let draft = &mut controller.subtitle_edit;
     let revision = egui::IdSalt::new((
         task_id,
@@ -189,6 +217,7 @@ pub(super) fn render_subtitles_card(
         preview.map(|workspace| (&workspace.id, workspace.revision)),
         editing_index,
         edit_height.to_bits(),
+        show_speech,
     ));
     let mut measurements = ui
         .data_mut(|data| data.remove_temp::<Measurements<usize>>(measurements_id))
@@ -231,6 +260,11 @@ pub(super) fn render_subtitles_card(
                         edit_height
                     } else {
                         prepare_cue_text(ui, &subtitles.cues()[row.entry]).0
+                            + if show_speech {
+                                ui.spacing().interact_size.y.max(32.0) + ui.spacing().item_spacing.y
+                            } else {
+                                0.0
+                            }
                     }
                 },
             )
@@ -248,11 +282,15 @@ pub(super) fn render_subtitles_card(
                 .as_ref()
                 .filter(|draft| draft.cue.id == cue.id)
                 .map_or(subtitles.effective_end_at(index), |draft| draft.cue.end_ms);
-            let border = if displayed_cue.character_count() > char_limit {
-                crate::ui::theme::danger()
-            } else {
-                crate::ui::theme::border().gamma_multiply(0.55)
-            };
+            let border =
+                if task.is_some_and(|task| scope.is_some_and(|scope| scope.contains(task, cue))) {
+                    crate::ui::theme::primary()
+                } else if displayed_cue.character_count() > char_limit {
+                    crate::ui::theme::danger()
+                } else {
+                    crate::ui::theme::border().gamma_multiply(0.55)
+                };
+            let card_top = ui.next_widget_position();
             components::card_with_border(ui, border, |ui| {
                 ui.set_width(ui.available_width());
                 if editing_index == Some(index) {
@@ -261,6 +299,7 @@ pub(super) fn render_subtitles_card(
                         edit_bounds.clone().unwrap(),
                         language,
                         edit_height,
+                        can_synthesize,
                         ui,
                     );
                     return;
@@ -318,45 +357,6 @@ pub(super) fn render_subtitles_card(
                                 .clone(),
                         );
                     }
-                    let occupied = task
-                        .and_then(|task| task.speech_track.as_ref())
-                        .is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms));
-                    let has_translation = cue
-                        .translated_text
-                        .as_ref()
-                        .is_some_and(|text| !text.trim().is_empty());
-                    if ui
-                        .add_enabled_ui(can_generate && has_translation, |ui| {
-                            components::icon_button(
-                                ui,
-                                tr(
-                                    language,
-                                    if task
-                                        .is_some_and(|task| task.speech_reference_range.is_some())
-                                    {
-                                        "Clone selected voice for this subtitle"
-                                    } else if occupied {
-                                        "Regenerate speech for this range"
-                                    } else {
-                                        "Generate speech for this range"
-                                    },
-                                ),
-                                xrtranslate_client_core::ui::icon!("music.svg"),
-                            )
-                        })
-                        .inner
-                        .on_disabled_hover_text(tr(
-                            language,
-                            if !has_translation {
-                                "Translate this subtitle first."
-                            } else {
-                                "Finish the current task or edit first."
-                            },
-                        ))
-                        .clicked()
-                    {
-                        generate_speech = Some(cue.id.clone());
-                    }
                     let button = ui
                         .add_enabled_ui(can_edit, |ui| {
                             components::edit_button(ui, tr(language, "Edit subtitle"))
@@ -373,7 +373,18 @@ pub(super) fn render_subtitles_card(
                         .inner
                         .on_disabled_hover_text(edit_hint);
                     egui::Popup::menu(&button).show(|ui| {
-                        ui.label(tr(language, "Delete this subtitle?"));
+                        let has_speech = task
+                            .and_then(|task| task.speech_track.as_ref())
+                            .and_then(|track| track.clip_for_cue(cue))
+                            .is_some();
+                        ui.label(tr(
+                            language,
+                            if has_speech {
+                                "Delete this subtitle and its speech?"
+                            } else {
+                                "Delete this subtitle?"
+                            },
+                        ));
                         ui.horizontal(|ui| {
                             if components::secondary_button(ui, tr(language, "Delete")).clicked() {
                                 delete = Some(cue.id.clone());
@@ -407,7 +418,39 @@ pub(super) fn render_subtitles_card(
                         }
                     }
                 });
+                if show_speech && let Some(task) = task {
+                    voice_action = super::voices::footer(
+                        ui,
+                        task,
+                        cue,
+                        language,
+                        super::voices::Controls {
+                            generate: can_generate,
+                            assign: can_generate && can_clone,
+                            pending: pending.get(&cue.id).copied(),
+                            playing: task
+                                .speech_track
+                                .as_ref()
+                                .and_then(|track| track.clip_for_cue(cue))
+                                .is_some_and(|clip| voice_library.previewing(&clip.id)),
+                            restore: can_restore,
+                        },
+                    )
+                    .or(voice_action.take());
+                }
             });
+            if let Some(task) = task {
+                let rect = egui::Rect::from_min_max(
+                    card_top,
+                    egui::pos2(
+                        ui.max_rect().right(),
+                        ui.next_widget_position().y - ui.spacing().item_spacing.y,
+                    ),
+                );
+                voice_action =
+                    super::voices::drop_on(ui, rect, task, cue, can_generate && can_clone)
+                        .or(voice_action.take());
+            }
         },
     );
     if let Some(task) = task {
@@ -418,8 +461,8 @@ pub(super) fn render_subtitles_card(
         controller.delete_subtitle(&id);
         return;
     }
-    if let Some(id) = generate_speech {
-        controller.start_cue_speech(id);
+    if let Some(action) = voice_action {
+        action.apply(controller);
     }
     if let Some(action) = timeline_action {
         action.apply(controller);
@@ -446,6 +489,18 @@ pub(super) fn render_subtitles_card(
             }
         }
         super::subtitle_edit::EditAction::Save => controller.save_subtitle_edit(),
+        super::subtitle_edit::EditAction::SaveAndDub => {
+            let cue = controller
+                .subtitle_edit
+                .as_ref()
+                .map(|draft| draft.cue.id.clone());
+            controller.save_subtitle_edit();
+            if controller.subtitle_edit.is_none()
+                && let Some(cue) = cue
+            {
+                controller.start_cue_speech(cue);
+            }
+        }
         super::subtitle_edit::EditAction::Cancel => controller.subtitle_edit = None,
         super::subtitle_edit::EditAction::None => {}
     }
@@ -540,6 +595,7 @@ mod tests {
                         controller,
                         crate::i18n::UiLanguage::English,
                         optimizing,
+                        true,
                         true,
                         ui,
                     )

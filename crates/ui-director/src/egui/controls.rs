@@ -71,6 +71,12 @@ impl<'a> Control<'a> {
             value: self.value,
             enabled: enabled && ui.is_enabled(),
             rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
+            clip_rect: Some([
+                ui.clip_rect().min.x,
+                ui.clip_rect().min.y,
+                ui.clip_rect().width(),
+                ui.clip_rect().height(),
+            ]),
             options: self.options,
             range: self.range,
         };

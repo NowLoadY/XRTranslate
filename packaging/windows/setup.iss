@@ -20,6 +20,7 @@ MinVersion=10.0.19041
 UsePreviousAppDir=yes
 DisableWelcomePage=yes
 DisableDirPage=no
+DirExistsWarning=no
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
 WizardStyle=modern light
@@ -51,12 +52,13 @@ english.Open=Open XRTranslate
 english.NewerInstalled=A newer version of XRTranslate is already installed.
 english.EmptyFolder=Choose an empty folder. This folder belongs to another installation.
 english.Complete=Installation complete
-english.Move=Move…
-english.MoveTo=Move installation to
+english.Move=Change and reinstall…
+english.MoveAndUpgrade=Change and upgrade…
+english.MoveTo=Change install location
 english.Uninstall=Uninstall (keep user data)
 english.CloseApp=Exit XRTranslate from the notification area before moving or uninstalling it.
 english.UninstallFailed=The previous installation was not removed. Its location remains unchanged.
-english.KeepLocation=Upgrade in the existing location, or choose Move.
+english.KeepLocation=Upgrade in the existing location, or change the install location.
 english.DataError=Could not save the user data location.
 english.DataMoveFailed=Could not move user data.
 english.DataLocation=User data location
@@ -67,18 +69,19 @@ english.MovingData=Moving user data…
 english.SeparateData=Choose a location outside the installation folder.
 english.OccupiedData=XRTranslate-UserData already contains files. Choose another location.
 english.NestedData=Choose a location outside the current user data folder.
-english.OtherInstallation=XRTranslate is already installed in another folder. Update or uninstall that installation first.
+english.ChooseInstallation=Choose the installation to update
 chinesesimplified.Location=安装位置
 chinesesimplified.Open=打开 XRTranslate
 chinesesimplified.NewerInstalled=已安装更新版本的 XRTranslate。
 chinesesimplified.EmptyFolder=请选择空文件夹。此文件夹属于另一个安装版本。
 chinesesimplified.Complete=安装完成
-chinesesimplified.Move=迁移…
-chinesesimplified.MoveTo=迁移安装位置
+chinesesimplified.Move=更改位置并重新安装…
+chinesesimplified.MoveAndUpgrade=更改位置并升级…
+chinesesimplified.MoveTo=更改安装位置
 chinesesimplified.Uninstall=卸载（保留用户数据）
 chinesesimplified.CloseApp=请先从通知区域退出 XRTranslate，再迁移或卸载。
 chinesesimplified.UninstallFailed=旧安装尚未卸载，安装位置保持不变。
-chinesesimplified.KeepLocation=请在原位置升级，或选择迁移。
+chinesesimplified.KeepLocation=请在原位置升级，或更改安装位置。
 chinesesimplified.DataError=无法保存用户数据位置。
 chinesesimplified.DataMoveFailed=无法迁移用户数据。
 chinesesimplified.DataLocation=用户数据位置
@@ -89,7 +92,7 @@ chinesesimplified.MovingData=正在迁移用户数据…
 chinesesimplified.SeparateData=请选择安装目录以外的位置。
 chinesesimplified.OccupiedData=XRTranslate-UserData 已有文件，请选择其他位置。
 chinesesimplified.NestedData=请选择当前用户数据目录以外的位置。
-chinesesimplified.OtherInstallation=XRTranslate 已安装在另一个位置。请先更新或卸载该安装。
+chinesesimplified.ChooseInstallation=选择要更新的版本
 
 [Files]
 ; A pre-rendered SVG keeps Setup independent of an extra image renderer.
@@ -133,6 +136,9 @@ var
   DataMoveMessage: String;
   LocalData, NewData, DataLocationChosen: Boolean;
   UninstallMutex: THandle;
+  NearbyDirectories: TArrayOfString;
+  InstallationPage: TInputOptionWizardPage;
+  InstallationPath: TNewEdit;
 
 function UseSharedData: Boolean;
 begin
@@ -195,71 +201,54 @@ begin
   end;
 end;
 
-function IsPortableInstallation(const Directory: String): Boolean;
-begin
-  Result := (Directory <> '') and DirExists(Directory) and
-    not FileExists(AddBackslash(Directory) + 'distribution.json') and
-    FileExists(AddBackslash(Directory) + 'release-manifest.json') and
-    FileExists(AddBackslash(Directory) + 'config.json') and
-    FileExists(AddBackslash(Directory) + 'bin\xrtranslate-updater.exe') and
-    not FileExists(AddBackslash(Directory) + 'Cargo.toml') and
-    not DirExists(AddBackslash(Directory) + '.git');
-end;
+#include "discovery.iss"
 
-function PortableVersion(const Directory: String): String;
+function CanUpgrade(const Version: String): Boolean;
 var
-  Entry: TFindRec;
-  Version: String;
-  Candidate, Latest: Int64;
+  Installed, Incoming: Int64;
 begin
-  Result := '';
-  Latest := 0;
-  if FindFirst(AddBackslash(Directory) + 'XRTranslate-v*.exe', Entry) then begin
-    try
-      repeat
-        Version := Copy(Entry.Name, 14, Length(Entry.Name) - 17);
-        if StrToVersion(Version, Candidate) and (Candidate > Latest) then begin
-          Latest := Candidate;
-          Result := Version;
-        end;
-      until not FindNext(Entry);
-    finally
-      FindClose(Entry);
-    end;
-  end;
+  Result := True;
+  if StrToVersion(Version, Installed) and StrToVersion('{#AppVersion}', Incoming) then
+    Result := ComparePackedVersion(Installed, Incoming) <= 0;
+  if not Result then
+    SuppressibleMsgBox(CustomMessage('NewerInstalled'), mbInformation, MB_OK, IDOK);
 end;
 
 function InitializeSetup: Boolean;
 var
-  Installed, Incoming: Int64;
   RequestedDirectory: String;
 begin
   RegQueryStringValue(HKCU64, UninstallKey, 'DisplayVersion', PreviousVersion);
   RegQueryStringValue(HKCU64, UninstallKey, 'InstallLocation', PreviousDirectory);
   RegQueryStringValue(HKCU64, UninstallKey, 'UninstallString', UninstallCommand);
-  // Both older clients and the compatibility ZIP pass their actual directory.
-  RequestedDirectory := ExpandConstant('{param:DIR|}');
-  if IsPortableInstallation(RequestedDirectory) then begin
-    if (PreviousDirectory <> '') and not SameDirectory(PreviousDirectory, RequestedDirectory) then begin
-      SuppressibleMsgBox(CustomMessage('OtherInstallation'), mbInformation, MB_OK, IDOK);
-      Result := False;
-      Exit;
-    end;
-    if PreviousDirectory = '' then begin
+  // The fixed AppId has one registration, updated in place by each release.
+  // It owns every operation, even when a different ZIP client passes /DIR.
+  if PreviousDirectory = '' then begin
+    UninstallCommand := '';
+    RequestedDirectory := ExpandConstant('{param:DIR|}');
+    if IsPortableInstallation(RequestedDirectory) then begin
       PreviousDirectory := ExpandFileName(RequestedDirectory);
       PreviousVersion := PortableVersion(PreviousDirectory);
+    end;
+  end;
+  if PreviousDirectory = '' then begin
+    RequestedDirectory := ReadDataLocation(SharedDataLocationFile, '');
+    if IsPortableInstallation(RequestedDirectory) and (PortableVersion(RequestedDirectory) <> '') then begin
+      PreviousDirectory := RequestedDirectory;
+      PreviousVersion := PortableVersion(PreviousDirectory);
+    end else begin
+      FindNearbyInstallations(ExpandConstant('{src}'), NearbyDirectories);
+      if GetArrayLength(NearbyDirectories) = 1 then begin
+        PreviousDirectory := NearbyDirectories[0];
+        PreviousVersion := PortableVersion(PreviousDirectory);
+      end;
     end;
   end;
   DataDirectory := ReadDataLocation(SharedDataLocationFile, ExpandConstant('{localappdata}\XRTranslate'));
   if PreviousDirectory <> '' then
     DataDirectory := ExistingDataDirectory(PreviousDirectory);
   NewData := (PreviousDirectory = '') and not FileExists(SharedDataLocationFile) and EmptyDirectory(DataDirectory);
-  Result := True;
-  if StrToVersion(PreviousVersion, Installed) and StrToVersion('{#AppVersion}', Incoming) then
-    if ComparePackedVersion(Installed, Incoming) > 0 then begin
-      SuppressibleMsgBox(CustomMessage('NewerInstalled'), mbInformation, MB_OK, IDOK);
-      Result := False;
-    end;
+  Result := CanUpgrade(PreviousVersion);
 end;
 
 function ExistingParentDirectory(const Path: String): String;
@@ -512,6 +501,16 @@ begin
   Result := '';
 end;
 
+function LocationActionCaption: String;
+var
+  Installed, Incoming: Int64;
+begin
+  Result := CustomMessage('Move');
+  if StrToVersion(PreviousVersion, Installed) and StrToVersion('{#AppVersion}', Incoming) then
+    if ComparePackedVersion(Installed, Incoming) < 0 then
+      Result := CustomMessage('MoveAndUpgrade');
+end;
+
 procedure MoveInstallation(Sender: TObject);
 var
   Destination: String;
@@ -519,7 +518,7 @@ begin
   if MoveDirectory <> '' then begin
     MoveDirectory := '';
     WizardForm.DirEdit.Text := PreviousDirectory;
-    MoveButton.Caption := CustomMessage('Move');
+    MoveButton.Caption := LocationActionCaption;
     Exit;
   end;
   Destination := PreviousDirectory;
@@ -536,6 +535,13 @@ begin
   MoveButton.Caption := SetupMessage(msgButtonCancel);
 end;
 
+procedure UpdateVersionLabel;
+begin
+  VersionLabel.Caption := '{#AppVersion}';
+  if (PreviousVersion <> '') and (PreviousVersion <> '{#AppVersion}') then
+    VersionLabel.Caption := PreviousVersion + '  →  {#AppVersion}';
+end;
+
 procedure UninstallInstallation(Sender: TObject);
 var
   Error: String;
@@ -549,15 +555,58 @@ begin
   end;
   MoveDirectory := '';
   WizardForm.DirEdit.ReadOnly := False;
+  WizardForm.DirEdit.Width := WizardForm.DirEdit.Width + MoveButton.Width - WizardForm.DirBrowseButton.Width;
   WizardForm.DirBrowseButton.Show;
   MoveButton.Hide;
   UninstallButton.Hide;
-  VersionLabel.Caption := '{#AppVersion}';
+  UpdateVersionLabel;
+end;
+
+procedure InstallationSelectionChanged(Sender: TObject);
+begin
+  WizardForm.NextButton.Enabled := InstallationPage.SelectedValueIndex >= 0;
+  if InstallationPage.SelectedValueIndex >= 0 then begin
+    InstallationPath.Text := NearbyDirectories[InstallationPage.SelectedValueIndex];
+    InstallationPath.Hint := InstallationPath.Text;
+    InstallationPath.SelStart := 0;
+    InstallationPath.Show;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Directory, Version: String;
+begin
+  Result := True;
+  if (InstallationPage = nil) or (CurPageID <> InstallationPage.ID) then Exit;
+  Result := False;
+  if InstallationPage.SelectedValueIndex < 0 then Exit;
+  Directory := NearbyDirectories[InstallationPage.SelectedValueIndex];
+  Version := PortableVersion(Directory);
+  if not IsPortableInstallation(Directory) or (Version = '') or not CanUpgrade(Version) then Exit;
+  if (PreviousDirectory = '') or not SameDirectory(PreviousDirectory, Directory) then begin
+    PreviousDirectory := Directory;
+    PreviousVersion := Version;
+    NewData := False;
+    DataLocationChosen := False;
+    MoveDirectory := '';
+    MoveDataDirectory := '';
+    MoveButton.Caption := LocationActionCaption;
+    WizardForm.DirEdit.Text := PreviousDirectory;
+    UpdateVersionLabel;
+    DataLocationChanged(WizardForm);
+  end;
+  Result := True;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (InstallationPage <> nil) and (PageID = InstallationPage.ID) and (RetainedDirectory <> '');
 end;
 
 procedure InitializeWizard;
 var
-  ExtraHeight: Integer;
+  ExtraHeight, Index: Integer;
   DataIcon: TBitmapImage;
 begin
   WizardForm.PageNameLabel.Hide;
@@ -579,15 +628,33 @@ begin
   VersionLabel.Parent := WizardForm.MainPanel;
   VersionLabel.AutoSize := False;
   VersionLabel.Alignment := taCenter;
-  VersionLabel.Caption := '{#AppVersion}';
-  if (PreviousVersion <> '') and (PreviousVersion <> '{#AppVersion}') then
-    VersionLabel.Caption := PreviousVersion + '  →  {#AppVersion}';
+  UpdateVersionLabel;
   VersionLabel.SetBounds(0, ScaleY(106), WizardForm.MainPanel.Width, ScaleY(20));
   WizardForm.SelectDirLabel.Caption := CustomMessage('Location');
   WizardForm.SelectDirBrowseLabel.Hide;
   WizardForm.DiskSpaceLabel.Hide;
   WizardForm.DirEdit.Top := ScaleY(42);
   WizardForm.DirBrowseButton.Top := WizardForm.DirEdit.Top;
+
+  if GetArrayLength(NearbyDirectories) > 1 then begin
+    InstallationPage := CreateInputOptionPage(wpWelcome, CustomMessage('ChooseInstallation'), '',
+      CustomMessage('ChooseInstallation'), True, True);
+    for Index := 0 to GetArrayLength(NearbyDirectories) - 1 do
+      InstallationPage.Add(ExtractFileName(RemoveBackslash(NearbyDirectories[Index])) + '  ·  ' +
+        PortableVersion(NearbyDirectories[Index]) + #13#10 + ExtractFileDir(NearbyDirectories[Index]));
+    InstallationPage.SelectedValueIndex := LatestInstallationIndex(NearbyDirectories);
+    InstallationPage.CheckListBox.OnClickCheck := @InstallationSelectionChanged;
+    InstallationPath := TNewEdit.Create(InstallationPage);
+    InstallationPath.Parent := InstallationPage.Surface;
+    InstallationPath.ReadOnly := True;
+    InstallationPath.AutoSelect := False;
+    InstallationPath.ShowHint := True;
+    InstallationPath.Hide;
+    InstallationPath.SetBounds(0, InstallationPage.SurfaceHeight - ScaleY(26),
+      InstallationPage.SurfaceWidth, WizardForm.DirEdit.Height);
+    InstallationPage.CheckListBox.Height := InstallationPath.Top -
+      InstallationPage.CheckListBox.Top - ScaleY(10);
+  end;
 
   DataPage := CreateCustomPage(wpSelectDir, CustomMessage('ModelsAndData'), '');
   ExtractTemporaryFile('model-storage.png');
@@ -631,16 +698,17 @@ begin
   DataProgress := CreateOutputProgressPage(CustomMessage('MovingData'), '');
   DataLocationChanged(WizardForm);
   WizardForm.DirEdit.OnChange := @DataLocationChanged;
-  if PreviousDirectory <> '' then begin
+  if (PreviousDirectory <> '') or (InstallationPage <> nil) then begin
     // UsePreviousAppDir supplies only a default; /DIR must not create a second copy.
-    WizardForm.DirEdit.Text := PreviousDirectory;
+    if PreviousDirectory <> '' then WizardForm.DirEdit.Text := PreviousDirectory;
     WizardForm.DirEdit.ReadOnly := True;
     WizardForm.DirBrowseButton.Hide;
     MoveButton := TNewButton.Create(WizardForm);
     MoveButton.Parent := WizardForm.DirBrowseButton.Parent;
-    MoveButton.SetBounds(WizardForm.DirBrowseButton.Left, WizardForm.DirBrowseButton.Top,
-      WizardForm.DirBrowseButton.Width, WizardForm.DirBrowseButton.Height);
-    MoveButton.Caption := CustomMessage('Move');
+    MoveButton.SetBounds(WizardForm.DirBrowseButton.Left + WizardForm.DirBrowseButton.Width - ScaleX(160),
+      WizardForm.DirBrowseButton.Top, ScaleX(160), WizardForm.DirBrowseButton.Height);
+    WizardForm.DirEdit.Width := WizardForm.DirEdit.Width - MoveButton.Width + WizardForm.DirBrowseButton.Width;
+    MoveButton.Caption := LocationActionCaption;
     MoveButton.OnClick := @MoveInstallation;
     UninstallButton := TNewButton.Create(WizardForm);
     UninstallButton.Parent := WizardForm.DirBrowseButton.Parent;
@@ -653,6 +721,8 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if (InstallationPage <> nil) and (CurPageID = InstallationPage.ID) then
+    InstallationSelectionChanged(WizardForm);
   if CurPageID = wpSelectDir then
     WizardForm.NextButton.Caption := SetupMessage(msgButtonNext);
   if CurPageID = DataPage.ID then begin

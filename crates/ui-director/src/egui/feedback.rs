@@ -174,9 +174,61 @@ pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color
     let age = (LIFETIME - remaining).max(0.0) as f32;
     // Enter and leave by changing geometry, never by washing out the colors.
     let reveal = ease(age / 0.16) * ease(remaining as f32 / 0.24);
+    paint_items(painter, &state.items, anchor, accent, age, reveal, true);
+}
+
+/// Host-authored guidance uses the same wordless renderer and live controls,
+/// without inventing execution facts or replacing Agent/CLI feedback.
+pub fn paint_guidance(
+    painter: &egui::Painter,
+    controls: &[super::registry::ElementDescriptor],
+    anchor: Option<(Pos2, f32)>,
+    accent: Color32,
+    age: f32,
+    animated: bool,
+) {
+    let items: Vec<_> = controls
+        .iter()
+        .filter_map(|control| {
+            let rect = control.visible_rect()?.intersect(painter.clip_rect());
+            rect.is_positive().then(|| LocatedFeedback {
+                feedback: control.feedback(Effect::Read),
+                rect: Some(rect),
+            })
+        })
+        .take(4)
+        .collect();
+    if !items.is_empty() {
+        if animated {
+            painter
+                .ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        paint_items(
+            painter,
+            &items,
+            anchor,
+            accent,
+            age,
+            ease(age / 0.16),
+            animated,
+        );
+    }
+}
+
+fn paint_items(
+    painter: &egui::Painter,
+    items: &[LocatedFeedback],
+    anchor: Option<(Pos2, f32)>,
+    accent: Color32,
+    age: f32,
+    reveal: f32,
+    animated: bool,
+) {
+    let ctx = painter.ctx();
     let accent = accent.to_opaque();
     let mut painted = std::collections::BTreeSet::new();
-    for item in &state.items {
+    for item in items {
         if let Some(rect) = item.rect
             && painted.insert(item.feedback.target)
         {
@@ -201,7 +253,7 @@ pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color
             );
         }
     }
-    let Some(item) = state.items.iter().find(|item| item.rect.is_some()) else {
+    let Some(item) = items.iter().find(|item| item.rect.is_some()) else {
         return;
     };
     let Some((head, radius)) = anchor else {
@@ -219,14 +271,16 @@ pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color
         3.5,
         6.0,
     ));
-    pulses(
-        painter,
-        [start, end],
-        &item.feedback.effect,
-        age,
-        reveal,
-        accent,
-    );
+    if animated {
+        pulses(
+            painter,
+            [start, end],
+            &item.feedback.effect,
+            age,
+            reveal,
+            accent,
+        );
+    }
 }
 
 // Quintic easing has zero velocity and acceleration at both ends of each pass.
@@ -287,6 +341,49 @@ fn pulses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tutorial_guidance_preserves_execution_feedback_and_clips_targets() {
+        let ctx = egui::Context::default();
+        let mut control: super::super::registry::ElementDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "index": 0, "id_hex": "0000000000000007", "label": "Preview", "kind": "button",
+                "value": null, "enabled": true, "rect": [20.0, 30.0, 100.0, 80.0],
+                "clip_rect": [0.0, 0.0, 90.0, 60.0]
+            }))
+            .unwrap();
+        assert_eq!(
+            control.visible_rect(),
+            Some(Rect::from_min_max(
+                egui::pos2(20.0, 30.0),
+                egui::pos2(90.0, 60.0)
+            ))
+        );
+        let change = Feedback::changed(8, "Document", "before", "after").unwrap();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            show_in(&ctx, [change.clone()]);
+            paint_guidance(
+                ui.painter(),
+                &[control.clone()],
+                None,
+                Color32::BLUE,
+                1.0,
+                false,
+            );
+            assert_eq!(current(&ctx)[0].feedback, change);
+        });
+        output.textures_delta.clear();
+        control.rect = [200.0, 200.0, 100.0, 80.0];
+        assert!(
+            control.visible_rect().is_none(),
+            "a scrolled-out target has no highlight"
+        );
+        control.clip_rect = None;
+        assert!(
+            control.visible_rect().is_some(),
+            "older plugin snapshots remain readable"
+        );
+    }
 
     #[test]
     fn verification_does_not_hide_a_write_and_navigation_can_stay_put() {

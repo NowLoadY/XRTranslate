@@ -191,6 +191,20 @@ pub struct VrRuntimeStatus {
     pub cards: Vec<VrSubtitleCard>,
 }
 
+impl VrRuntimeStatus {
+    fn disconnected(&mut self) {
+        self.steamvr_connected = false;
+        self.avatar_available = false;
+        self.avatar_present = false;
+        self.avatar_attention = false;
+        self.avatar_greeting = false;
+        self.avatar_error = None;
+        self.interaction_available = false;
+        self.interaction_error = None;
+        self.last_error = None;
+    }
+}
+
 #[derive(Debug)]
 pub enum VrCommand {
     Previews(
@@ -651,20 +665,12 @@ fn run_vr_worker(
                 Ok(VrCommand::Disconnect) => {
                     voice_bridge.lock().stop();
                     voice = None;
-                    status.lock().interaction_available = false;
                     avatar = None;
                     vr_overlay = None;
                     graphics = None;
                     vr_session = None;
                     is_overlay_visible = false;
-                    let mut st = status.lock();
-                    st.steamvr_connected = false;
-                    st.avatar_available = false;
-                    st.avatar_present = false;
-                    st.avatar_attention = false;
-                    st.avatar_greeting = false;
-                    st.avatar_error = None;
-                    st.last_error = None;
+                    status.lock().disconnected();
                 }
                 Ok(VrCommand::Previews(stream_id, is_typing, incoming)) => {
                     let previous_ids: Vec<_> = previews
@@ -850,8 +856,10 @@ fn run_vr_worker(
             settings.display_timeout_seconds,
         );
 
-        // Passive session monitor: detect if SteamVR was closed by user or if disabled
-        if vr_session.is_some() {
+        // Process Quit before rendering, even when no caption or avatar is visible.
+        // The plugin stays alive; only its OpenVR session is closed.
+        if let Some(session) = &vr_session {
+            let quit = session.poll_quit();
             // Process enumeration is a liveness check, not part of every frame.
             let running = if Instant::now() >= next_session_check {
                 next_session_check = Instant::now() + Duration::from_secs(1);
@@ -859,21 +867,18 @@ fn run_vr_worker(
             } else {
                 true
             };
-            if !running || !settings.enabled {
+            if quit || !running || !settings.enabled {
+                if quit {
+                    log::info!("SteamVR requested exit; disconnecting the overlay session");
+                }
                 voice_bridge.lock().stop();
                 voice = None;
-                status.lock().interaction_available = false;
                 avatar = None;
                 vr_overlay = None;
                 graphics = None;
                 vr_session = None;
                 is_overlay_visible = false;
-                let mut st = status.lock();
-                st.steamvr_connected = false;
-                st.avatar_available = false;
-                st.avatar_present = false;
-                st.avatar_attention = false;
-                st.avatar_greeting = false;
+                status.lock().disconnected();
             }
         }
 

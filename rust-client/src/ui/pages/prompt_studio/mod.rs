@@ -72,11 +72,33 @@ pub(crate) fn leave_page(
                 editor::save_before_switch(&snapshot, controller, &mut actions);
             }
             state.editor_open = false;
-            state.checked = None;
             data.insert_temp(state_id(), state);
         }
     });
     actions
+}
+
+/// The page and tutorial share one cached view of the editor's admission gate.
+pub(crate) fn editor_available(ctx: &egui::Context, beta: bool, project_root: &Path) -> bool {
+    let mut state = ctx.data(|data| data.get_temp::<PageState>(state_id()).unwrap_or_default());
+    if state.beta != beta
+        || state
+            .checked
+            .is_none_or(|time| time.elapsed() >= Duration::from_secs(1))
+    {
+        state.editor_allowed = editor_enabled(beta, project_root);
+        state.checked = Some(Instant::now());
+        state.beta = beta;
+    }
+    if beta {
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+    if !state.editor_allowed {
+        state.editor_open = false;
+    }
+    let allowed = state.editor_allowed;
+    ctx.data_mut(|data| data.insert_temp(state_id(), state));
+    allowed
 }
 
 pub(crate) fn render(
@@ -88,25 +110,10 @@ pub(crate) fn render(
     beta: bool,
     project_root: &Path,
 ) -> Vec<PromptStudioAction> {
+    let editor_allowed = editor_available(ui.ctx(), beta, project_root);
     let mut state = ui
         .ctx()
-        .data_mut(|data| data.get_temp::<PageState>(state_id()).unwrap_or_default());
-    // Only watch while this page is visible; file I/O stays out of the animation loop.
-    if state.beta != beta
-        || state
-            .checked
-            .is_none_or(|time| time.elapsed() >= Duration::from_secs(1))
-    {
-        state.editor_allowed = editor_enabled(beta, project_root);
-        state.checked = Some(Instant::now());
-        state.beta = beta;
-    }
-    if beta {
-        ui.ctx().request_repaint_after(Duration::from_secs(1));
-    }
-    if !state.editor_allowed {
-        state.editor_open = false;
-    }
+        .data(|data| data.get_temp::<PageState>(state_id()).unwrap_or_default());
 
     let mut actions = Vec::new();
     let compact = ui.available_width() < 600.0;
@@ -119,7 +126,7 @@ pub(crate) fn render(
     } else {
         ui.horizontal(|ui| {
             ui.heading(tr(language, "Translation style"));
-            if state.editor_allowed {
+            if editor_allowed {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if crate::ui::components::edit_button(ui, tr(language, "Edit prompts"))
                         .clicked()

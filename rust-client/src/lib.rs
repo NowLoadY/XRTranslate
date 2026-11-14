@@ -33,6 +33,7 @@ pub(crate) mod contributors;
 #[cfg(windows)]
 mod desktop_lifecycle;
 mod desktop_shortcut;
+mod diagnostics;
 mod director_audio;
 #[cfg(test)]
 mod director_feedback_tests;
@@ -724,6 +725,8 @@ struct XRTranslateApp {
     pub model_defaults_initialized: bool,
     pub usage_guidelines_accepted: bool,
     pub onboarding_page: usize,
+    companion_narration: ui::companion::Narration,
+    companion_presenter: ui::companion::Presenter,
     pub ui_language: UiLanguage,
     pub ui_theme: ui::theme::UiTheme,
     pub background_settings: ui::background::BackgroundSettings,
@@ -1881,6 +1884,8 @@ impl Default for XRTranslateApp {
             model_defaults_initialized: settings.model_defaults_initialized || !settings.first_run,
             usage_guidelines_accepted: settings.usage_guidelines_accepted,
             onboarding_page: 0,
+            companion_narration: ui::companion::Narration::default(),
+            companion_presenter: Default::default(),
             ui_language: settings.ui_language,
             ui_theme: settings.ui_theme,
             background_settings: settings.background_settings,
@@ -1979,6 +1984,12 @@ impl XRTranslateApp {
     }
 
     fn render_modal_layer(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        if let Some(tray) = &mut self.tray
+            && tray.render_close_prompt(ctx, self.ui_language)
+        {
+            return;
+        }
         #[cfg(not(target_os = "android"))]
         if let Some(id) = self.pending_model_restart
             && !ctx.memory(|memory| memory.has_focus(id))
@@ -5273,6 +5284,7 @@ impl eframe::App for XRTranslateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         self.notifications.install(ui.ctx());
+        diagnostics::install(ui.ctx(), self.project_root(), &self.server_url);
         self.history_archive.poll(ui.ctx());
         if let Some(error) = self.history_archive.error.take() {
             self.notify_error("Could not access translation history.", error);
@@ -5473,6 +5485,7 @@ impl eframe::App for XRTranslateApp {
             );
         ui::theme::set_custom_background(ui.ctx(), custom_background);
         if self.first_run {
+            ui::tutorial::cancel(ui.ctx(), self);
             self.audio_system.set_audio_studio_metering(false);
             let companion_layout = ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
@@ -5538,7 +5551,6 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_pages,
                             self.service_config.tts_is_configured(),
-                            &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
                             self.ui_language,
@@ -5567,7 +5579,6 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_pages,
                             self.service_config.tts_is_configured(),
-                            &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
                             self.ui_language,
@@ -5580,6 +5591,7 @@ impl eframe::App for XRTranslateApp {
             }
         }
 
+        ui::tutorial::before_page(ui.ctx(), self);
         self.audio_system.set_audio_studio_metering(
             !self.first_run && self.navigation.page == Page::AudioStudio,
         );
@@ -5758,7 +5770,8 @@ impl eframe::App for XRTranslateApp {
 
         self.render_modal_layer(ui.ctx());
         self.observe_companion_errors();
-        if !is_history_presentation {
+        ui::tutorial::controls(ui.ctx(), content.response.rect, self.ui_language);
+        if !is_history_presentation || ui::tutorial::active(ui.ctx()) {
             ui::companion::show(
                 ui.ctx(),
                 self,

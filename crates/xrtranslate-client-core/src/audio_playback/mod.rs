@@ -1,11 +1,2 @@
-//! Local audio playback shared by plugins.
-mod player;
-mod source;
-pub use player::AudioPlayer;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PlaybackStatus {
-    Playing,
-    Paused,
-    Stopped,
-}
+//! Existing client API; the lightweight player is also usable without the UI crate.
+pub use xrtranslate_audio::{AudioPlayer, Narration, PlaybackStatus};

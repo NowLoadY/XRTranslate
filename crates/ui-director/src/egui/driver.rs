@@ -130,6 +130,16 @@ impl Driver {
         self.frame_state.lock().unwrap().last_snapshot.clone()
     }
 
+    /// Controls rendered so far in this frame, including embedded surfaces.
+    /// Call after laying out the page when painting host-owned guidance.
+    pub fn rendered_snapshot(&self) -> FrameSnapshot {
+        let state = self.frame_state.lock().unwrap();
+        FrameSnapshot {
+            location: state.location.clone(),
+            elements: state.elements.clone(),
+        }
+    }
+
     /// The last complete frame, also used by UI queries. Capture when accepting
     /// a user instruction; later navigation must not change that instruction's context.
     pub fn location(&self) -> crate::Location {

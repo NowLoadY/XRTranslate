@@ -7,6 +7,8 @@ use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, Ri
 use xrtranslate_assets::remote::ConnectionChannel;
 use xrtranslate_assets::{ModelAssetId, ModelCapability, ModelLevel};
 
+mod model_import;
+
 use crate::{
     i18n,
     model_install::{
@@ -266,13 +268,15 @@ fn render_onboarding_social_icons(ui: &mut egui::Ui, language: i18n::UiLanguage)
         }
         ui.add_space(4.0);
     }
-    if onboarding_icon_button(
-        ui,
-        egui::Image::new(egui::include_image!(
-            "../../../../crates/xrtranslate-client-core/resources/icons/qq.svg"
-        )),
-        &i18n::tr(language, "QQ group"),
-    ) {
+    if language == i18n::UiLanguage::Chinese
+        && onboarding_icon_button(
+            ui,
+            egui::Image::new(egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/qq.svg"
+            )),
+            &i18n::tr(language, "QQ group"),
+        )
+    {
         ui.ctx()
             .data_mut(|data| data.insert_temp(egui::Id::unique("onboarding_qq_group"), true));
     }
@@ -332,6 +336,10 @@ fn onboarding_icon_button(ui: &mut egui::Ui, icon: egui::Image<'_>, tooltip: &st
 
 fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
     let id = egui::Id::unique("onboarding_qq_group");
+    if language != i18n::UiLanguage::Chinese {
+        ctx.data_mut(|data| data.remove::<bool>(id));
+        return;
+    }
     if !ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }
@@ -643,6 +651,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             ),
         ],
     );
+    render_model_task_state(ui, language, app.model_task_manager.state());
 }
 
 fn render_onboarding_model_cards(
@@ -665,6 +674,7 @@ fn render_onboarding_model_cards(
     let mut remote_fields = None;
     let mut account_action = None;
     let mut delete_model = None;
+    let mut import_model = None;
     let mut follow_translation = None;
     crate::ui::layout::responsive_columns(ui, capabilities.len(), 300.0, |ui, index| {
         let (category, capability, title) = &capabilities[index];
@@ -701,7 +711,7 @@ fn render_onboarding_model_cards(
             provider,
             package.map(|package| package.id),
             &levels,
-            !app.model_task_manager.is_busy(),
+            &app.model_task_manager,
             &local_availability,
             &app.account_connections,
             if index % 2 == 0 {
@@ -735,7 +745,13 @@ fn render_onboarding_model_cards(
         if let Some(asset_id) = result.delete_asset {
             delete_model = Some(asset_id);
         }
+        if let Some(import) = result.import_asset {
+            import_model = Some(import);
+        }
     });
+    if let Some((id, choice)) = import_model {
+        model_import::choose(app, id.into(), choice);
+    }
     if let Some(action) = account_action {
         if action.changes_account(&app.account_connections) {
             app.backend_manager.invalidate_runtime();
@@ -825,6 +841,7 @@ struct ModelConfigCardResult {
     remote_fields: Option<RemoteProviderFields>,
     account_action: Option<crate::account_connections::AccountAction>,
     delete_asset: Option<xrtranslate_assets::ModelAssetId>,
+    import_asset: Option<(ModelAssetId, model_import::Choice)>,
 }
 
 struct RemoteProviderFields {
@@ -1034,7 +1051,7 @@ fn onboarding_model_config_card(
     mut provider: Option<crate::service_config::OnboardingProviderState>,
     selected_asset: Option<ModelAssetId>,
     levels: &[NativeModelPackage],
-    delete_enabled: bool,
+    model_tasks: &crate::model_install::NativeModelTaskManager,
     local_availability: &crate::runtime_install::LocalModelAvailability,
     accounts: &crate::account_connections::AccountConnections,
     stroke_color: Color32,
@@ -1228,19 +1245,37 @@ fn onboarding_model_config_card(
                 let local_available = levels
                     .iter()
                     .any(|package| local_availability.supports(package.hardware));
-                ui.add_enabled_ui(local_available, |ui| {
-                    components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
-                        result.delete_asset = local_model_choices(
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 36.0).max(80.0);
+                    ui.add_enabled_ui(local_available, |ui| {
+                        components::combobox_ui_with_width(
                             ui,
-                            language,
-                            project_root,
-                            &mut asset_id,
-                            levels,
-                            delete_enabled,
-                            local_availability,
+                            (category, "model_level"),
+                            selected_label,
+                            Some(width),
+                            |ui| {
+                                result.delete_asset = local_model_choices(
+                                    ui,
+                                    language,
+                                    project_root,
+                                    &mut asset_id,
+                                    levels,
+                                    !model_tasks.is_busy(),
+                                    local_availability,
+                                );
+                            },
                         );
                     });
+                    if let Some(choice) = model_import::button(
+                        ui,
+                        language,
+                        !model_tasks.is_busy() && !selected_present && local_available,
+                        model_tasks.is_importing(asset_id),
+                    ) {
+                        result.import_asset = Some((asset_id, choice));
+                    }
                 });
+                model_import::progress(ui, language, model_tasks, asset_id.into());
                 if Some(asset_id) != selected_asset {
                     result.selected_asset = Some(asset_id);
                 }
@@ -1358,6 +1393,7 @@ fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             }
         },
     );
+    render_model_task_state(ui, app.ui_language, app.model_task_manager.state());
 }
 
 fn onboarding_surface(ui: &egui::Ui, color: Color32) -> Frame {
@@ -1490,6 +1526,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut selected_provider = None;
     let project_root = app.project_root();
     let mut delete_tts = None;
+    let mut import_model = None;
     let mut model_change = None;
     let mut voice_change = None;
     let mut remote_fields = None;
@@ -1601,8 +1638,21 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             {
                                 delete_tts = Some(package.id);
                             }
+                        } else if let Some(choice) = model_import::button(
+                            ui,
+                            language,
+                            package_enabled && !app.model_task_manager.is_busy(),
+                            app.model_task_manager.is_importing(package.id),
+                        ) {
+                            import_model = Some((package.id, choice));
                         }
                     });
+                    model_import::progress(
+                        ui,
+                        language,
+                        &app.model_task_manager,
+                        package.id.into(),
+                    );
                 }
                 if let Some(choice) = selected_choice {
                     for asset in &choice.model_assets {
@@ -1709,6 +1759,9 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     if let Some(asset_id) = delete_tts {
         app.request_model_resource_deletion(asset_id);
+    }
+    if let Some((id, choice)) = import_model {
+        model_import::choose(app, id.into(), choice);
     }
 
     if let Some((provider, asset, enabled)) = model_change {
@@ -1830,6 +1883,7 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let provider = app.service_config.onboarding_provider_state("ocr");
     let mut selected_provider = None;
     let mut delete_model = None;
+    let mut import_model = None;
     let color = Color32::from_rgb(155, 125, 239);
     onboarding_surface(ui, color).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1873,12 +1927,26 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     {
                         delete_model = Some(asset);
                     }
+                    if !installed
+                        && let Some(choice) = model_import::button(
+                            ui,
+                            language,
+                            !app.model_task_manager.is_busy(),
+                            app.model_task_manager.is_importing(asset),
+                        )
+                    {
+                        import_model = Some((asset, choice));
+                    }
                 });
+                model_import::progress(ui, language, &app.model_task_manager, asset.into());
             }
         }
     });
     if let Some(asset) = delete_model {
         app.request_model_resource_deletion(asset);
+    }
+    if let Some((id, choice)) = import_model {
+        model_import::choose(app, id.into(), choice);
     }
     if let Some(selected) = selected_provider {
         app.service_config
@@ -1980,6 +2048,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     let mut installs = Vec::new();
     let mut pauses = Vec::new();
     let mut delete_model = None;
+    let mut import_model = None;
 
     let configured = configured_model_packages(&project_root);
     let configuration_loaded = configured.is_ok();
@@ -2098,6 +2167,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             if !missing.is_empty() {
                 let active_downloads = missing.iter().filter(|item| {
                     !app.model_task_manager.is_model_paused(&item.id)
+                        && !app.model_task_manager.is_importing(&item.id)
                         && (app.model_task_manager.is_model_queued(&item.id)
                             || matches!(app.model_task_manager.state(),
                                 NativeModelTaskState::Installing { asset_id, .. } if *asset_id == item.id))
@@ -2120,6 +2190,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 );
                 let downloaded = missing
                     .iter()
+                    .filter(|item| !app.model_task_manager.is_importing(&item.id))
                     .filter_map(|item| {
                         app.model_task_manager
                             .model_download_progress(&item.id)
@@ -2136,7 +2207,10 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                             ui,
                             &label,
                             false,
-                            !app.runtime_installer.is_busy(),
+                            !app.runtime_installer.is_busy()
+                                && !missing
+                                    .iter()
+                                    .any(|item| app.model_task_manager.is_importing(&item.id)),
                             progress,
                         )
                         .clicked()
@@ -2177,11 +2251,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
 
         for item in &download_items {
             let batch = app.model_task_manager.batch_snapshot();
-            let is_active = batch
-                .as_ref()
-                .and_then(|batch| batch.current_asset_id.as_ref())
-                == Some(&item.id)
-                && busy;
+            let is_active = matches!(app.model_task_manager.state(),
+                NativeModelTaskState::Installing { asset_id, .. } if *asset_id == item.id);
+            let importing = app.model_task_manager.is_importing(&item.id);
             let queued_position = batch.as_ref().and_then(|batch| {
                 batch
                     .queued_packages
@@ -2196,6 +2268,8 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             let paused = app.model_task_manager.is_model_paused(&item.id);
             let action = if item.installed {
                 "Installed"
+            } else if importing {
+                "Importing"
             } else if paused {
                 "Resume"
             } else if is_active {
@@ -2207,7 +2281,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             } else {
                 "Download"
             };
-            let (clicked, delete_clicked) = render_download_card(
+            let (clicked, delete_clicked, import) = render_download_card(
                 ui,
                 language,
                 item,
@@ -2227,6 +2301,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             if delete_clicked {
                 delete_model = Some((item.id.clone(), item.detail.clone()));
             }
+            if let Some(choice) = import {
+                import_model = Some((item.id.clone(), choice));
+            }
             ui.add_space(8.0);
         }
     }
@@ -2245,6 +2322,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     }
     if let Some((id, label)) = delete_model {
         app.request_resource_deletion(id, &label);
+    }
+    if let Some((id, choice)) = import_model {
+        model_import::choose(app, id, choice);
     }
 
     render_model_task_state(ui, language, app.model_task_manager.state());
@@ -2288,9 +2368,11 @@ fn render_download_card(
     delete_enabled: bool,
     queued_position: Option<usize>,
     progress: Option<(u64, u64)>,
-) -> (bool, bool) {
+) -> (bool, bool, Option<model_import::Choice>) {
     let mut clicked = false;
     let mut delete_clicked = false;
+    let mut import = None;
+    let importing = action == "Importing";
     onboarding_surface(ui, item.stroke_color)
         .inner_margin(Margin::symmetric(18, 14))
         .show(ui, |ui| {
@@ -2309,7 +2391,7 @@ fn render_download_card(
                 let details_width = if compact {
                     ui.available_width()
                 } else {
-                    ui.available_width() - 200.0 - ui.spacing().item_spacing.x
+                    ui.available_width() - 236.0 - ui.spacing().item_spacing.x
                 };
                 ui.allocate_ui_with_layout(
                     egui::vec2(details_width, 0.0),
@@ -2363,8 +2445,24 @@ fn render_download_card(
                                 );
                             });
                     } else {
+                        import = model_import::button(
+                            ui,
+                            language,
+                            delete_enabled && enabled,
+                            importing,
+                        );
                         let action_label = queued_position.map_or_else(
                             || {
+                                if importing {
+                                    return format!(
+                                        "{} · {:.0}%",
+                                        i18n::tr(language, action),
+                                        progress
+                                            .filter(|(_, total)| *total > 0)
+                                            .map_or(0.0, |(done, total)| done as f64 * 100.0
+                                                / total as f64)
+                                    );
+                                }
                                 format!(
                                     "{} · {}",
                                     i18n::tr(language, action),
@@ -2380,7 +2478,7 @@ fn render_download_card(
                                     ui,
                                     &action_label,
                                     false,
-                                    enabled,
+                                    enabled && !importing,
                                     progress
                                         .filter(|(_, total)| *total > 0)
                                         .map(|(bytes, total)| bytes as f32 / total as f32),
@@ -2399,7 +2497,7 @@ fn render_download_card(
                 });
             });
         });
-    (clicked, delete_clicked)
+    (clicked, delete_clicked, import)
 }
 
 fn render_runtime_installation_section(

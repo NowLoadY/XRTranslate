@@ -6,7 +6,8 @@ function Initialize-WindowsSpeechLibraries {
     $lock = Get-Content (Join-Path $ProjectRoot 'Cargo.lock') -Raw
     $match = [regex]::Match($lock, '(?m)^name = "sherpa-onnx-sys"\r?\nversion = "([^"]+)"')
     if (-not $match.Success) { throw 'Cannot determine the locked speech library version.' }
-    $name = "sherpa-onnx-v$($match.Groups[1].Value)-win-x64-static-MT-Release-lib"
+    # Match Rust's dynamic MSVC runtime (/MD); Sherpa itself remains statically linked.
+    $name = "sherpa-onnx-v$($match.Groups[1].Value)-win-x64-static-MD-Release-lib"
     $archive = Join-Path $ProjectRoot "third_party/sherpa-onnx/$name.tar.xz"
     if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
         throw "Missing bundled speech libraries. Restore this file from the repository: $archive"

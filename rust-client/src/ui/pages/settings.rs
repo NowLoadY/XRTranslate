@@ -1,6 +1,7 @@
 use crate::ui::components::{self, SubNavItem, section, sub_sidebar};
 use eframe::egui;
 mod avatar;
+mod developer;
 mod models;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
@@ -11,6 +12,7 @@ pub enum SettingsSection {
     Plugins,
     BackendServer,
     Avatar,
+    Developer,
 }
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
@@ -54,6 +56,11 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             icon: "",
             label: crate::i18n::tr(app.ui_language, "Avatar"),
         },
+        SubNavItem {
+            id: SettingsSection::Developer,
+            icon: "",
+            label: crate::i18n::tr(app.ui_language, "Developer options"),
+        },
     ];
 
     let content = |ui: &mut egui::Ui, app: &mut crate::XRTranslateApp| {
@@ -72,6 +79,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 render_general_appearance_section(app, ui);
                             }
                             SettingsSection::Models => models::render(app, ui),
+                            SettingsSection::Developer => developer::render(app, ui),
                             SettingsSection::Avatar => {
                                 if avatar::render(ui, &mut app.avatar_appearance, app.ui_language) {
                                     app.save_settings();
@@ -825,11 +833,17 @@ fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             ui.vertical(|ui| {
                 ui.label("URL:");
                 ui.add_space(4.0);
-                if crate::ui::components::text_edit_ui(
+                let response = crate::ui::components::text_edit_ui(
                     ui,
                     "settings_server_url",
                     egui::TextEdit::singleline(&mut app.server_url)
                         .desired_width(ui.available_width()),
+                );
+                if ui_director::egui::text_response(
+                    ui,
+                    "Backend WebSocket URL",
+                    &mut app.server_url,
+                    response,
                 )
                 .changed()
                 {
@@ -839,11 +853,17 @@ fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         } else {
             crate::ui::layout::flow_row(ui, |ui| {
                 ui.label("URL:");
-                if crate::ui::components::text_edit_ui(
+                let response = crate::ui::components::text_edit_ui(
                     ui,
                     "settings_server_url",
                     egui::TextEdit::singleline(&mut app.server_url)
                         .desired_width((ui.available_width() - 100.0).clamp(240.0, 360.0)),
+                );
+                if ui_director::egui::text_response(
+                    ui,
+                    "Backend WebSocket URL",
+                    &mut app.server_url,
+                    response,
                 )
                 .changed()
                 {

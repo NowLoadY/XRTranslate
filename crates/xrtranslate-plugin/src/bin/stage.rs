@@ -1,5 +1,7 @@
 //! Optional build helper. Manual copies use exactly the same directory layout.
 use std::{fs, io, path::Path};
+#[path = "install.rs"]
+mod install;
 #[path = "sdk.rs"]
 mod sdk;
 
@@ -57,27 +59,17 @@ fn stage(
         }
     }
     xrtranslate_plugin::directory::read(&root, None).map_err(io::Error::other)?;
-    let previous = temporary.path().join("previous");
     if destination.exists() {
         let installed =
             xrtranslate_plugin::directory::read(destination, None).map_err(io::Error::other)?;
         if installed.id != manifest.id || fs::symlink_metadata(destination)?.is_symlink() {
             return Err("Destination must be a directory for the same plugin".into());
         }
-        fs::rename(destination, &previous)?;
     }
-    if let Err(error) = fs::rename(&root, destination) {
-        if previous.exists() {
-            // Keep the old install recoverable even if the destination becomes unavailable.
-            let recovery = temporary.keep();
-            fs::rename(recovery.join("previous"), destination)?;
-            fs::remove_dir_all(recovery)?;
-        }
-        return Err(error.into());
-    }
+    install::publish(temporary, destination)?;
     Ok(())
 }
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args
         .first()
@@ -98,4 +90,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Path::new(&args[3]),
         replace,
     )
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

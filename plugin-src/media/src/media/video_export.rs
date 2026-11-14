@@ -306,6 +306,7 @@ mod tests {
                 duration_ms: 400,
                 text: "Hello".into(),
                 peaks: Vec::new(),
+                ..Default::default()
             }],
         });
         task.playback_tracks = Some(vec![PlaybackTrack::Vocals, PlaybackTrack::Background]);

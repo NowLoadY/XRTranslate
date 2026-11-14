@@ -7,12 +7,16 @@ mod composer;
 mod dialogue;
 mod feedback;
 mod inbox;
+mod narration;
 mod parking;
 mod placement;
+mod presenter;
 mod reader;
 
 pub(crate) use feedback::TranslationWork;
 pub(crate) use inbox::Inbox;
+pub(crate) use narration::Narration;
+pub(crate) use presenter::Presenter;
 pub(crate) use reader::{Command, Reader};
 
 use crate::{
@@ -92,7 +96,7 @@ struct Guide {
     route: Route,
     cue: Cue,
     pending: Option<(Cue, f64)>,
-    announced: u32,
+    announced: u64,
     center: Pos2,
     velocity: Vec2,
     opacity: f32,
@@ -262,9 +266,23 @@ impl Guide {
     }
 
     fn say(&mut self, line: impl Into<Message>) {
-        self.line = line.into();
+        let line = line.into();
+        if matches!(line, Message::Tutorial { .. })
+            && !matches!(self.line, Message::Tutorial { .. })
+        {
+            self.speech = Speech::default();
+        }
+        self.line = line;
         self.last_spoken = self.clock;
-        self.speech.say(self.line.text(self.language), self.clock);
+        if let Some(seconds) = narration::duration(&self.line, self.language) {
+            self.speech
+                .say_timed(self.line.text(self.language), self.clock, seconds);
+        } else {
+            self.speech.say(self.line.text(self.language), self.clock);
+        }
+        if matches!(self.line, Message::Tutorial { .. }) {
+            self.speech.hold();
+        }
     }
 
     fn pose(&mut self, ctx: &egui::Context, expression: Expression, gaze: Gaze) -> Pose {
@@ -321,6 +339,9 @@ impl Guide {
     }
 
     fn announce_pending(&mut self) {
+        if matches!(self.line, Message::Tutorial { .. }) {
+            return;
+        }
         if let Some((cue, since)) = self.pending
             && self.clock - since >= 1.2
             && self.speech.finished(self.clock)
@@ -349,6 +370,17 @@ impl Guide {
     }
 
     fn read_mail(&mut self, inbox: &mut Inbox) {
+        if let Some(message) = inbox.tutorial() {
+            self.pending = None;
+            if &self.line != message {
+                self.say(message.clone());
+            }
+            return;
+        }
+        if matches!(self.line, Message::Tutorial { .. }) {
+            self.speech.dismiss(self.clock);
+            self.line = Message::Localized("");
+        }
         if let Some(message) = inbox.read_acknowledgement() {
             self.pending = None;
             self.say(message);
@@ -384,7 +416,7 @@ impl Guide {
                 .clone()
                 .filter(|_| matches!(topic, Attention::Avatar | Attention::Control(_)))
                 .unwrap_or_else(|| scene.reply(topic).into());
-            if self.line != line {
+            if !line.text(self.language).is_empty() {
                 self.say(line);
             }
         }
@@ -417,14 +449,20 @@ pub(crate) fn execute_command(app: &mut crate::XRTranslateApp, command: Command)
 }
 
 pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout: Layout) {
+    if app.companion_presenter.paint(ctx, &app.avatar_appearance) {
+        app.companion_narration.stop();
+        return;
+    }
     let vr = surface_status(app);
-    if desktop_active(app) || vr.present {
+    let touring = super::tutorial::active(ctx);
+    if !touring && (desktop_active(app) || vr.present) {
         tick_background(ctx, app);
         return;
     }
     // Navigation can change while the old page is still being drawn. Wait for
     // the matching layout before consuming its companion entry transition.
     if app.first_run != matches!(&layout, Layout::Onboarding(_)) {
+        app.companion_narration.stop();
         ctx.request_repaint();
         return;
     }
@@ -504,12 +542,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let hidden = app.modal_dialog.open
         || ctx.memory(|memory| memory.top_modal_layer().is_some())
         || screen.height() < small * 4.0;
-    if hidden {
+    if hidden || touring {
         state.composer.close(ctx);
+    }
+    if touring && let Ok(mut overlay) = app.overlay_manager.lock() {
+        overlay.present_companion(Presentation::default());
     }
     let vr_active = vr.available;
     let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
-    let paused = !interactive || pressed || state.composer.open;
+    // Page controls must not freeze speech. Keep only placement and new hover
+    // explanations still while the user holds a button or operates a popup.
+    let paused = hidden || !(focused || vr_active) || state.composer.open;
+    let position_locked = !interactive || pressed || state.composer.open;
     let visual_dt = (wall - state.last_wall).clamp(0.0, 0.05) as f32;
     let elapsed_wall = if paused || state.paused {
         0.0
@@ -545,11 +589,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     );
     let small = dock.map_or(small, |spot| spot.radius);
     let available = !hidden
-        && (state.composer.open
+        && (touring
+            || state.composer.open
             || state.stage != Stage::Ready
             || dock.is_some()
             || state.clock < state.resume_at);
-    if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
+    if touring || matches!(state.line, Message::Tutorial { .. }) {
+        state.read_mail(&mut app.companion_inbox);
+    } else if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
         state.announce_pending();
         state.read_mail(&mut app.companion_inbox);
     }
@@ -557,9 +604,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let mut entrance_frame = state.welcome_frame(&entrance, available && !paused);
     // Hovering controls may explain them, but never sends the avatar across the
     // page. Parking preserves clear drop positions and rechecks occupied ones.
+    let tutorial_panel = super::tutorial::panel(ctx);
     let target = if !available {
         None
-    } else if paused || state.clock < state.resume_at {
+    } else if touring {
+        Some(super::tutorial::avatar_position(page_bounds, small))
+    } else if position_locked || state.clock < state.resume_at {
         Some(state.center)
     } else if let Some(spot) = dock {
         Some(spot.center)
@@ -576,7 +626,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         target.map(|target| placement::constrain(target, size, screen))
     };
-    let opacity = if entrance_frame.is_some()
+    let opacity = if touring
+        || entrance_frame.is_some()
         || !state.speech.finished(state.clock)
         || state.clock - state.last_activity < 3.0
     {
@@ -584,7 +635,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         0.6
     };
-    if let Some(frame) = &entrance_frame {
+    if touring && available {
+        state.center = target.unwrap_or(home);
+        state.velocity = Vec2::ZERO;
+        state.relocating = false;
+        state.opacity = 1.0;
+    } else if let Some(frame) = &entrance_frame {
         // Authored welcome movement stays visible; automatic daily relocation
         // continues to use the quiet fade-out/move/fade-in path below.
         state.center = frame.center;
@@ -596,12 +652,16 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             state.fade_to(1.0, visual_dt);
         }
     } else {
-        // Pausing a relocation preserves its opacity until release.
+        // Holding a control preserves placement without stopping the dialogue clock.
         state.move_to(
             target,
             size,
             opacity,
-            if paused && available { 0.0 } else { visual_dt },
+            if position_locked && available {
+                0.0
+            } else {
+                visual_dt
+            },
         );
     }
     let mut anchor = state.center;
@@ -610,7 +670,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state_id(),
         &mut anchor,
         size,
-        interactive && available && !state.relocating && state.opacity >= 0.25,
+        interactive && available && !touring && !state.relocating && state.opacity >= 0.25,
     );
     if response.clicked() {
         state.composer.toggle(ctx);
@@ -644,7 +704,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let focus = Target::read(ctx, layout.as_ref(), &response);
     let hovered = focus.map(|target| target.attention);
     if state.stage == Stage::Ready
-        && !paused
+        && !touring
+        && interactive
+        && !pressed
         && !state.composer.open
         && !ctx.text_edit_focused()
         && state.clock >= state.resume_at
@@ -674,6 +736,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         reaction.unwrap_or(Expression::Calm)
     };
+    app.companion_narration.sync(
+        &state,
+        available && !hidden && !touring && !state.composer.open && !state.paused,
+    );
     let mut pose = state.pose(ctx, expression, gaze);
     if let Some(frame) = entrance_frame {
         pose.gaze.yaw = frame.yaw;
@@ -689,11 +755,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
     if state.opacity > 0.0 {
-        ui_director::egui::feedback::paint(
-            &ctx.layer_painter(layer).with_clip_rect(screen),
-            Some((anchor, size)),
-            crate::ui::theme::primary(),
-        );
+        if touring {
+            super::tutorial::paint(
+                ctx,
+                &ctx.layer_painter(layer).with_clip_rect(screen),
+                language,
+            );
+        } else {
+            ui_director::egui::feedback::paint(
+                &ctx.layer_painter(layer).with_clip_rect(screen),
+                Some((anchor, size)),
+                crate::ui::theme::primary(),
+            );
+        }
         app.avatar_appearance
             .model()
             .paint(&painter, state_id(), anchor, size, pose);
@@ -702,7 +776,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         && state.speech.paint_avoiding(
             &painter,
             if state.stage == Stage::Ready {
-                screen.shrink(12.0)
+                let mut bounds = screen.shrink(12.0);
+                if touring {
+                    bounds.min.x = bounds.min.x.max(page_bounds.left() + 12.0);
+                }
+                bounds
             } else {
                 bounds
             },
@@ -710,7 +788,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             size,
             state.clock,
             visual_dt,
-            state.parking.occupied(),
+            if touring {
+                tutorial_panel.as_slice()
+            } else {
+                state.parking.occupied()
+            },
             speed < 12.0
                 && target.is_none_or(|target| anchor.distance(target) < 2.0)
                 && !response.dragged(),
@@ -764,12 +846,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         // Sleep once settled; pointer events and Pose's scheduled blink wake us.
         let moving = state.stage != Stage::Ready
             || target.is_some_and(|target| state.center.distance(target) > 1.0);
-        let dwelling = state.pending.is_some()
-            || state.candidate != state.focus.map(|target| target.attention)
-            || hovered.is_some_and(|topic| topic.bit() != 0 && state.mentioned & topic.bit() == 0);
+        let dwelling = !touring
+            && (state.pending.is_some()
+                || state.candidate != state.focus.map(|target| target.attention)
+                || hovered
+                    .is_some_and(|topic| topic.bit() != 0 && state.mentioned & topic.bit() == 0));
         let fading = state.relocating
             || (state.opacity - if available { opacity } else { 0.0 }).abs() > 0.001;
-        ctx.request_repaint_after(if moving || (talking && available) || fading {
+        let speaking = talking && (!touring || !state.speech.completed(state.clock));
+        ctx.request_repaint_after(if moving || (speaking && available) || fading {
             Duration::from_millis(16)
         } else if dwelling {
             Duration::from_millis(80)
@@ -788,11 +873,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             pose,
             speech: state.speech.clone(),
             clock: state.clock,
-            visible: vr_active,
+            visible: vr_active && !touring,
             motion: Some(state.motion.on_surface(pose)),
         },
     );
-    if vr_active {
+    if vr_active && !touring {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
@@ -807,8 +892,22 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
     let mut state = ctx
         .data(|data| data.get_temp::<Guide>(state_id()))
         .unwrap_or_else(|| Guide::new(0.0, app.ui_language, Pos2::ZERO, &scene, false));
+    if super::tutorial::active(ctx) {
+        app.companion_narration.stop();
+        state.background_tick = None;
+        state.paused = true;
+        if let Ok(mut overlay) = app.overlay_manager.lock() {
+            overlay.present_companion(Presentation::default());
+        }
+        present(app, Presentation::default());
+        ctx.data_mut(|data| data.insert_temp(state_id(), state));
+        return;
+    }
     if !desktop && !vr.available {
         state.background_tick = None;
+        state.paused = true;
+        state.follow_scene(&scene);
+        app.companion_narration.sync(&state, false);
         present(app, Presentation::default());
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
@@ -831,6 +930,7 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
     }
     state.announce_pending();
     state.read_mail(&mut app.companion_inbox);
+    app.companion_narration.sync(&state, true);
     let expression = state
         .feedback
         .update(app, state.clock, vr.attention, false)
@@ -892,6 +992,48 @@ fn smooth(t: f32) -> f32 {
 fn present(app: &crate::XRTranslateApp, presentation: Presentation) {
     app.plugin_host
         .publish("companion.presentation", serde_json::json!(presentation));
+}
+
+#[cfg(test)]
+mod tutorial_tests {
+    use super::*;
+
+    #[test]
+    fn skipping_interrupts_typing_and_exit_releases_the_inbox() {
+        let scene = dialogue::Context {
+            hint: None,
+            route: Route::Page(crate::ui::Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+            automatic: false,
+        };
+        let mut guide = Guide::new(0.0, UiLanguage::English, Pos2::ZERO, &scene, false);
+        let mut inbox = Inbox::default();
+        inbox.post("Welcome");
+        inbox.guide(1, "A long explanation that is still being typed.");
+        guide.read_mail(&mut inbox);
+        guide.speech.advance(0.0);
+        assert!(!guide.speech.completed(0.0));
+        inbox.guide(2, "Next feature.");
+        guide.read_mail(&mut inbox);
+        assert_eq!(guide.line.text(UiLanguage::English), "Next feature.");
+        assert!(!guide.speech.finished(100.0));
+        // Rereading the same slot must not restart the sentence every frame.
+        guide.clock = 1.0;
+        guide.read_mail(&mut inbox);
+        assert_eq!(guide.last_spoken, 0.0);
+        inbox.end_guide();
+        guide.read_mail(&mut inbox);
+        assert!(guide.speech.finished(guide.clock));
+        assert!(!matches!(guide.line, Message::Tutorial { .. }));
+        guide.clock = 4.0;
+        guide.read_mail(&mut inbox);
+        assert_eq!(guide.line, Message::Localized("Welcome"));
+        assert!(
+            inbox.read().is_none(),
+            "skipped narration must never enter the normal backlog"
+        );
+    }
 }
 pub(super) fn surface_status(
     app: &crate::XRTranslateApp,

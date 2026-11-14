@@ -198,6 +198,7 @@ fn render_detail_contents(
                 language,
                 optimizing,
                 snapshot.can_synthesize,
+                snapshot.can_clone_speech,
                 ui,
             );
         });
@@ -220,6 +221,7 @@ fn render_detail_contents(
                     language,
                     optimizing,
                     snapshot.can_synthesize,
+                    snapshot.can_clone_speech,
                     ui,
                 );
             });
@@ -243,6 +245,7 @@ fn render_detail_contents(
                                 language,
                                 optimizing,
                                 snapshot.can_synthesize,
+                                snapshot.can_clone_speech,
                                 ui,
                             );
                         });
@@ -270,6 +273,7 @@ fn render_detail_contents(
                         language,
                         optimizing,
                         snapshot.can_synthesize,
+                        snapshot.can_clone_speech,
                         ui,
                     );
                 });

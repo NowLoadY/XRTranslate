@@ -102,7 +102,7 @@ pub enum OverlayEvent {
     ResultChanging,
     ResultRegionChanged(Option<OverlayRegion>),
     CompanionDetached(bool),
-    CompanionRegionChanged(Option<OverlayRegion>),
+    ControllerRegionChanged(Option<OverlayRegion>),
     QuickTranslation {
         id: String,
         action: QuickTranslationAction,

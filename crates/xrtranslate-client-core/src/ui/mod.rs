@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod components;
+pub mod error_report;
 pub mod fonts;
 pub mod layout;
 pub mod modal;

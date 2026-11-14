@@ -15,12 +15,40 @@ impl SpeechTrack {
         hash.finish()
     }
 
-    pub(crate) fn completed(&self, task: &super::MediaTask) -> usize {
-        task.subtitles
-            .cues()
+    pub(in crate::media) fn clip_for_cue(
+        &self,
+        cue: &crate::media::subtitles::SubtitleCue,
+    ) -> Option<&SpeechClip> {
+        self.clips
             .iter()
-            .filter(|cue| self.overlaps(cue.start_ms, cue.end_ms))
-            .count()
+            .find(|clip| {
+                clip.origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.cue_id == cue.id)
+            })
+            .or_else(|| {
+                self.clips
+                    .iter()
+                    .find(|clip| clip.origin.is_none() && clip.start_ms == cue.start_ms)
+            })
+    }
+
+    pub(in crate::media) fn current(
+        &self,
+        task: &super::MediaTask,
+        cue: &crate::media::subtitles::SubtitleCue,
+    ) -> bool {
+        self.clip_for_cue(cue).is_some_and(|clip| {
+            clip.origin
+                .as_ref()
+                .map_or(self.language.as_str(), |origin| origin.language.as_str())
+                == task.target_language
+                && clip.path.is_file()
+                && Some(clip.text.trim()) == cue.translated_text.as_deref().map(str::trim)
+                && clip.origin.as_ref().is_none_or(|origin| {
+                    origin.start_ms == cue.start_ms && origin.end_ms == cue.end_ms
+                })
+        })
     }
 
     pub(crate) fn overlaps(&self, start_ms: i64, end_ms: i64) -> bool {
@@ -31,6 +59,9 @@ impl SpeechTrack {
 }
 
 impl SpeechClip {
+    pub(in crate::media) fn files(&self) -> impl Iterator<Item = &std::path::PathBuf> {
+        std::iter::once(&self.path).chain(self.previous.as_deref().map(|clip| &clip.path))
+    }
     pub(crate) fn end_ms(&self) -> i64 {
         self.start_ms.saturating_add(self.duration_ms)
     }

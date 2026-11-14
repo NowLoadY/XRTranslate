@@ -299,10 +299,20 @@ impl OpenVrApi {
             return Err("SteamVR does not provide IVROverlay_028. Please update SteamVR.".into());
         }
 
+        let system_interface = unsafe {
+            (self.vr_get_generic_interface)(c"FnTable:IVRSystem_026".as_ptr(), &mut iface_err)
+        };
+        if system_interface.is_null() || iface_err != 0 {
+            unsafe { (self.vr_shutdown)() };
+            return Err("SteamVR does not provide IVRSystem_026. Please update SteamVR.".into());
+        }
+
         Ok(OpenVrSession {
             inner: Rc::new(OpenVrSessionInner {
                 api: Arc::clone(self),
                 overlay_interface,
+                system_interface: system_interface.cast(),
+                overlays: RefCell::new(Vec::new()),
                 graphics: RefCell::new(Vec::new()),
             }),
         })
@@ -319,6 +329,8 @@ pub struct OpenVrSession {
 struct OpenVrSessionInner {
     api: Arc<OpenVrApi>,
     overlay_interface: *mut c_void,
+    system_interface: *const IVRSystemFnTable,
+    overlays: RefCell<Vec<u64>>,
     // Valve requires shutdown before releasing submitted GPU resources.
     graphics: RefCell<Vec<Box<dyn Any>>>,
 }
@@ -345,7 +357,14 @@ struct IVRSystemFnTable {
     _on_desktop: usize,
     _display_visibility: usize,
     tracking_pose: unsafe extern "system" fn(i32, f32, *mut TrackedPose, u32), // 12
+    _properties_events_and_input: [usize; 34],                                 // 13..46
+    acknowledge_quit_exiting: unsafe extern "system" fn(),                     // 47
 }
+
+const _: () = assert!(
+    std::mem::offset_of!(IVRSystemFnTable, acknowledge_quit_exiting)
+        == 47 * std::mem::size_of::<usize>()
+);
 #[repr(C)]
 struct IVRCompositorFnTable {
     _prefix: [usize; 41],
@@ -492,6 +511,29 @@ impl HmdMatrix34 {
 }
 
 impl OpenVrSession {
+    /// Pump every overlay, including hidden and idle surfaces. SteamVR sends
+    /// Quit here before terminating clients that fail to disconnect in time.
+    pub fn poll_quit(&self) -> bool {
+        let table = unsafe { &*(self.inner.overlay_interface as *const IVROverlayFnTable) };
+        let mut event = OverlayEvent::default();
+        for &handle in self.inner.overlays.borrow().iter() {
+            while unsafe {
+                (table.poll_next_overlay_event)(
+                    handle,
+                    &mut event,
+                    std::mem::size_of::<OverlayEvent>() as u32,
+                )
+            } {
+                if event.event_type == 700 {
+                    // VREvent_Quit
+                    unsafe { ((*self.inner.system_interface).acknowledge_quit_exiting)() };
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(super) fn dashboard_visible(&self) -> bool {
         let table = unsafe { &*(self.inner.overlay_interface as *const IVROverlayFnTable) };
         unsafe { (table.is_dashboard_visible)() }
@@ -511,20 +553,10 @@ impl OpenVrSession {
     }
 
     pub(super) fn avatar_tracking(&self) -> Result<AvatarTracking, String> {
-        let interface = |name: &CStr| {
-            let mut error = 0;
-            let ptr =
-                unsafe { (self.inner.api.vr_get_generic_interface)(name.as_ptr(), &mut error) };
-            if ptr.is_null() || error != 0 {
-                Err("SteamVR overlay interfaces unavailable; update SteamVR".to_owned())
-            } else {
-                Ok(ptr)
-            }
-        };
         Ok(AvatarTracking {
             session: Rc::clone(&self.inner),
-            system: interface(c"FnTable:IVRSystem_026")?.cast(),
-            compositor: interface(c"FnTable:IVRCompositor_029")?.cast(),
+            system: self.inner.system_interface,
+            compositor: self.interface(c"FnTable:IVRCompositor_029")?.cast(),
         })
     }
     pub fn create_overlay(&self, key: &str, name: &str) -> Result<OpenVrOverlay, String> {
@@ -536,6 +568,7 @@ impl OpenVrSession {
         if error != 0 || handle == OVERLAY_HANDLE_INVALID {
             return Err(format!("Failed to create OpenVR overlay (error: {error})"));
         }
+        self.inner.overlays.borrow_mut().push(handle);
         let overlay = OpenVrOverlay {
             session: Rc::clone(&self.inner),
             handle,
@@ -604,6 +637,10 @@ pub struct OpenVrOverlay {
 
 impl Drop for OpenVrOverlay {
     fn drop(&mut self) {
+        self.session
+            .overlays
+            .borrow_mut()
+            .retain(|&handle| handle != self.handle);
         let error = unsafe { (self.table().destroy_overlay)(self.handle) };
         if error != 0 {
             log::warn!("DestroyOverlay failed: {error}");
@@ -657,26 +694,12 @@ impl OpenVrOverlay {
             // alpha is straight (text) or premultiplied (stereo composition).
             color_space: 1,
         };
-        self.drain_events();
         check_overlay_error("SetOverlayTexture", unsafe {
             (self.table().set_overlay_texture)(self.handle, &texture)
         })
     }
     fn table(&self) -> &IVROverlayFnTable {
         unsafe { &*(self.session.overlay_interface as *const IVROverlayFnTable) }
-    }
-
-    fn drain_events(&self) {
-        // SteamVR queues ImageLoaded for raw uploads. Leaving those unread
-        // exhausts its queue after about 200 updates and makes uploads fail.
-        let mut event = OverlayEvent::default();
-        while unsafe {
-            (self.table().poll_next_overlay_event)(
-                self.handle,
-                &mut event,
-                std::mem::size_of::<OverlayEvent>() as u32,
-            )
-        } {}
     }
 
     pub fn set_auto_hmd_hud_transform(
@@ -750,7 +773,6 @@ impl OpenVrOverlay {
                 "Invalid buffer length for raw RGBA overlay".into(),
             ));
         }
-        self.drain_events();
         check_overlay_error("SetOverlayRaw", unsafe {
             (self.table().set_overlay_raw)(
                 self.handle,
@@ -905,6 +927,9 @@ fn candidate_dll_paths() -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -932,6 +957,7 @@ mod tests {
         // Keep hidden. Cross the event-queue capacity using one persistent image;
         // a single upload misses failures after sustained caption updates.
         for frame in 0..256 {
+            assert!(!session.poll_quit());
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel[..3].fill(23 + (frame % 191) as u8);
             }
@@ -974,6 +1000,7 @@ mod tests {
         let visible = std::env::var_os("XRT_VR_TEST_VISIBLE").is_some();
         let mut render_time = std::time::Duration::ZERO;
         for frame in 0..128 {
+            assert!(!session.poll_quit());
             let card = VrSubtitleCard {
                 id: frame,
                 source: if frame < 64 {

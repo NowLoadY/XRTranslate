@@ -11,6 +11,7 @@ const MAX_REFERENCE_MS: i64 = 20_000;
 pub(super) struct Prepared {
     pub id: String,
     pub audio: String,
+    pub range: [i64; 2],
 }
 
 #[derive(Default)]
@@ -32,6 +33,14 @@ impl References {
 
     pub fn choose(&self, task: &MediaTask, index: usize) -> Result<Prepared, String> {
         let cue = &task.subtitles.cues()[index];
+        if task.speech_reference_range.is_none()
+            && let Some(speaker) = speaker(cue)
+        {
+            let id = format!("speaker:{speaker}");
+            if task.speech_voices.iter().any(|voice| voice.id == id) {
+                return voices::saved(task, &id);
+            }
+        }
         if let Some([start, end]) = task.speech_reference_range {
             let id = format!("selected:{start}:{end}");
             if let Some(previous) = self
@@ -44,6 +53,7 @@ impl References {
             return Ok(Prepared {
                 id,
                 audio: audio(task, start, end)?,
+                range: [start, end],
             });
         }
         // A known speaker keeps one voice. With no speaker labels, a fresh long
@@ -65,6 +75,10 @@ impl References {
                     cue.end_ms.min(cue.start_ms + MAX_REFERENCE_MS)
                 ),
                 audio,
+                range: [
+                    cue.start_ms,
+                    cue.end_ms.min(cue.start_ms + MAX_REFERENCE_MS),
+                ],
             });
         }
         for [start, end] in candidates(task.subtitles.cues(), index) {
@@ -73,7 +87,11 @@ impl References {
                     || format!("passage:{start}:{end}"),
                     |speaker| format!("speaker:{speaker}"),
                 );
-                return Ok(Prepared { id, audio });
+                return Ok(Prepared {
+                    id,
+                    audio,
+                    range: [start, end],
+                });
             }
         }
         self.previous(task, index).ok_or_else(|| "No suitable original voice reference was found. Select at least 5 seconds of clear speech on the vocal timeline.".into())

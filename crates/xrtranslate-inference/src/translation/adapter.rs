@@ -6,6 +6,7 @@ use xrtranslate_prompt::{PromptExecutionTrace, PromptMessage};
 
 use super::{
     TranslationOptions, TranslationPromptProfile, TranslationResult,
+    history::{HistoryBudget, history_tokens},
     profile::{registered, translation_output_rejection},
     transport::{ChatTransport, RequestFormat},
 };
@@ -24,6 +25,7 @@ pub struct TranslationAdapter<C> {
     request_format: RequestFormat,
     reasoning_effort: Option<String>,
     supports_json_output: bool,
+    history: HistoryBudget,
 }
 
 impl<C> TranslationAdapter<C> {
@@ -42,6 +44,7 @@ impl<C> TranslationAdapter<C> {
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
             supports_json_output: false,
+            history: HistoryBudget::default(),
         })
     }
 
@@ -65,6 +68,7 @@ impl<C> TranslationAdapter<C> {
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
             supports_json_output: false,
+            history: HistoryBudget::default(),
         })
     }
 
@@ -94,6 +98,7 @@ impl<C> TranslationAdapter<C> {
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
             supports_json_output: false,
+            history: HistoryBudget::default(),
         })
     }
 
@@ -145,16 +150,24 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
             payload["response_format"] = serde_json::json!({"type":"json_schema","json_schema":{"name":"response","strict":false,"schema":schema}});
         }
         let started = std::time::Instant::now();
-        let mut completion = self.chat.complete(payload).await.map_err(|error| {
-            tracing::warn!(operation = "ask", model = %self.model, elapsed_ms = started.elapsed().as_millis(), error = %error, "Model inference failed");
-            error
-        })?;
-        tracing::info!(operation = "ask", model = %self.model, messages = messages.len(), elapsed_ms = started.elapsed().as_millis(), usage = ?completion.usage, "Model inference completed");
-        completion.text = crate::openai::remove_completion_markers(&completion.text);
-        if completion.text.is_empty() {
-            return Err(InferenceError::EmptyOutput { operation: "ask" });
+        let mut record =
+            crate::diagnostics::RequestRecord::start("Instruction", &payload, Vec::new());
+        let result = async {
+            let mut completion = self.chat.complete(payload).await.map_err(|error| {
+                tracing::warn!(operation = "ask", model = %self.model, elapsed_ms = started.elapsed().as_millis(), error = %error, "Model inference failed");
+                error
+            })?;
+            tracing::info!(operation = "ask", model = %self.model, messages = messages.len(), elapsed_ms = started.elapsed().as_millis(), usage = ?completion.usage, "Model inference completed");
+            record.capture_output(&completion.text);
+            completion.text = crate::openai::remove_completion_markers(&completion.text);
+            if completion.text.is_empty() {
+                return Err(InferenceError::EmptyOutput { operation: "ask" });
+            }
+            Ok(completion)
         }
-        Ok(completion)
+        .await;
+        record.finish(result.as_ref().map(|completion| completion.text.as_str()));
+        result
     }
 
     pub async fn translate(
@@ -194,7 +207,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
     async fn translate_request<F, Fut, T>(
         &self,
         source_text: &str,
-        options: TranslationOptions,
+        mut options: TranslationOptions,
         streaming: bool,
         mut on_update: F,
         on_trace: T,
@@ -205,6 +218,8 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         T: Fn(&PromptExecutionTrace) + Send + Sync,
     {
         let profile = registered(self.profile);
+        let requested_history = history_tokens(&options.prompt_context);
+        let history_limit = self.history.apply(&mut options.prompt_context);
         let prompt = profile.build_prompt(source_text, &options)?;
         on_trace(&prompt.trace);
         let mut payload = non_streaming_chat_payload(
@@ -223,53 +238,87 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
             &options.target_language,
         );
 
-        let completion = if streaming && self.streaming != RemoteStreaming::None {
-            let cumulative = self.streaming == RemoteStreaming::Cumulative;
-            let mut previous = String::new();
-            self.chat
-                .stream(payload, cumulative, |text| {
-                    let text = profile.clean_output(&text);
-                    let safe = translation_output_rejection(
-                        source_text,
-                        &text,
-                        &prompt.messages,
-                        &prompt.context,
-                    )
-                    .is_none();
-                    let callback = if safe && !text.is_empty() && text != previous {
-                        previous.clone_from(&text);
-                        Some(on_update(text))
-                    } else {
-                        None
-                    };
-                    async move {
-                        if let Some(callback) = callback {
-                            callback.await;
+        if streaming && self.streaming != RemoteStreaming::None {
+            payload["stream"] = serde_json::Value::Bool(true);
+        }
+        let mut record = crate::diagnostics::RequestRecord::start(
+            "Translation",
+            &payload,
+            prompt.trace.prompt_parts(&options.prompt_graph),
+        );
+        let result = async {
+            let mut stream_rejection = None;
+            let completion = if streaming && self.streaming != RemoteStreaming::None {
+                let cumulative = self.streaming == RemoteStreaming::Cumulative;
+                let mut previous = String::new();
+                self.chat
+                    .stream(payload, cumulative, |text| {
+                        let text = profile.clean_output(&text);
+                        stream_rejection = translation_output_rejection(
+                            source_text,
+                            &text,
+                            &prompt.messages,
+                            &prompt.context,
+                        );
+                        if stream_rejection.is_some() {
+                            record.capture_output(&text);
                         }
+                        let callback =
+                            if stream_rejection.is_none() && !text.is_empty() && text != previous {
+                                previous.clone_from(&text);
+                                Some(on_update(text))
+                            } else {
+                                None
+                            };
+                        async move {
+                            if let Some(callback) = callback {
+                                callback.await;
+                            }
+                        }
+                    })
+                    .await
+            } else {
+                self.chat.complete(payload).await
+            }
+            .map_err(|error| {
+                // An expanding response can hit the output limit before completion.
+                if error.is_output_limit()
+                    && let Some(reason) = stream_rejection
+                {
+                    self.history.reject(&prompt.context);
+                    InferenceError::RejectedOutput {
+                        operation: "translation",
+                        reason,
                     }
-                })
-                .await?
-        } else {
-            self.chat.complete(payload).await?
-        };
-        let text = profile.clean_output(&completion.text);
-        if text.is_empty() {
-            return Err(InferenceError::EmptyOutput {
-                operation: "translation",
-            });
+                } else {
+                    error
+                }
+            })?;
+            record.capture_output(&completion.text);
+            let text = profile.clean_output(&completion.text);
+            if text.is_empty() {
+                return Err(InferenceError::EmptyOutput {
+                    operation: "translation",
+                });
+            }
+            if let Some(reason) =
+                translation_output_rejection(source_text, &text, &prompt.messages, &prompt.context)
+            {
+                self.history.reject(&prompt.context);
+                return Err(InferenceError::RejectedOutput {
+                    operation: "translation",
+                    reason,
+                });
+            }
+            self.history.recover(history_limit, requested_history);
+            Ok(TranslationResult {
+                text,
+                prompt_trace: prompt.trace,
+            })
         }
-        if let Some(reason) =
-            translation_output_rejection(source_text, &text, &prompt.messages, &prompt.context)
-        {
-            return Err(InferenceError::RejectedOutput {
-                operation: "translation",
-                reason,
-            });
-        }
-        Ok(TranslationResult {
-            text,
-            prompt_trace: prompt.trace,
-        })
+        .await;
+        record.finish(result.as_ref().map(|translation| translation.text.as_str()));
+        result
     }
 }
 
@@ -289,20 +338,204 @@ mod tests {
     use super::*;
     use crate::{HttpRequest, HttpResponse, TransportError};
     use serde_json::{Value, json};
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
-    struct RecordingHttp(Arc<Mutex<Vec<Value>>>);
+    struct RecordingHttp(
+        Arc<Mutex<Vec<Value>>>,
+        Arc<Mutex<VecDeque<Result<HttpResponse, TransportError>>>>,
+    );
 
     impl AsyncHttpClient for RecordingHttp {
         async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
             self.0.lock().unwrap().push(request.body);
+            if let Some(response) = self.1.lock().unwrap().pop_front() {
+                return response;
+            }
             Ok(HttpResponse {
                 status: 200,
                 retry_after: None,
                 body: json!({"choices":[{"message":{"content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":1024}}})
                     .to_string(),
             })
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostics_keeps_the_submitted_prompt_and_rejected_output() {
+        let http = RecordingHttp::default();
+        let output = "仅翻译当前输入，不要重复提示词。".repeat(15);
+        http.1.lock().unwrap().push_back(Ok(HttpResponse {
+            status: 200,
+            retry_after: None,
+            body: json!({"choices":[{"message":{"content":output},"finish_reason":"stop"}]})
+                .to_string(),
+        }));
+        let adapter = TranslationAdapter::new(
+            http.clone(),
+            "http://localhost/v1/chat/completions",
+            "diagnostics-adapter-fixture",
+            TranslationPromptProfile::Contextual,
+        )
+        .unwrap();
+        let mut options = TranslationOptions::new("English", "Chinese");
+        let style = "Keep every detail of this style instruction. Use natural language.";
+        assert!(options.prompt_graph.set_style_text(style));
+        assert!(
+            adapter
+                .translate("glimmer", options)
+                .await
+                .unwrap_err()
+                .is_rejected_output()
+        );
+        let records = crate::diagnostics::requests();
+        let record = records
+            .iter()
+            .find(|record| record.model == "diagnostics-adapter-fixture")
+            .unwrap();
+        assert_eq!(record.request, http.0.lock().unwrap()[0]);
+        assert!(record.prompt_text().contains(style));
+        assert!(
+            record
+                .parts
+                .iter()
+                .any(|part| part.kind == xrtranslate_prompt::diagnostics::PromptPartKind::Style)
+        );
+        assert!(record.error.is_some());
+        assert_eq!(record.output, output);
+    }
+
+    #[tokio::test]
+    async fn rejected_output_reduces_only_history_and_preserves_full_style_and_layout() {
+        use xrtranslate_prompt::{PromptTurn, SurroundingSource};
+        let http = RecordingHttp::default();
+        let adapter = TranslationAdapter::new(
+            http.clone(),
+            "http://localhost/v1/chat/completions",
+            "fixture",
+            TranslationPromptProfile::Contextual,
+        )
+        .unwrap();
+        let mut options = TranslationOptions::new("English", "Chinese");
+        options.context_window_tokens = 8192;
+        let style = "Use warm and natural wording. Preserve the original meaning and tone.";
+        assert!(options.prompt_graph.set_style_text(style));
+        options.prompt_context.terminology_rows = vec!["glimmer,微光".into()];
+        options.prompt_context.surrounding_source = Some(SurroundingSource {
+            speaker_id: String::new(),
+            source_language: "en".into(),
+            before: "It was dark outside.".into(),
+            after: "The sun was rising.".into(),
+        });
+        options.prompt_context.recent_turns = (0..4)
+            .map(|index| PromptTurn {
+                turn_id: Some(index.to_string()),
+                speaker_id: String::new(),
+                source_language: "en".into(),
+                target_language: "zh".into(),
+                source_text: format!("Earlier {index}: {}", "conversation ".repeat(4)),
+                translated_text: "之前的对话".repeat(4),
+            })
+            .collect();
+        let original = options.clone();
+        http.1.lock().unwrap().push_back(Ok(HttpResponse {
+            status: 200, retry_after: None,
+            body: json!({"choices":[{"message":{"content":"仅翻译当前输入并且不要重复提示词。".repeat(10)},"finish_reason":"stop"}]}).to_string(),
+        }));
+        let error = adapter
+            .translate("glimmer", options.clone())
+            .await
+            .unwrap_err();
+        assert!(error.is_rejected_output());
+        // A transport failure must not reduce history a second time.
+        http.1
+            .lock()
+            .unwrap()
+            .push_back(Err(TransportError::new("timeout", "fixture")));
+        assert!(
+            adapter
+                .translate("glimmer", options.clone())
+                .await
+                .unwrap_err()
+                .is_retryable()
+        );
+        adapter
+            .clone()
+            .translate("glimmer", options.clone())
+            .await
+            .unwrap();
+        let mut expected = options.clone();
+        expected.prompt_context.recent_turns.drain(..2);
+        let expected_messages = super::super::build_translation_messages(
+            TranslationPromptProfile::Contextual,
+            "glimmer",
+            &expected,
+        )
+        .unwrap();
+        let requests = http.0.lock().unwrap();
+        assert_eq!(requests[1]["messages"], expected_messages);
+        assert_eq!(requests[2]["messages"], expected_messages);
+        assert!(requests[2]["messages"].to_string().contains(style));
+        assert_eq!(options, original);
+    }
+
+    #[tokio::test]
+    async fn expanding_stream_reduces_history_even_when_generation_hits_the_output_limit() {
+        use xrtranslate_prompt::PromptTurn;
+        for finish_reason in ["stop", "length"] {
+            let http = RecordingHttp::default();
+            let adapter = TranslationAdapter::new(
+                http.clone(),
+                "http://localhost/v1/chat/completions",
+                "fixture",
+                TranslationPromptProfile::Contextual,
+            )
+            .unwrap();
+            let mut options = TranslationOptions::new("English", "Chinese");
+            let style = "Keep the tone gentle.";
+            options.prompt_graph.set_style_text(style);
+            options.prompt_context.recent_turns.push(PromptTurn {
+                turn_id: None,
+                speaker_id: String::new(),
+                source_language: "en".into(),
+                target_language: "zh".into(),
+                source_text: "previous exchange".into(),
+                translated_text: "之前的对话".into(),
+            });
+            let delta = json!({"choices":[{"delta":{"content":"只翻译当前输入并保持原意。".repeat(12)},"finish_reason":null}]});
+            let end = json!({"choices":[{"delta":{},"finish_reason":finish_reason}]});
+            http.1.lock().unwrap().push_back(Ok(HttpResponse {
+                status: 200,
+                retry_after: None,
+                body: format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+            }));
+            let mut previews = Vec::new();
+            let error = adapter
+                .translate_streaming(
+                    "hi",
+                    options.clone(),
+                    |text| {
+                        previews.push(text);
+                        std::future::ready(())
+                    },
+                    |_| {},
+                )
+                .await
+                .unwrap_err();
+            assert!(error.is_rejected_output(), "{error}");
+            assert!(previews.is_empty());
+            adapter.translate("hi", options.clone()).await.unwrap();
+            let mut expected = options;
+            expected.prompt_context.recent_turns.clear();
+            let messages = super::super::build_translation_messages(
+                TranslationPromptProfile::Contextual,
+                "hi",
+                &expected,
+            )
+            .unwrap();
+            assert_eq!(http.0.lock().unwrap()[1]["messages"], messages);
+            assert!(messages.to_string().contains(style));
         }
     }
 

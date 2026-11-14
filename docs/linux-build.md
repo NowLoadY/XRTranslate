@@ -40,7 +40,6 @@ after pulling. Preserve any local submodule work before deliberately switching
 revisions. For a fresh clone, use `git clone --recurse-submodules`.
 
 The required speech libraries are included in `third_party/sherpa-onnx`.
-Clearing the build cache does not require downloading them again.
 Set `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` to supply matching local
 libraries or an official archive instead.
 
@@ -90,8 +89,7 @@ the linker files along with the MPV runtime.
 
 ## Build a local release
 
-Release builds also require Python 3 and the GitHub CLI (`gh`). Downloaded
-resources are cached and reused on subsequent builds.
+Release builds also require Python 3 and the GitHub CLI (`gh`).
 
 ```sh
 ./scripts/build-linux-release.sh
@@ -162,14 +160,6 @@ the ZIP before uploading `XRTranslate-<tag>-linux-x64.zip` to the existing
 release. An existing Linux ZIP with that name is replaced; release notes,
 tags and other assets are preserved. Binaries link against Ubuntu 26.04 system
 libraries; compatibility with older distributions is not guaranteed.
-
-Separate caches retain Cargo downloads, compatible release build outputs and
-the fixed models/ONNX archive. Build caches account for the runner image, Rust
-version, lockfiles, build declarations and source revision. Resource caches
-change when their declarations or preparation script change. Every run still
-executes the locked Cargo builds, creates a fresh package and runs validation.
-Caches include reusable model/runtime download archives and exclude release
-packages and generated configuration.
 
 ## Audio capture
 

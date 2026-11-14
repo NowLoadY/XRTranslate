@@ -11,6 +11,7 @@ use eframe::egui;
 pub(super) enum EditAction {
     None,
     Save,
+    SaveAndDub,
     Cancel,
     Retranslate,
 }
@@ -20,6 +21,7 @@ pub(super) fn render(
     bounds: std::ops::RangeInclusive<i64>,
     language: UiLanguage,
     height: f32,
+    can_synthesize: bool,
     ui: &mut egui::Ui,
 ) -> EditAction {
     let id = egui::Id::unique(("media_subtitle_edit", &draft.task_id, &draft.cue.id));
@@ -107,6 +109,19 @@ pub(super) fn render(
         draft.cue.target_language.clear();
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let dub = can_synthesize
+            && components::primary_button_enabled(
+                ui,
+                tr(language, "Save and update speech"),
+                !translating
+                    && !draft.cue.original_text.trim().is_empty()
+                    && draft
+                        .cue
+                        .translated_text
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty()),
+            )
+            .clicked();
         let save = ui
             .add_enabled_ui(
                 !translating && !draft.cue.original_text.trim().is_empty(),
@@ -142,7 +157,9 @@ pub(super) fn render(
         if translating {
             ui.spinner().on_hover_text(tr(language, "Translating"));
         }
-        if save {
+        if dub {
+            EditAction::SaveAndDub
+        } else if save {
             EditAction::Save
         } else if cancel {
             EditAction::Cancel

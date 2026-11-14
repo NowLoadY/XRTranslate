@@ -129,46 +129,56 @@ impl<C: AsyncHttpClient> QwenAudioFlashAdapter<C> {
         request
             .headers
             .push(("authorization".into(), self.authorization.clone()));
-        let response =
-            self.http
-                .execute(request)
-                .await
-                .map_err(|source| InferenceError::Transport {
-                    endpoint: self.endpoint.clone(),
-                    source,
+        let record = crate::diagnostics::RequestRecord::start(
+            "Speech recognition",
+            &request.body,
+            Vec::new(),
+        );
+        let result =
+            async {
+                let response = self.http.execute(request).await.map_err(|source| {
+                    InferenceError::Transport {
+                        endpoint: self.endpoint.clone(),
+                        source,
+                    }
                 })?;
-        // DashScope encodes an empty recognition as a client error. Return the
-        // shared empty transcript so silence does not abort the audio pipeline.
-        if response.status == 400
-            && serde_json::from_str::<Value>(&response.body).is_ok_and(|value| {
-                value["code"] == "CLIENT_ERROR" && value["message"] == "ASR_RESPONSE_HAVE_NO_WORDS"
-            })
-        {
-            return Ok(AsrTranscript {
-                language,
-                text: String::new(),
-            });
-        }
-        if !(200..300).contains(&response.status) {
-            return Err(InferenceError::HttpStatus {
-                endpoint: self.endpoint.clone(),
-                status: response.status,
-                body_preview: preview(&response.body),
-                retry_after: response.retry_after,
-            });
-        }
-        let value: Value = serde_json::from_str(&response.body)
-            .map_err(|error| self.invalid_response(error.to_string(), &response.body))?;
-        // `output.text` contains the full cumulative transcript. The separate
-        // `sentence.text` field can contain only the last sentence.
-        let text = value["output"]["text"]
-            .as_str()
-            .ok_or_else(|| {
-                self.invalid_response("missing string output.text".into(), &response.body)
-            })?
-            .trim()
-            .to_owned();
-        Ok(AsrTranscript { language, text })
+                // DashScope encodes an empty recognition as a client error. Return the
+                // shared empty transcript so silence does not abort the audio pipeline.
+                if response.status == 400
+                    && serde_json::from_str::<Value>(&response.body).is_ok_and(|value| {
+                        value["code"] == "CLIENT_ERROR"
+                            && value["message"] == "ASR_RESPONSE_HAVE_NO_WORDS"
+                    })
+                {
+                    return Ok(AsrTranscript {
+                        language,
+                        text: String::new(),
+                    });
+                }
+                if !(200..300).contains(&response.status) {
+                    return Err(InferenceError::HttpStatus {
+                        endpoint: self.endpoint.clone(),
+                        status: response.status,
+                        body_preview: preview(&response.body),
+                        retry_after: response.retry_after,
+                    });
+                }
+                let value: Value = serde_json::from_str(&response.body)
+                    .map_err(|error| self.invalid_response(error.to_string(), &response.body))?;
+                // `output.text` contains the full cumulative transcript. The separate
+                // `sentence.text` field can contain only the last sentence.
+                let text = value["output"]["text"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        self.invalid_response("missing string output.text".into(), &response.body)
+                    })?
+                    .trim()
+                    .to_owned();
+                Ok(AsrTranscript { language, text })
+            }
+            .await;
+        record.finish(result.as_ref().map(|transcript| transcript.text.as_str()));
+        result
     }
 
     fn invalid_response(&self, message: String, body: &str) -> InferenceError {

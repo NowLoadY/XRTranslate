@@ -6930,7 +6930,7 @@ dependencies = [
 
 [[package]]
 name = "rust-client"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -10539,8 +10539,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-guide"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xrtranslate-audio",
+ "xrtranslate-plugin",
+]
+
+[[package]]
 name = "xrtranslate-account-login"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "serde_json",
  "tao",
@@ -10550,10 +10560,11 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-assets"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
  "xrtranslate-connections",
@@ -10564,8 +10575,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrtranslate-audio"
+version = "0.4.6"
+dependencies = [
+ "cpal",
+ "crossbeam-channel",
+ "parking_lot",
+ "serde",
+ "symphonia",
+]
+
+[[package]]
 name = "xrtranslate-backend"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -10599,7 +10621,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-client-core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -10633,6 +10655,7 @@ dependencies = [
  "uuid",
  "windows 0.60.0",
  "windows 0.62.2",
+ "xrtranslate-audio",
  "xrtranslate-config",
  "xrtranslate-connections",
  "xrtranslate-download",
@@ -10645,7 +10668,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-config"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "rusqlite",
  "serde",
@@ -10658,7 +10681,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-connections"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "base64 0.22.1",
  "jsonwebtoken",
@@ -10678,7 +10701,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-denoise"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ndarray",
  "ort",
@@ -10687,7 +10710,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-download"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "httpdate",
  "reqwest",
@@ -10697,7 +10720,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-engine"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "audioadapter-buffers",
  "rubato",
@@ -10705,8 +10728,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrtranslate-guide"
+version = "0.4.6"
+dependencies = [
+ "eframe",
+ "rfd",
+ "serde",
+ "serde_json",
+ "ui-director",
+ "winres",
+ "xrt-guide",
+]
+
+[[package]]
 name = "xrtranslate-http"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "regex",
  "reqwest",
@@ -10718,7 +10754,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-inference"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -10750,7 +10786,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-installer"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "clap",
  "serde_json",
@@ -10763,7 +10799,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-packager"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "clap",
  "serde_json",
@@ -10793,7 +10829,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-prompt"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -10801,7 +10837,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-protocol"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -10811,7 +10847,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-separation"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ort",
  "rustfft",
@@ -10819,7 +10855,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-speaker"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ndarray",
  "ort",
@@ -10827,7 +10863,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-supervisor"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -10835,7 +10871,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-updater"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "clap",
  "serde_json",
@@ -10845,7 +10881,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-vad"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "ndarray",
  "ort",

@@ -1,0 +1,21 @@
+[package]
+name = "xrtranslate-guide"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standalone tutorial player for XRTranslate"
+
+[dependencies]
+xrt-guide = { path = "../../plugin-src/guide" }
+ui-director = { path = "../../crates/ui-director", features = ["egui"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.17.2"
+
+[build-dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1.12"

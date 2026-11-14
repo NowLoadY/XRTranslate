@@ -37,6 +37,10 @@ dist/
 # Audio cache / Temporary files
 *.wav
 *.mp3
+!plugin-src/guide/assets/audio/**/*.mp3
+!rust-client/resources/companion/**/*.mp3
+# Narration authoring is local tooling, separate from shipped playback.
+/apps/xrtranslate-backend/examples/guide_audio*.rs
 *.flac
 *.ogg
 # Curated built-in references are source assets, not personal audio caches.
@@ -72,3 +76,9 @@ deepthink/
 *.pfx
 keystore.properties
 signing.properties
+
+# Hidden directories are opt-in; keep only established project configuration.
+.*/
+!/.cargo/
+!/.github/
+!/third_party/MeloTTS/.github/

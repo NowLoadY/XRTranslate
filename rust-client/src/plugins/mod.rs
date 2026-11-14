@@ -8,6 +8,7 @@ pub(crate) fn tool_providers(
     let providers: Vec<&mut dyn ui_director::ToolProvider> = vec![
         &mut app.ui_tools,
         &mut app.director_audio,
+        &mut app.companion_presenter,
         &mut app.plugin_host,
     ];
 

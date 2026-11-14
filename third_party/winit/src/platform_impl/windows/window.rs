@@ -513,9 +513,10 @@ impl Window {
             // ReleaseCapture needs to execute on the main thread
             unsafe { ReleaseCapture() };
 
-            unsafe {
-                PostMessageW(window, WM_NCLBUTTONDOWN, wparam, &points as *const _ as LPARAM)
-            };
+            // WM_NCLBUTTONDOWN takes packed signed screen coordinates, not a
+            // pointer to POINTS (which would also outlive this stack frame).
+            let position = u32::from(points.x as u16) | (u32::from(points.y as u16) << 16);
+            unsafe { PostMessageW(window, WM_NCLBUTTONDOWN, wparam, position as LPARAM) };
         });
     }
 

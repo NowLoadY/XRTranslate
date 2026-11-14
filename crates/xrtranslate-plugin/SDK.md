@@ -37,6 +37,12 @@ and repeat `--plugin <child-directory>`. They compile together and are packaged
 separately beneath `--output`. The repository's `plugin-src/build.ps1` and
 `build.sh` use this mode for the public plugins.
 
+Updating an existing package keeps its directories in place and skips unchanged
+files, so browsing resources in Explorer does not block the update. Changed
+files are backed up before replacement and restored if publication fails.
+Errors identify the plugin and file operation; if rollback is also blocked,
+the backup location is reported and retained.
+
 Copy the completed package into the folder opened by Settings → Plugins.
 The application does not compile plugins during startup.
 

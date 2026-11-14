@@ -298,6 +298,7 @@ impl MediaController {
     }
 
     pub(in crate::media) fn audition_vocals(&mut self, start: i64, end: i64) {
+        self.voice_library.stop_preview();
         if self.previewing_vocals && self.speech_preview_end == Some(end) {
             self.finish_vocal_preview();
             return;

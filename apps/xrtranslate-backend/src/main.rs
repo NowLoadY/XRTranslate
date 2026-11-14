@@ -561,6 +561,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/healthz", get(health))
+        .route(
+            "/diagnostics/requests",
+            get(model_request_history).delete(model_request_history),
+        )
         .route("/ask", axum::routing::post(ask))
         .route(
             "/tts/synthesize",
@@ -599,6 +603,20 @@ async fn health() -> Json<HealthResponse> {
         runtime: "native-gguf",
         protocol_version: xrtranslate_protocol::PROTOCOL_VERSION,
     })
+}
+
+async fn model_request_history(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
+    method: axum::http::Method,
+) -> impl IntoResponse {
+    // Full prompts belong to the local user, not other devices on the network.
+    if !peer.ip().is_loopback() {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    if method == axum::http::Method::DELETE {
+        xrtranslate_inference::diagnostics::clear_requests();
+    }
+    Json(xrtranslate_inference::diagnostics::requests()).into_response()
 }
 
 async fn ask(
@@ -2238,8 +2256,7 @@ async fn run_inference_worker(
                     (job.source_language.clone(), job.target_language.clone())
                 };
                 let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
-                let (asr_tokens, _) = inference.prompt_context_token_budgets();
-                let (inference, translation_tokens) = match inference.for_text_request(
+                let (inference, input_tokens) = match inference.for_text_request(
                     &prompt_graph_for_turn,
                     &routed_source,
                     &routed_target,
@@ -2260,6 +2277,9 @@ async fn run_inference_worker(
                         continue;
                     }
                 };
+                // Chunk capacity reserves room for a long translation. References
+                // share the actual request window, including unused output space.
+                let (asr_tokens, translation_tokens) = inference.prompt_context_token_budgets();
                 let context_budgets = ContextBudgets {
                     asr_tokens,
                     translation_tokens,
@@ -2292,7 +2312,7 @@ async fn run_inference_worker(
                 };
                 let segments = xrtranslate_engine::text_processing::text_chunks(
                     &job.text,
-                    translation_tokens.saturating_mul(3),
+                    input_tokens.saturating_mul(3),
                     xrtranslate_prompt::token_weight,
                 )
                 .into_iter()
@@ -4294,5 +4314,67 @@ mod speech_output_tests {
                 assert_eq!(job.target_language, "en");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod request_history_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn diagnostics_endpoint_returns_and_clears_recorded_requests() {
+        let record = xrtranslate_inference::diagnostics::RequestRecord::start(
+            "Translation",
+            &serde_json::json!({"model": "diagnostics-endpoint-fixture", "messages": [{"role": "user", "content": "Full prompt"}]}),
+            Vec::new(),
+        );
+        record.finish(Err::<&str, _>("fixture rejection"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/diagnostics/requests",
+            get(model_request_history).delete(model_request_history),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        for method in ["GET", "DELETE"] {
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream.write_all(format!(
+                "{method} /diagnostics/requests HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            ).as_bytes()).await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"));
+            let records: Vec<xrtranslate_prompt::diagnostics::ModelRequestRecord> =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            if method == "GET" {
+                let record = records
+                    .iter()
+                    .find(|record| record.model == "diagnostics-endpoint-fixture")
+                    .unwrap();
+                assert_eq!(record.error.as_deref(), Some("fixture rejection"));
+                assert_eq!(record.prompt_text(), "[user]\nFull prompt");
+            } else {
+                assert!(records.is_empty());
+            }
+        }
+        server.abort();
+        let external = model_request_history(
+            axum::extract::ConnectInfo("192.0.2.1:1234".parse().unwrap()),
+            axum::http::Method::GET,
+        )
+        .await
+        .into_response();
+        assert_eq!(external.status(), axum::http::StatusCode::FORBIDDEN);
     }
 }

@@ -6,6 +6,7 @@ pub struct ModalPage {
     pub content: String,
     pub footnote: Option<String>,
     pub error_details: Option<String>,
+    pub error_log: Option<String>,
 }
 
 impl ModalPage {
@@ -15,6 +16,7 @@ impl ModalPage {
             content: content.into(),
             footnote: None,
             error_details: None,
+            error_log: None,
         }
     }
 
@@ -189,19 +191,15 @@ impl ModalDialog {
     }
 
     pub fn error(language: crate::i18n::UiLanguage, error: &str, log: Option<&str>) -> Self {
-        let mut details = error.trim().to_owned();
-        if let Some(log) = log.filter(|log| !log.trim().is_empty()) {
-            details.push_str("\n\n--- Backend log ---\n");
-            details.push_str(log.trim());
-        }
         let mut page = ModalPage::new(
             crate::i18n::tr(language, "Something went wrong"),
             crate::i18n::tr(
                 language,
-                "You can copy the details and report this on GitHub Issues or in QQ group 1009732148.",
+                "You can copy the details and report this on GitHub Issues.",
             ),
         );
-        page.error_details = Some(details);
+        page.error_details = Some(error.trim().to_owned());
+        page.error_log = log.filter(|log| !log.trim().is_empty()).map(str::to_owned);
         Self {
             open: true,
             pages: vec![page],
@@ -280,7 +278,12 @@ impl ModalDialog {
             |ui| {
                 if let Some(details) = &page.error_details {
                     ui.horizontal_wrapped(|ui| {
-                        crate::ui::components::error_actions(ui, language, details)
+                        crate::ui::components::error_actions_with_log(
+                            ui,
+                            language,
+                            details,
+                            page.error_log.as_deref(),
+                        )
                     });
                 }
                 ui.horizontal_wrapped(|ui| {

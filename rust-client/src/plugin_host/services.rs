@@ -232,6 +232,7 @@ impl crate::XRTranslateApp {
                     "audio.capture",
                     "text.compose",
                     "ui",
+                    xrtranslate_plugin::guide::CAPABILITY,
                     "translation.start",
                     "translation.stop",
                     "translation.pause",

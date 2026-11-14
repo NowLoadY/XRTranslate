@@ -68,6 +68,8 @@ pub struct ElementDescriptor {
     pub value: ElementValue,
     pub enabled: bool,
     pub rect: [f32; 4],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_rect: Option<[f32; 4]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +77,18 @@ pub struct ElementDescriptor {
 }
 
 impl ElementDescriptor {
+    /// Current visible geometry, including clipping by nested scroll areas.
+    pub fn visible_rect(&self) -> Option<::egui::Rect> {
+        let rect = |[x, y, w, h]: [f32; 4]| {
+            ::egui::Rect::from_min_size(::egui::pos2(x, y), ::egui::vec2(w, h))
+        };
+        let bounds = rect(self.rect);
+        let bounds = self
+            .clip_rect
+            .map_or(bounds, |clip| bounds.intersect(rect(clip)));
+        (bounds.is_finite() && bounds.is_positive()).then_some(bounds)
+    }
+
     pub fn feedback(&self, effect: crate::feedback::Effect) -> crate::feedback::Feedback {
         crate::feedback::Feedback::new(
             u64::from_str_radix(&self.id_hex, 16).expect("registry identity"),

@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["agent", "media", "meeting", "vocabulary", "vr-overlay", "osc", "avatar", "ocr", "chilloutvr-osc", "lyrics", "bigwalk", "auto-input"]
+members = ["agent", "guide", "media", "meeting", "vocabulary", "vr-overlay", "osc", "avatar", "ocr", "chilloutvr-osc", "lyrics", "bigwalk", "auto-input"]
 
 [workspace.package]
-version = "0.4.5"
+version = "0.4.6"
 edition = "2024"
 license = "AGPL-3.0-only"
 

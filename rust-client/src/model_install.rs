@@ -115,6 +115,7 @@ impl NativeModelTaskState {
 enum NativeModelTask {
     Discover,
     Install(ResourceId),
+    Import(ResourceId, PathBuf),
 }
 
 #[derive(Debug)]
@@ -249,6 +250,28 @@ impl NativeModelTaskManager {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.state.is_busy()
+    }
+
+    pub fn is_importing(&self, id: impl Into<ResourceId>) -> bool {
+        let id = id.into();
+        matches!(&self.active_task, Some((_, NativeModelTask::Import(current, _))) if *current == id)
+    }
+
+    pub fn import(
+        &mut self,
+        project_root: PathBuf,
+        id: impl Into<ResourceId>,
+        source: PathBuf,
+    ) -> Result<(), String> {
+        self.start(project_root, NativeModelTask::Import(id.into(), source))
+    }
+
+    pub fn cancel_import(&self) {
+        if matches!(self.active_task, Some((_, NativeModelTask::Import(..))))
+            && let Some(cancellation) = &self.cancellation
+        {
+            cancellation.cancel();
+        }
     }
 
     #[must_use]
@@ -554,7 +577,8 @@ impl NativeModelTaskManager {
                 self.paused.remove(&asset_id);
                 self.download_progress.remove(&asset_id);
                 if let Some(batch) = &mut self.install_batch {
-                    if !batch.completed.contains(&asset_id) {
+                    if batch.package_ids.contains(&asset_id) && !batch.completed.contains(&asset_id)
+                    {
                         batch.completed.push(asset_id.clone());
                         batch.completed_bytes = batch
                             .completed_bytes
@@ -578,6 +602,9 @@ impl NativeModelTaskManager {
                 return;
             }
             NativeModelTaskResult::Cancelled => {
+                if let Some((_, NativeModelTask::Import(id, _))) = &active_task {
+                    self.download_progress.remove(id);
+                }
                 self.state = NativeModelTaskState::Detected;
                 if let Err(error) = self.start_next_queued() {
                     self.state = NativeModelTaskState::Failed(error);
@@ -595,6 +622,9 @@ impl NativeModelTaskManager {
                 }
             }
             NativeModelTaskResult::Failed(error) | NativeModelTaskResult::SourceFailed(error) => {
+                if let Some((_, NativeModelTask::Import(id, _))) = &active_task {
+                    self.download_progress.remove(id);
+                }
                 if let Some((_, NativeModelTask::Install(id))) = active_task
                     && let Some(batch) = &mut self.install_batch
                 {
@@ -638,7 +668,7 @@ impl NativeModelTaskManager {
         let proxy_url = self.proxy_url.clone();
         let source = DownloadSource::from_mirror_enabled(self.use_mirror);
         let cancellation =
-            matches!(task, NativeModelTask::Install(_)).then(DownloadCancellation::default);
+            (!matches!(task, NativeModelTask::Discover)).then(DownloadCancellation::default);
         let worker_cancellation = cancellation.clone();
         let worker_root = project_root.clone();
         let plugin_models = self.plugin_models.clone();
@@ -659,6 +689,12 @@ impl NativeModelTaskManager {
             .map_err(|error| format!("Cannot start native model worker: {error}"))?;
         self.state = match &task {
             NativeModelTask::Discover => NativeModelTaskState::Discovering,
+            NativeModelTask::Import(asset_id, _) => NativeModelTaskState::Installing {
+                asset_id: asset_id.clone(),
+                relative_path: None,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+            },
             NativeModelTask::Install(asset_id) => {
                 let (downloaded_bytes, total_bytes) = self
                     .download_progress
@@ -712,6 +748,33 @@ fn run_task(
 ) {
     let result = match task {
         NativeModelTask::Discover => discover_models(project_root, &plugins),
+        NativeModelTask::Import(asset_id, source) => {
+            let cancellation = cancellation.expect("import tasks have a cancellation token");
+            let result = resolve_model(&project_root, &asset_id, &plugins).and_then(|model| {
+                model
+                    .package
+                    .import(
+                        &source,
+                        &model.directory,
+                        &cancellation,
+                        |path, done, total| {
+                            let _ =
+                                event_tx.send(NativeModelTaskEvent::Progress(ResourceProgress {
+                                    asset_id: asset_id.clone(),
+                                    relative_path: path.into(),
+                                    downloaded_bytes: done,
+                                    total_bytes: total,
+                                }));
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+            });
+            match result {
+                Ok(_) => NativeModelTaskResult::Installed { asset_id },
+                Err(_) if cancellation.is_cancelled() => NativeModelTaskResult::Cancelled,
+                Err(error) => NativeModelTaskResult::Failed(error),
+            }
+        }
         NativeModelTask::Install(asset_id) => install_model(
             resolve_model(&project_root, &asset_id, &plugins),
             asset_id,
@@ -1095,6 +1158,69 @@ mod tests {
         assert!(!model.directory.join("model.onnx").exists());
         assert!(model.directory.join("keep.txt").exists());
         assert!(!manager.is_model_ready(&id));
+    }
+
+    #[test]
+    fn local_import_updates_readiness_and_skips_future_downloads() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("received");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("model.onnx"), b"test").unwrap();
+        let (id, model) = plugin_model(root.path());
+        let mut manager = NativeModelTaskManager::default();
+        manager.set_plugin_models(HashMap::from([(id.clone(), model.clone())]));
+        manager
+            .import(root.path().into(), &id, source.clone())
+            .unwrap();
+        assert!(manager.is_importing(&id));
+        // Changing the network source must not restart a local copy.
+        manager
+            .switch_download_source(root.path().into(), true)
+            .unwrap();
+        assert!(!manager.restart_after_source_switch);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while manager.is_busy() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(5));
+            manager.poll();
+        }
+        assert!(manager.is_model_ready(&id), "{:?}", manager.state());
+        assert!(!manager.is_importing(&id));
+        assert_eq!(manager.take_changed_resources(), [id.clone()]);
+        assert!(model.package.check(&model.directory).unwrap());
+        assert!(source.join("model.onnx").exists());
+        manager.enqueue_many(root.path().into(), [&id]).unwrap();
+        assert!(!manager.is_busy());
+        assert!(!manager.is_model_queued(&id));
+    }
+
+    #[test]
+    fn failed_local_import_stays_unready_and_can_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("received");
+        std::fs::create_dir(&source).unwrap();
+        let (id, model) = plugin_model(root.path());
+        let mut manager = NativeModelTaskManager::default();
+        manager.set_plugin_models(HashMap::from([(id.clone(), model.clone())]));
+        for valid in [false, true] {
+            if valid {
+                std::fs::write(source.join("model.onnx"), b"test").unwrap();
+            }
+            manager
+                .import(root.path().into(), &id, source.clone())
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while manager.is_busy() && std::time::Instant::now() < deadline {
+                thread::sleep(std::time::Duration::from_millis(5));
+                manager.poll();
+            }
+            assert_eq!(manager.is_model_ready(&id), valid, "{:?}", manager.state());
+            assert_eq!(model.directory.exists(), valid);
+            if !valid {
+                assert!(matches!(manager.state(), NativeModelTaskState::Failed(_)));
+                assert!(!manager.use_mirror());
+                assert!(manager.take_changed_resources().is_empty());
+            }
+        }
     }
 
     #[test]

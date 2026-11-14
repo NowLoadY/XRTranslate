@@ -88,7 +88,15 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
             0.0,
             options.max_tokens,
         );
-        let completion = self.chat.chat_completion(payload).await?;
+        let record =
+            crate::diagnostics::RequestRecord::start("Speech recognition", &payload, Vec::new());
+        let completion = self.chat.chat_completion(payload).await;
+        record.finish(
+            completion
+                .as_ref()
+                .map(|completion| completion.text.as_str()),
+        );
+        let completion = completion?;
         Ok(parse_asr_transcript(
             &completion.text,
             language.map(SupportedLanguage::code),

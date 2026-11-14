@@ -64,6 +64,39 @@ history; each studio supplies its domain rendering and validation.
 Transient windows use shared rendering and size themselves to their content.
 Page-specific behavior stays local only when it expresses a distinct user task.
 
+The bundled `guide` executable owns tutorial content and topic selection.
+It receives the available routes through the existing plugin connection. The host
+presents its plan using the floating controller, Director's live geometry and the companion
+inbox's replaceable priority message. Pages register ordinary controls and
+outputs. Opening a disclosure or scrolling uses cancellable Director view actions.
+Ordinary mail waits until exit. The recorder uses the same guide operations and
+waits for view readiness; video timing and encoding stay in `tools/demos`.
+The guide bundles prerecorded audio beside its localized lessons. Its shared
+narrator starts the selected clip while the preceding voice fades over 180 ms;
+exit stops both voices. The native plugin and standalone player embed the same
+assets and use `xrtranslate-audio`, extracted from the existing local player.
+The recorder reads clip durations from the catalogue and uses those files for
+its audio timeline; no runtime TTS service or second narration catalogue is needed.
+
+The companion uses the same player for all four welcome steps and short page
+introductions in all five UI languages. `dialogue::Cue` owns the fixed copy;
+coverage checks require matching localized clips for every cue. Ordinary pages
+wait for sustained attention on the avatar and explain once per visit. Unknown
+plugins retain their own hints instead of falling back to translation instructions.
+Bubble timing follows the clip; navigation clears the previous line, and hidden
+surfaces pause playback. The tutorial owns its voice while active. Finished audio
+and text/duration catalogues in `rust-client/resources/companion` are source assets.
+Narration authoring tools, reference preparation and voice enrollment records
+stay outside the repository; the application's normal voice-cloning APIs remain
+part of the product.
+
+`apps/xrtranslate-guide` presents that same planning library in a standalone
+window. It controls older clients through their existing Director operations,
+without installing a plugin or adding a tutorial interface to those clients.
+One worker serializes view preparation; changing topics or closing the player
+cancels pending work.
+Protocol errors are reported when connecting; the player UI has no version matrix.
+
 Plugin landing pages foreground the next useful action and recent work through
 shared entry components. Full lists remain available for search and organization.
 The terminology library starts with domain cards; vocabulary inherits domain

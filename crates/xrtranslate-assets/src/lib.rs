@@ -11,6 +11,7 @@ pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 8_192;
 mod bundled;
 mod catalog;
 pub mod distribution;
+mod import;
 mod install;
 mod package;
 pub use package::{ModelPackage, PackageArchive, PackageFile};

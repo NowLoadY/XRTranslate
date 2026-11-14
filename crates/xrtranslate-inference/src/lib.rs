@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod asr;
+pub mod diagnostics;
 mod error;
 mod http;
 mod openai;

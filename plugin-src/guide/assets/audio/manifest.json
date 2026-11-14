@@ -1,0 +1,1564 @@
+{
+  "clips": [
+    {
+      "duration_ms": 4960,
+      "file": "en/AudioStudio-node-graph.mp3",
+      "language": "en",
+      "page": "AudioStudio",
+      "text": "Wire sources to recognition, monitoring or a game microphone.",
+      "topic": "node-graph"
+    },
+    {
+      "duration_ms": 2890,
+      "file": "en/AudioStudio-noise-gate.mp3",
+      "language": "en",
+      "page": "AudioStudio",
+      "text": "Add Gain for volume or Noise gate for the cutoff level.",
+      "topic": "noise-gate"
+    },
+    {
+      "duration_ms": 4490,
+      "file": "en/AudioStudio-quick-controls.mp3",
+      "language": "en",
+      "page": "AudioStudio",
+      "text": "Use Quick controls to choose input devices and output volume.",
+      "topic": "quick-controls"
+    },
+    {
+      "duration_ms": 5340,
+      "file": "en/CorpusStudio-domain-rules.mp3",
+      "language": "en",
+      "page": "CorpusStudio",
+      "text": "Add topic keywords in Domain rules to enable terms as a group.",
+      "topic": "domain-rules"
+    },
+    {
+      "duration_ms": 3300,
+      "file": "en/CorpusStudio-domains.mp3",
+      "language": "en",
+      "page": "CorpusStudio",
+      "text": "Choose a domain, then add terms and their preferred translations.",
+      "topic": "domains"
+    },
+    {
+      "duration_ms": 2920,
+      "file": "en/CorpusStudio-paste-terms.mp3",
+      "language": "en",
+      "page": "CorpusStudio",
+      "text": "Paste two columns to import terms with their translations.",
+      "topic": "paste-terms"
+    },
+    {
+      "duration_ms": 3880,
+      "file": "en/PromptStudio-edit-prompts.mp3",
+      "language": "en",
+      "page": "PromptStudio",
+      "text": "Connect custom instructions, then activate the prompt profile.",
+      "topic": "edit-prompts"
+    },
+    {
+      "duration_ms": 5090,
+      "file": "en/PromptStudio-translation-style.mp3",
+      "language": "en",
+      "page": "PromptStudio",
+      "text": "Choose a style card to apply its tone to subsequent translations.",
+      "topic": "translation-style"
+    },
+    {
+      "duration_ms": 5870,
+      "file": "en/Settings-models.mp3",
+      "language": "en",
+      "page": "Settings",
+      "text": "In Models, set the context length for speech recognition and translation.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 4440,
+      "file": "en/Settings-quick-translation.mp3",
+      "language": "en",
+      "page": "Settings",
+      "text": "Enable the shortcut to translate text selected in other apps.",
+      "topic": "quick-translation"
+    },
+    {
+      "duration_ms": 2981,
+      "file": "en/Translation-audio-preprocessing.mp3",
+      "language": "en",
+      "page": "Translation",
+      "text": "Choose Speech denoising to reduce background noise.",
+      "topic": "audio-preprocessing"
+    },
+    {
+      "duration_ms": 5930,
+      "file": "en/Translation-auto-bidirectional.mp3",
+      "language": "en",
+      "page": "Translation",
+      "text": "Choose Auto (bidirectional) and the two conversation languages.",
+      "topic": "auto-bidirectional"
+    },
+    {
+      "duration_ms": 3195,
+      "file": "en/Translation-filter-strength.mp3",
+      "language": "en",
+      "page": "Translation",
+      "text": "Adjust Filter strength to set the speech detection threshold.",
+      "topic": "filter-strength"
+    },
+    {
+      "duration_ms": 3054,
+      "file": "en/Translation-pause-tolerance.mp3",
+      "language": "en",
+      "page": "Translation",
+      "text": "In Automatic mode, set pauses with Pause tolerance.",
+      "topic": "pause-tolerance"
+    },
+    {
+      "duration_ms": 5460,
+      "file": "en/Translation-translation.mp3",
+      "language": "en",
+      "page": "Translation",
+      "text": "Choose languages, enable an audio source, then start translation.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 5290,
+      "file": "en/TtsCenter-reference-transcript.mp3",
+      "language": "en",
+      "page": "TtsCenter",
+      "text": "Import a 0.5–60 s sample and set its reference transcript.",
+      "topic": "reference-transcript"
+    },
+    {
+      "duration_ms": 5300,
+      "file": "en/TtsCenter-use-voice.mp3",
+      "language": "en",
+      "page": "TtsCenter",
+      "text": "Preview a voice, then select Use voice to apply it to TTS.",
+      "topic": "use-voice"
+    },
+    {
+      "duration_ms": 5570,
+      "file": "en/plugin-avatar-display-seconds.mp3",
+      "language": "en",
+      "page": "plugin:avatar",
+      "text": "Select Messages to set sources, format and display seconds.",
+      "topic": "display-seconds"
+    },
+    {
+      "duration_ms": 5360,
+      "file": "en/plugin-avatar-game-plugins.mp3",
+      "language": "en",
+      "page": "plugin:avatar",
+      "text": "Install your game's package, then use its Avatar XRT control.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 3080,
+      "file": "en/plugin-avatar-header.mp3",
+      "language": "en",
+      "page": "plugin:avatar",
+      "text": "Select Header or Footer, then type the text to keep visible.",
+      "topic": "header"
+    },
+    {
+      "duration_ms": 5390,
+      "file": "en/plugin-bigwalk-big-walk.mp3",
+      "language": "en",
+      "page": "plugin:bigwalk",
+      "text": "Connect the bridge via Setup guide and choose chat audio sources.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 5400,
+      "file": "en/plugin-chilloutvr_osc-format.mp3",
+      "language": "en",
+      "page": "plugin:chilloutvr_osc",
+      "text": "Choose translated-only, bilingual or inline text under Format.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3210,
+      "file": "en/plugin-chilloutvr_osc-maximum-display-time.mp3",
+      "language": "en",
+      "page": "plugin:chilloutvr_osc",
+      "text": "Set Maximum display time to choose how long messages stay.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 5050,
+      "file": "en/plugin-chilloutvr_osc-osc.mp3",
+      "language": "en",
+      "page": "plugin:chilloutvr_osc",
+      "text": "Enable OSC and choose audio sources to send to game chat.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4870,
+      "file": "en/plugin-media-import-media.mp3",
+      "language": "en",
+      "page": "plugin:media",
+      "text": "Import media, choose languages, then generate subtitles.",
+      "topic": "import-media"
+    },
+    {
+      "duration_ms": 5860,
+      "file": "en/plugin-media-subtitle-character-limit.mp3",
+      "language": "en",
+      "page": "plugin:media",
+      "text": "Set the character limit, then optimize subtitle segmentation.",
+      "topic": "subtitle-character-limit"
+    },
+    {
+      "duration_ms": 5790,
+      "file": "en/plugin-media-subtitle-style.mp3",
+      "language": "en",
+      "page": "plugin:media",
+      "text": "Set subtitle style, then export subtitles or captioned video.",
+      "topic": "subtitle-style"
+    },
+    {
+      "duration_ms": 2950,
+      "file": "en/plugin-meeting-new-meeting.mp3",
+      "language": "en",
+      "page": "plugin:meeting",
+      "text": "Create a meeting, select sources and recording, then start.",
+      "topic": "new-meeting"
+    },
+    {
+      "duration_ms": 5280,
+      "file": "en/plugin-meeting-organize.mp3",
+      "language": "en",
+      "page": "plugin:meeting",
+      "text": "Mark meeting highlights, then generate minutes in Organize.",
+      "topic": "organize"
+    },
+    {
+      "duration_ms": 3040,
+      "file": "en/plugin-motion-follow-speech.mp3",
+      "language": "en",
+      "page": "plugin:motion",
+      "text": "Enable Follow speech to animate completed phrases.",
+      "topic": "follow-speech"
+    },
+    {
+      "duration_ms": 2710,
+      "file": "en/plugin-motion-motion.mp3",
+      "language": "en",
+      "page": "plugin:motion",
+      "text": "Describe an action and generate its motion preview.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 5400,
+      "file": "en/plugin-osc-format.mp3",
+      "language": "en",
+      "page": "plugin:osc",
+      "text": "Choose translated-only, bilingual or inline text under Format.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3210,
+      "file": "en/plugin-osc-maximum-display-time.mp3",
+      "language": "en",
+      "page": "plugin:osc",
+      "text": "Set Maximum display time to choose how long messages stay.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 4820,
+      "file": "en/plugin-osc-osc.mp3",
+      "language": "en",
+      "page": "plugin:osc",
+      "text": "Enable OSC and choose audio sources to send to game chat.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4910,
+      "file": "en/plugin-osc-sync-game-microphone.mp3",
+      "language": "en",
+      "page": "plugin:osc",
+      "text": "Enable Toggle Voice in VRChat, then turn on Sync game microphone.",
+      "topic": "sync-game-microphone"
+    },
+    {
+      "duration_ms": 4600,
+      "file": "en/plugin-vocabulary-generate-example.mp3",
+      "language": "en",
+      "page": "plugin:vocabulary",
+      "text": "Open a word to edit translations or generate example sentences.",
+      "topic": "generate-example"
+    },
+    {
+      "duration_ms": 4670,
+      "file": "en/plugin-vocabulary-vocabulary.mp3",
+      "language": "en",
+      "page": "plugin:vocabulary",
+      "text": "Bookmark words from translations and organize them in wordbooks.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3770,
+      "file": "en/plugin-vr_overlay-distance-in-front.mp3",
+      "language": "en",
+      "page": "plugin:vr_overlay",
+      "text": "Drag the preview; adjust distance and width for placement.",
+      "topic": "distance-in-front"
+    },
+    {
+      "duration_ms": 5520,
+      "file": "en/plugin-vr_overlay-steamvr.mp3",
+      "language": "en",
+      "page": "plugin:vr_overlay",
+      "text": "Connect SteamVR and enable Subtitles to show translations in VR.",
+      "topic": "steamvr"
+    },
+    {
+      "duration_ms": 3310,
+      "file": "ja/AudioStudio-node-graph.mp3",
+      "language": "ja",
+      "page": "AudioStudio",
+      "text": "音源ノードを認識、モニター、ゲーム用マイクへ接続します。",
+      "topic": "node-graph"
+    },
+    {
+      "duration_ms": 6040,
+      "file": "ja/AudioStudio-noise-gate.mp3",
+      "language": "ja",
+      "page": "AudioStudio",
+      "text": "「＋ノード」からゲインやノイズゲートを追加し、そのノードで調整します。",
+      "topic": "noise-gate"
+    },
+    {
+      "duration_ms": 3250,
+      "file": "ja/AudioStudio-quick-controls.mp3",
+      "language": "ja",
+      "page": "AudioStudio",
+      "text": "クイック操作で入力デバイスと出力音量を選びます。",
+      "topic": "quick-controls"
+    },
+    {
+      "duration_ms": 4820,
+      "file": "ja/CorpusStudio-domain-rules.mp3",
+      "language": "ja",
+      "page": "CorpusStudio",
+      "text": "分野ルールで話題キーワードを指定し、用語をまとめて有効にします。",
+      "topic": "domain-rules"
+    },
+    {
+      "duration_ms": 3340,
+      "file": "ja/CorpusStudio-domains.mp3",
+      "language": "ja",
+      "page": "CorpusStudio",
+      "text": "分野を選び、用語と使いたい訳語を追加します。",
+      "topic": "domains"
+    },
+    {
+      "duration_ms": 4190,
+      "file": "ja/CorpusStudio-paste-terms.mp3",
+      "language": "ja",
+      "page": "CorpusStudio",
+      "text": "表の用語・訳語の2列をコピーし、まとめて貼り付けます。",
+      "topic": "paste-terms"
+    },
+    {
+      "duration_ms": 3250,
+      "file": "ja/PromptStudio-edit-prompts.mp3",
+      "language": "ja",
+      "page": "PromptStudio",
+      "text": "プロンプト編集で指示を接続し、プロファイルを有効にします。",
+      "topic": "edit-prompts"
+    },
+    {
+      "duration_ms": 3910,
+      "file": "ja/PromptStudio-translation-style.mp3",
+      "language": "ja",
+      "page": "PromptStudio",
+      "text": "スタイルカードを選ぶと、以降の翻訳にその口調を使います。",
+      "topic": "translation-style"
+    },
+    {
+      "duration_ms": 5400,
+      "file": "ja/Settings-models.mp3",
+      "language": "ja",
+      "page": "Settings",
+      "text": "モデルページで、音声認識と翻訳モデルのコンテキスト長を設定します。",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 5880,
+      "file": "ja/Settings-quick-translation.mp3",
+      "language": "ja",
+      "page": "Settings",
+      "text": "ショートカットを有効にし、他のアプリで文字を選んで押すと翻訳します。",
+      "topic": "quick-translation"
+    },
+    {
+      "duration_ms": 3590,
+      "file": "ja/Translation-audio-preprocessing.mp3",
+      "language": "ja",
+      "page": "Translation",
+      "text": "音声ノイズ除去を選び、入力の背景ノイズを抑えます。",
+      "topic": "audio-preprocessing"
+    },
+    {
+      "duration_ms": 9890,
+      "file": "ja/Translation-auto-bidirectional.mp3",
+      "language": "ja",
+      "page": "Translation",
+      "text": "入力を「自動（双方向）」にし、会話する2言語を選びます。",
+      "topic": "auto-bidirectional"
+    },
+    {
+      "duration_ms": 3250,
+      "file": "ja/Translation-filter-strength.mp3",
+      "language": "ja",
+      "page": "Translation",
+      "text": "フィルター強度で音声を検出するしきい値を調整します。",
+      "topic": "filter-strength"
+    },
+    {
+      "duration_ms": 3740,
+      "file": "ja/Translation-pause-tolerance.mp3",
+      "language": "ja",
+      "page": "Translation",
+      "text": "ポーズ許容度で、文を区切るまでの無音時間を調整します。",
+      "topic": "pause-tolerance"
+    },
+    {
+      "duration_ms": 3030,
+      "file": "ja/Translation-translation.mp3",
+      "language": "ja",
+      "page": "Translation",
+      "text": "言語と音源を選び、翻訳を開始します。",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 6600,
+      "file": "ja/TtsCenter-reference-transcript.mp3",
+      "language": "ja",
+      "page": "TtsCenter",
+      "text": "0.5〜60秒の参照音声を取り込み、文字起こしを自動取得または入力します。",
+      "topic": "reference-transcript"
+    },
+    {
+      "duration_ms": 3500,
+      "file": "ja/TtsCenter-use-voice.mp3",
+      "language": "ja",
+      "page": "TtsCenter",
+      "text": "試聴してから「音声を使用」で翻訳の読み上げに使います。",
+      "topic": "use-voice"
+    },
+    {
+      "duration_ms": 9160,
+      "file": "ja/plugin-avatar-display-seconds.mp3",
+      "language": "ja",
+      "page": "plugin:avatar",
+      "text": "メッセージ領域を選び、音源・形式・表示秒数を調整します。",
+      "topic": "display-seconds"
+    },
+    {
+      "duration_ms": 5950,
+      "file": "ja/plugin-avatar-game-plugins.mp3",
+      "language": "ja",
+      "page": "plugin:avatar",
+      "text": "ゲームを選んで対応パッケージを導入し、アバターのXRT操作で開始します。",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 6350,
+      "file": "ja/plugin-avatar-header.mp3",
+      "language": "ja",
+      "page": "plugin:avatar",
+      "text": "プレビューのヘッダーかフッターを選び、常時表示する文字を入力します。",
+      "topic": "header"
+    },
+    {
+      "duration_ms": 5670,
+      "file": "ja/plugin-bigwalk-big-walk.mp3",
+      "language": "ja",
+      "page": "plugin:bigwalk",
+      "text": "設定ガイドでブリッジを接続し、ゲームチャットに送る音源を選びます。",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 6460,
+      "file": "ja/plugin-chilloutvr_osc-format.mp3",
+      "language": "ja",
+      "page": "plugin:chilloutvr_osc",
+      "text": "形式で訳文のみ、原文併記、行内表示を選びます。",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3380,
+      "file": "ja/plugin-chilloutvr_osc-maximum-display-time.mp3",
+      "language": "ja",
+      "page": "plugin:chilloutvr_osc",
+      "text": "最大表示時間でチャットメッセージを残す時間を設定します。",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 3750,
+      "file": "ja/plugin-chilloutvr_osc-osc.mp3",
+      "language": "ja",
+      "page": "plugin:chilloutvr_osc",
+      "text": "OSCを有効にして、訳文をチャットへ送る音源を選びます。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 3640,
+      "file": "ja/plugin-media-import-media.mp3",
+      "language": "ja",
+      "page": "plugin:media",
+      "text": "ファイルかリンクを取り込み、言語を選んで字幕を生成します。",
+      "topic": "import-media"
+    },
+    {
+      "duration_ms": 5400,
+      "file": "ja/plugin-media-subtitle-character-limit.mp3",
+      "language": "ja",
+      "page": "plugin:media",
+      "text": "タスクで字幕の文字数上限を設定し、字幕の区切りを最適化します。",
+      "topic": "subtitle-character-limit"
+    },
+    {
+      "duration_ms": 5510,
+      "file": "ja/plugin-media-subtitle-style.mp3",
+      "language": "ja",
+      "page": "plugin:media",
+      "text": "字幕スタイルを設定して、字幕ファイルや字幕付き動画を書き出します。",
+      "topic": "subtitle-style"
+    },
+    {
+      "duration_ms": 5650,
+      "file": "ja/plugin-meeting-new-meeting.mp3",
+      "language": "ja",
+      "page": "plugin:meeting",
+      "text": "会議を作成し、音源と録音保存を選んで記録を開始します。",
+      "topic": "new-meeting"
+    },
+    {
+      "duration_ms": 7080,
+      "file": "ja/plugin-meeting-organize.mp3",
+      "language": "ja",
+      "page": "plugin:meeting",
+      "text": "保存した会議で重要箇所を付け、「整理」で議事録を作成します。",
+      "topic": "organize"
+    },
+    {
+      "duration_ms": 5960,
+      "file": "ja/plugin-motion-follow-speech.mp3",
+      "language": "ja",
+      "page": "plugin:motion",
+      "text": "音声追従を有効にし、発話した内容を連続した動きに変換します。",
+      "topic": "follow-speech"
+    },
+    {
+      "duration_ms": 3690,
+      "file": "ja/plugin-motion-motion.mp3",
+      "language": "ja",
+      "page": "plugin:motion",
+      "text": "動作の説明を入力して生成し、プレビューで再生します。",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 6460,
+      "file": "ja/plugin-osc-format.mp3",
+      "language": "ja",
+      "page": "plugin:osc",
+      "text": "形式で訳文のみ、原文併記、行内表示を選びます。",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3380,
+      "file": "ja/plugin-osc-maximum-display-time.mp3",
+      "language": "ja",
+      "page": "plugin:osc",
+      "text": "最大表示時間でチャットメッセージを残す時間を設定します。",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 3750,
+      "file": "ja/plugin-osc-osc.mp3",
+      "language": "ja",
+      "page": "plugin:osc",
+      "text": "OSCを有効にして、訳文をチャットへ送る音源を選びます。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4860,
+      "file": "ja/plugin-osc-sync-game-microphone.mp3",
+      "language": "ja",
+      "page": "plugin:osc",
+      "text": "VRChatでToggle Voiceを有効にして、マイク同期をオンにします。",
+      "topic": "sync-game-microphone"
+    },
+    {
+      "duration_ms": 3220,
+      "file": "ja/plugin-vocabulary-generate-example.mp3",
+      "language": "ja",
+      "page": "plugin:vocabulary",
+      "text": "単語を開いて訳語を編集したり、例文を生成します。",
+      "topic": "generate-example"
+    },
+    {
+      "duration_ms": 3040,
+      "file": "ja/plugin-vocabulary-vocabulary.mp3",
+      "language": "ja",
+      "page": "plugin:vocabulary",
+      "text": "訳文の単語を保存し、単語帳にまとめます。",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3590,
+      "file": "ja/plugin-vr_overlay-distance-in-front.mp3",
+      "language": "ja",
+      "page": "plugin:vr_overlay",
+      "text": "字幕プレビューをドラッグし、距離と幅を調整して配置します。",
+      "topic": "distance-in-front"
+    },
+    {
+      "duration_ms": 5990,
+      "file": "ja/plugin-vr_overlay-steamvr.mp3",
+      "language": "ja",
+      "page": "plugin:vr_overlay",
+      "text": "SteamVRに接続して字幕を有効にし、VR内で訳文を表示します。",
+      "topic": "steamvr"
+    },
+    {
+      "duration_ms": 5230,
+      "file": "ko/AudioStudio-node-graph.mp3",
+      "language": "ko",
+      "page": "AudioStudio",
+      "text": "음원 노드를 인식, 모니터링, 게임 마이크에 연결하세요.",
+      "topic": "node-graph"
+    },
+    {
+      "duration_ms": 4980,
+      "file": "ko/AudioStudio-noise-gate.mp3",
+      "language": "ko",
+      "page": "AudioStudio",
+      "text": "노드 추가에서 게인이나 노이즈 게이트를 추가하고 노드에서 조정하세요.",
+      "topic": "noise-gate"
+    },
+    {
+      "duration_ms": 3390,
+      "file": "ko/AudioStudio-quick-controls.mp3",
+      "language": "ko",
+      "page": "AudioStudio",
+      "text": "빠른 제어에서 입력 장치와 출력 음량을 선택하세요.",
+      "topic": "quick-controls"
+    },
+    {
+      "duration_ms": 5810,
+      "file": "ko/CorpusStudio-domain-rules.mp3",
+      "language": "ko",
+      "page": "CorpusStudio",
+      "text": "분야 규칙에 주제 키워드를 입력해 용어 묶음을 활성화하세요.",
+      "topic": "domain-rules"
+    },
+    {
+      "duration_ms": 3760,
+      "file": "ko/CorpusStudio-domains.mp3",
+      "language": "ko",
+      "page": "CorpusStudio",
+      "text": "분야를 선택하고 용어와 원하는 번역을 추가하세요.",
+      "topic": "domains"
+    },
+    {
+      "duration_ms": 3050,
+      "file": "ko/CorpusStudio-paste-terms.mp3",
+      "language": "ko",
+      "page": "CorpusStudio",
+      "text": "표에서 용어와 번역 두 열을 복사해 한 번에 가져오세요.",
+      "topic": "paste-terms"
+    },
+    {
+      "duration_ms": 3470,
+      "file": "ko/PromptStudio-edit-prompts.mp3",
+      "language": "ko",
+      "page": "PromptStudio",
+      "text": "프롬프트 편집에서 지시를 연결하고 프로필을 활성화하세요.",
+      "topic": "edit-prompts"
+    },
+    {
+      "duration_ms": 3410,
+      "file": "ko/PromptStudio-translation-style.mp3",
+      "language": "ko",
+      "page": "PromptStudio",
+      "text": "스타일 카드를 선택해 이후 번역에 해당 말투를 적용하세요.",
+      "topic": "translation-style"
+    },
+    {
+      "duration_ms": 5200,
+      "file": "ko/Settings-models.mp3",
+      "language": "ko",
+      "page": "Settings",
+      "text": "모델 페이지에서 음성 인식 및 번역 모델의 컨텍스트 길이를 설정하세요.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 5670,
+      "file": "ko/Settings-quick-translation.mp3",
+      "language": "ko",
+      "page": "Settings",
+      "text": "단축키를 켜고 다른 앱에서 글을 선택한 뒤 눌러 번역하세요.",
+      "topic": "quick-translation"
+    },
+    {
+      "duration_ms": 4950,
+      "file": "ko/Translation-audio-preprocessing.mp3",
+      "language": "ko",
+      "page": "Translation",
+      "text": "음성 잡음 제거를 선택해 입력의 배경 소음을 줄이세요.",
+      "topic": "audio-preprocessing"
+    },
+    {
+      "duration_ms": 5550,
+      "file": "ko/Translation-auto-bidirectional.mp3",
+      "language": "ko",
+      "page": "Translation",
+      "text": "입력을 자동(양방향)으로 바꾸고 대화할 두 언어를 선택하세요.",
+      "topic": "auto-bidirectional"
+    },
+    {
+      "duration_ms": 3280,
+      "file": "ko/Translation-filter-strength.mp3",
+      "language": "ko",
+      "page": "Translation",
+      "text": "필터 강도를 움직여 음성 감지 기준을 조정하세요.",
+      "topic": "filter-strength"
+    },
+    {
+      "duration_ms": 5660,
+      "file": "ko/Translation-pause-tolerance.mp3",
+      "language": "ko",
+      "page": "Translation",
+      "text": "일시 정지 허용치로 문장을 끝내는 쉼의 길이를 조정하세요.",
+      "topic": "pause-tolerance"
+    },
+    {
+      "duration_ms": 2830,
+      "file": "ko/Translation-translation.mp3",
+      "language": "ko",
+      "page": "Translation",
+      "text": "언어와 음원을 선택하고 번역을 시작하세요.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 6610,
+      "file": "ko/TtsCenter-reference-transcript.mp3",
+      "language": "ko",
+      "page": "TtsCenter",
+      "text": "0.5~60초 참조 음성을 가져와 자동으로 전사하거나 내용을 입력하세요.",
+      "topic": "reference-transcript"
+    },
+    {
+      "duration_ms": 3680,
+      "file": "ko/TtsCenter-use-voice.mp3",
+      "language": "ko",
+      "page": "TtsCenter",
+      "text": "미리 듣고 음성 사용을 눌러 번역 읽기에 적용하세요.",
+      "topic": "use-voice"
+    },
+    {
+      "duration_ms": 6160,
+      "file": "ko/plugin-avatar-display-seconds.mp3",
+      "language": "ko",
+      "page": "plugin:avatar",
+      "text": "메시지 영역을 선택하고 음원, 형식, 표시 시간을 조정하세요.",
+      "topic": "display-seconds"
+    },
+    {
+      "duration_ms": 5400,
+      "file": "ko/plugin-avatar-game-plugins.mp3",
+      "language": "ko",
+      "page": "plugin:avatar",
+      "text": "게임과 패키지를 설정하고 아바타의 XRT 컨트롤로 시작하세요.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 5270,
+      "file": "ko/plugin-avatar-header.mp3",
+      "language": "ko",
+      "page": "plugin:avatar",
+      "text": "미리 보기의 머리글이나 바닥글을 선택해 표시할 글을 입력하세요.",
+      "topic": "header"
+    },
+    {
+      "duration_ms": 6220,
+      "file": "ko/plugin-bigwalk-big-walk.mp3",
+      "language": "ko",
+      "page": "plugin:bigwalk",
+      "text": "설정 가이드로 브리지를 연결하고 게임 채팅에 보낼 음원을 고르세요.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 5320,
+      "file": "ko/plugin-chilloutvr_osc-format.mp3",
+      "language": "ko",
+      "page": "plugin:chilloutvr_osc",
+      "text": "형식에서 번역만, 이중 언어, 인라인 표시를 선택하세요.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3250,
+      "file": "ko/plugin-chilloutvr_osc-maximum-display-time.mp3",
+      "language": "ko",
+      "page": "plugin:chilloutvr_osc",
+      "text": "최대 표시 시간으로 채팅 메시지를 유지할 시간을 정하세요.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 4630,
+      "file": "ko/plugin-chilloutvr_osc-osc.mp3",
+      "language": "ko",
+      "page": "plugin:chilloutvr_osc",
+      "text": "OSC를 켜고 번역을 채팅창에 보낼 음원을 선택하세요.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 5620,
+      "file": "ko/plugin-media-import-media.mp3",
+      "language": "ko",
+      "page": "plugin:media",
+      "text": "파일이나 링크를 가져와 언어를 선택하고 자막을 생성하세요.",
+      "topic": "import-media"
+    },
+    {
+      "duration_ms": 5160,
+      "file": "ko/plugin-media-subtitle-character-limit.mp3",
+      "language": "ko",
+      "page": "plugin:media",
+      "text": "작업에서 자막 글자 수 제한을 정하고 자막 분할을 최적화하세요.",
+      "topic": "subtitle-character-limit"
+    },
+    {
+      "duration_ms": 5270,
+      "file": "ko/plugin-media-subtitle-style.mp3",
+      "language": "ko",
+      "page": "plugin:media",
+      "text": "자막 스타일을 설정하고 자막 파일이나 자막 포함 영상을 내보내세요.",
+      "topic": "subtitle-style"
+    },
+    {
+      "duration_ms": 5000,
+      "file": "ko/plugin-meeting-new-meeting.mp3",
+      "language": "ko",
+      "page": "plugin:meeting",
+      "text": "회의를 만들고 음원과 녹음 보관을 선택한 뒤 기록을 시작하세요.",
+      "topic": "new-meeting"
+    },
+    {
+      "duration_ms": 5130,
+      "file": "ko/plugin-meeting-organize.mp3",
+      "language": "ko",
+      "page": "plugin:meeting",
+      "text": "회의에서 중요 부분을 표시하고 정리 탭에서 회의록을 생성하세요.",
+      "topic": "organize"
+    },
+    {
+      "duration_ms": 4290,
+      "file": "ko/plugin-motion-follow-speech.mp3",
+      "language": "ko",
+      "page": "plugin:motion",
+      "text": "음성 따라가기를 켜고 말한 내용을 연속 동작으로 바꾸세요.",
+      "topic": "follow-speech"
+    },
+    {
+      "duration_ms": 3300,
+      "file": "ko/plugin-motion-motion.mp3",
+      "language": "ko",
+      "page": "plugin:motion",
+      "text": "동작 설명을 입력하고 생성해 미리 보기로 재생하세요.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 4990,
+      "file": "ko/plugin-osc-format.mp3",
+      "language": "ko",
+      "page": "plugin:osc",
+      "text": "형식에서 번역만, 이중 언어, 인라인 표시를 선택하세요.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 5130,
+      "file": "ko/plugin-osc-maximum-display-time.mp3",
+      "language": "ko",
+      "page": "plugin:osc",
+      "text": "최대 표시 시간으로 채팅 메시지를 유지할 시간을 정하세요.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 4660,
+      "file": "ko/plugin-osc-osc.mp3",
+      "language": "ko",
+      "page": "plugin:osc",
+      "text": "OSC를 켜고 번역을 채팅창에 보낼 음원을 선택하세요.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4610,
+      "file": "ko/plugin-osc-sync-game-microphone.mp3",
+      "language": "ko",
+      "page": "plugin:osc",
+      "text": "VRChat에서 Toggle Voice를 켜고 게임 마이크 동기화를 켜세요.",
+      "topic": "sync-game-microphone"
+    },
+    {
+      "duration_ms": 3350,
+      "file": "ko/plugin-vocabulary-generate-example.mp3",
+      "language": "ko",
+      "page": "plugin:vocabulary",
+      "text": "단어를 열어 번역을 편집하거나 예문을 생성하세요.",
+      "topic": "generate-example"
+    },
+    {
+      "duration_ms": 3360,
+      "file": "ko/plugin-vocabulary-vocabulary.mp3",
+      "language": "ko",
+      "page": "plugin:vocabulary",
+      "text": "번역에서 단어를 저장하고 단어장으로 정리하세요.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3650,
+      "file": "ko/plugin-vr_overlay-distance-in-front.mp3",
+      "language": "ko",
+      "page": "plugin:vr_overlay",
+      "text": "자막 미리 보기를 끌고 거리와 너비를 조정해 배치하세요.",
+      "topic": "distance-in-front"
+    },
+    {
+      "duration_ms": 5250,
+      "file": "ko/plugin-vr_overlay-steamvr.mp3",
+      "language": "ko",
+      "page": "plugin:vr_overlay",
+      "text": "SteamVR에 연결하고 자막을 켜 VR에서 번역을 표시하세요.",
+      "topic": "steamvr"
+    },
+    {
+      "duration_ms": 6610,
+      "file": "ru/AudioStudio-node-graph.mp3",
+      "language": "ru",
+      "page": "AudioStudio",
+      "text": "Соедините источники с распознаванием, мониторингом или игровым микрофоном.",
+      "topic": "node-graph"
+    },
+    {
+      "duration_ms": 6320,
+      "file": "ru/AudioStudio-noise-gate.mp3",
+      "language": "ru",
+      "page": "AudioStudio",
+      "text": "Добавьте усиление или шумовой порог через «+ Узел» и настройте его.",
+      "topic": "noise-gate"
+    },
+    {
+      "duration_ms": 6220,
+      "file": "ru/AudioStudio-quick-controls.mp3",
+      "language": "ru",
+      "page": "AudioStudio",
+      "text": "В быстром управлении выберите устройства ввода и громкость вывода.",
+      "topic": "quick-controls"
+    },
+    {
+      "duration_ms": 6040,
+      "file": "ru/CorpusStudio-domain-rules.mp3",
+      "language": "ru",
+      "page": "CorpusStudio",
+      "text": "В правилах области задайте ключевые слова для включения группы терминов.",
+      "topic": "domain-rules"
+    },
+    {
+      "duration_ms": 5672,
+      "file": "ru/CorpusStudio-domains.mp3",
+      "language": "ru",
+      "page": "CorpusStudio",
+      "text": "Выберите область и добавьте термины с нужными переводами.",
+      "topic": "domains"
+    },
+    {
+      "duration_ms": 6590,
+      "file": "ru/CorpusStudio-paste-terms.mp3",
+      "language": "ru",
+      "page": "CorpusStudio",
+      "text": "Скопируйте два столбца с терминами и переводами для массовой вставки.",
+      "topic": "paste-terms"
+    },
+    {
+      "duration_ms": 5900,
+      "file": "ru/PromptStudio-edit-prompts.mp3",
+      "language": "ru",
+      "page": "PromptStudio",
+      "text": "Откройте редактор промптов, соедините инструкции и активируйте профиль.",
+      "topic": "edit-prompts"
+    },
+    {
+      "duration_ms": 3100,
+      "file": "ru/PromptStudio-translation-style.mp3",
+      "language": "ru",
+      "page": "PromptStudio",
+      "text": "Выберите карточку стиля для последующих переводов.",
+      "topic": "translation-style"
+    },
+    {
+      "duration_ms": 6380,
+      "file": "ru/Settings-models.mp3",
+      "language": "ru",
+      "page": "Settings",
+      "text": "На странице моделей задайте длину контекста для распознавания и перевода.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 5640,
+      "file": "ru/Settings-quick-translation.mp3",
+      "language": "ru",
+      "page": "Settings",
+      "text": "Включите сочетание клавиш, выделите текст в другом приложении и нажмите его.",
+      "topic": "quick-translation"
+    },
+    {
+      "duration_ms": 3630,
+      "file": "ru/Translation-audio-preprocessing.mp3",
+      "language": "ru",
+      "page": "Translation",
+      "text": "Выберите подавление шума речи, чтобы уменьшить фоновый шум.",
+      "topic": "audio-preprocessing"
+    },
+    {
+      "duration_ms": 5540,
+      "file": "ru/Translation-auto-bidirectional.mp3",
+      "language": "ru",
+      "page": "Translation",
+      "text": "Выберите автоопределение в обе стороны и два языка разговора.",
+      "topic": "auto-bidirectional"
+    },
+    {
+      "duration_ms": 6350,
+      "file": "ru/Translation-filter-strength.mp3",
+      "language": "ru",
+      "page": "Translation",
+      "text": "Настройте силу фильтра, чтобы задать порог обнаружения речи.",
+      "topic": "filter-strength"
+    },
+    {
+      "duration_ms": 7050,
+      "file": "ru/Translation-pause-tolerance.mp3",
+      "language": "ru",
+      "page": "Translation",
+      "text": "Настройте длительность паузы, после которой заканчивается фраза.",
+      "topic": "pause-tolerance"
+    },
+    {
+      "duration_ms": 6080,
+      "file": "ru/Translation-translation.mp3",
+      "language": "ru",
+      "page": "Translation",
+      "text": "Выберите языки и источник звука, затем начните перевод.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 8540,
+      "file": "ru/TtsCenter-reference-transcript.mp3",
+      "language": "ru",
+      "page": "TtsCenter",
+      "text": "Добавьте образец на 0,5–60 с; распознайте или введите его текст.",
+      "topic": "reference-transcript"
+    },
+    {
+      "duration_ms": 5540,
+      "file": "ru/TtsCenter-use-voice.mp3",
+      "language": "ru",
+      "page": "TtsCenter",
+      "text": "Прослушайте голос и выберите его для озвучки перевода.",
+      "topic": "use-voice"
+    },
+    {
+      "duration_ms": 6200,
+      "file": "ru/plugin-avatar-display-seconds.mp3",
+      "language": "ru",
+      "page": "plugin:avatar",
+      "text": "Выберите сообщения и настройте источники, формат и время показа.",
+      "topic": "display-seconds"
+    },
+    {
+      "duration_ms": 6510,
+      "file": "ru/plugin-avatar-game-plugins.mp3",
+      "language": "ru",
+      "page": "plugin:avatar",
+      "text": "Выберите игру, установите пакет и запустите перевод элементом XRT на аватаре.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 6130,
+      "file": "ru/plugin-avatar-header.mp3",
+      "language": "ru",
+      "page": "plugin:avatar",
+      "text": "Выберите заголовок или подпись в предпросмотре и введите постоянный текст.",
+      "topic": "header"
+    },
+    {
+      "duration_ms": 5740,
+      "file": "ru/plugin-bigwalk-big-walk.mp3",
+      "language": "ru",
+      "page": "plugin:bigwalk",
+      "text": "Подключите мост по руководству и выберите источники для игрового чата.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 6350,
+      "file": "ru/plugin-chilloutvr_osc-format.mp3",
+      "language": "ru",
+      "page": "plugin:chilloutvr_osc",
+      "text": "В формате выберите только перевод, два языка или текст в одной строке.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 2836,
+      "file": "ru/plugin-chilloutvr_osc-maximum-display-time.mp3",
+      "language": "ru",
+      "page": "plugin:chilloutvr_osc",
+      "text": "Задайте максимальное время показа сообщений в чате.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 6210,
+      "file": "ru/plugin-chilloutvr_osc-osc.mp3",
+      "language": "ru",
+      "page": "plugin:chilloutvr_osc",
+      "text": "Включите OSC и выберите источники для отправки перевода в чат.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 5780,
+      "file": "ru/plugin-media-import-media.mp3",
+      "language": "ru",
+      "page": "plugin:media",
+      "text": "Импортируйте файл или ссылку, выберите языки и создайте субтитры.",
+      "topic": "import-media"
+    },
+    {
+      "duration_ms": 5960,
+      "file": "ru/plugin-media-subtitle-character-limit.mp3",
+      "language": "ru",
+      "page": "plugin:media",
+      "text": "В задаче задайте предел символов и оптимизируйте деление субтитров.",
+      "topic": "subtitle-character-limit"
+    },
+    {
+      "duration_ms": 5770,
+      "file": "ru/plugin-media-subtitle-style.mp3",
+      "language": "ru",
+      "page": "plugin:media",
+      "text": "Настройте стиль и экспортируйте субтитры или видео с ними.",
+      "topic": "subtitle-style"
+    },
+    {
+      "duration_ms": 5900,
+      "file": "ru/plugin-meeting-new-meeting.mp3",
+      "language": "ru",
+      "page": "plugin:meeting",
+      "text": "Создайте встречу, выберите источники и сохранение записи, затем начните.",
+      "topic": "new-meeting"
+    },
+    {
+      "duration_ms": 6710,
+      "file": "ru/plugin-meeting-organize.mp3",
+      "language": "ru",
+      "page": "plugin:meeting",
+      "text": "Отметьте важные моменты встречи и создайте протокол во вкладке обработки.",
+      "topic": "organize"
+    },
+    {
+      "duration_ms": 6060,
+      "file": "ru/plugin-motion-follow-speech.mp3",
+      "language": "ru",
+      "page": "plugin:motion",
+      "text": "Включите следование речи для преобразования фраз в непрерывные движения.",
+      "topic": "follow-speech"
+    },
+    {
+      "duration_ms": 3450,
+      "file": "ru/plugin-motion-motion.mp3",
+      "language": "ru",
+      "page": "plugin:motion",
+      "text": "Опишите действие и создайте движение для предпросмотра.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 6350,
+      "file": "ru/plugin-osc-format.mp3",
+      "language": "ru",
+      "page": "plugin:osc",
+      "text": "В формате выберите только перевод, два языка или текст в одной строке.",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 3070,
+      "file": "ru/plugin-osc-maximum-display-time.mp3",
+      "language": "ru",
+      "page": "plugin:osc",
+      "text": "Задайте максимальное время показа сообщений в чате.",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 5980,
+      "file": "ru/plugin-osc-osc.mp3",
+      "language": "ru",
+      "page": "plugin:osc",
+      "text": "Включите OSC и выберите источники для отправки перевода в чат.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 5730,
+      "file": "ru/plugin-osc-sync-game-microphone.mp3",
+      "language": "ru",
+      "page": "plugin:osc",
+      "text": "Включите Toggle Voice в VRChat, затем синхронизацию микрофона.",
+      "topic": "sync-game-microphone"
+    },
+    {
+      "duration_ms": 5960,
+      "file": "ru/plugin-vocabulary-generate-example.mp3",
+      "language": "ru",
+      "page": "plugin:vocabulary",
+      "text": "Откройте слово, чтобы изменить переводы или создать пример.",
+      "topic": "generate-example"
+    },
+    {
+      "duration_ms": 6160,
+      "file": "ru/plugin-vocabulary-vocabulary.mp3",
+      "language": "ru",
+      "page": "plugin:vocabulary",
+      "text": "Сохраняйте слова из переводов и распределяйте по словарям.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 6870,
+      "file": "ru/plugin-vr_overlay-distance-in-front.mp3",
+      "language": "ru",
+      "page": "plugin:vr_overlay",
+      "text": "Перетащите предпросмотр субтитров и настройте расстояние и ширину.",
+      "topic": "distance-in-front"
+    },
+    {
+      "duration_ms": 6020,
+      "file": "ru/plugin-vr_overlay-steamvr.mp3",
+      "language": "ru",
+      "page": "plugin:vr_overlay",
+      "text": "Подключите SteamVR и включите субтитры для показа перевода в VR.",
+      "topic": "steamvr"
+    },
+    {
+      "duration_ms": 5270,
+      "file": "zh/AudioStudio-node-graph.mp3",
+      "language": "zh",
+      "page": "AudioStudio",
+      "text": "把音源节点连接到识别、监听或游戏麦克风。",
+      "topic": "node-graph"
+    },
+    {
+      "duration_ms": 6298,
+      "file": "zh/AudioStudio-noise-gate.mp3",
+      "language": "zh",
+      "page": "AudioStudio",
+      "text": "添加增益调音量，用噪声门设置收音门槛。",
+      "topic": "noise-gate"
+    },
+    {
+      "duration_ms": 4720,
+      "file": "zh/AudioStudio-quick-controls.mp3",
+      "language": "zh",
+      "page": "AudioStudio",
+      "text": "在快捷控制中选择输入设备，调整输出音量。",
+      "topic": "quick-controls"
+    },
+    {
+      "duration_ms": 5510,
+      "file": "zh/CorpusStudio-domain-rules.mp3",
+      "language": "zh",
+      "page": "CorpusStudio",
+      "text": "打开领域规则，填入话题提示词来整组启用术语。",
+      "topic": "domain-rules"
+    },
+    {
+      "duration_ms": 2711,
+      "file": "zh/CorpusStudio-domains.mp3",
+      "language": "zh",
+      "page": "CorpusStudio",
+      "text": "选择领域，添加术语及希望采用的译法。",
+      "topic": "domains"
+    },
+    {
+      "duration_ms": 5190,
+      "file": "zh/CorpusStudio-paste-terms.mp3",
+      "language": "zh",
+      "page": "CorpusStudio",
+      "text": "复制表格的词语、译法两列，用批量粘贴一起导入。",
+      "topic": "paste-terms"
+    },
+    {
+      "duration_ms": 2980,
+      "file": "zh/PromptStudio-edit-prompts.mp3",
+      "language": "zh",
+      "page": "PromptStudio",
+      "text": "连接自定义指令，再激活提示词方案。",
+      "topic": "edit-prompts"
+    },
+    {
+      "duration_ms": 2800,
+      "file": "zh/PromptStudio-translation-style.mp3",
+      "language": "zh",
+      "page": "PromptStudio",
+      "text": "选择风格卡，让后续译文采用对应语气。",
+      "topic": "translation-style"
+    },
+    {
+      "duration_ms": 5050,
+      "file": "zh/Settings-models.mp3",
+      "language": "zh",
+      "page": "Settings",
+      "text": "在模型页设置识别和翻译的上下文长度。",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 5350,
+      "file": "zh/Settings-quick-translation.mp3",
+      "language": "zh",
+      "page": "Settings",
+      "text": "启用快捷键，在其他应用选中文字，按键即可翻译。",
+      "topic": "quick-translation"
+    },
+    {
+      "duration_ms": 5170,
+      "file": "zh/Translation-audio-preprocessing.mp3",
+      "language": "zh",
+      "page": "Translation",
+      "text": "选择语音降噪，减少输入中的背景噪声。",
+      "topic": "audio-preprocessing"
+    },
+    {
+      "duration_ms": 5710,
+      "file": "zh/Translation-auto-bidirectional.mp3",
+      "language": "zh",
+      "page": "Translation",
+      "text": "输入选「自动（双向）」，再选两种对话语言。",
+      "topic": "auto-bidirectional"
+    },
+    {
+      "duration_ms": 2830,
+      "file": "zh/Translation-filter-strength.mp3",
+      "language": "zh",
+      "page": "Translation",
+      "text": "拖动过滤强度，调整语音的收音门槛。",
+      "topic": "filter-strength"
+    },
+    {
+      "duration_ms": 5150,
+      "file": "zh/Translation-pause-tolerance.mp3",
+      "language": "zh",
+      "page": "Translation",
+      "text": "自动模式下，用停顿容忍度调整断句节奏。",
+      "topic": "pause-tolerance"
+    },
+    {
+      "duration_ms": 4190,
+      "file": "zh/Translation-translation.mp3",
+      "language": "zh",
+      "page": "Translation",
+      "text": "选好语言，开启所需音源，再开始翻译。",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 5820,
+      "file": "zh/TtsCenter-reference-transcript.mp3",
+      "language": "zh",
+      "page": "TtsCenter",
+      "text": "导入0.5–60秒参考音频，自动识别或手填参考文本。",
+      "topic": "reference-transcript"
+    },
+    {
+      "duration_ms": 3168,
+      "file": "zh/TtsCenter-use-voice.mp3",
+      "language": "zh",
+      "page": "TtsCenter",
+      "text": "试听后点「使用声音」，将它用于译文朗读。",
+      "topic": "use-voice"
+    },
+    {
+      "duration_ms": 4610,
+      "file": "zh/plugin-avatar-display-seconds.mp3",
+      "language": "zh",
+      "page": "plugin:avatar",
+      "text": "选中消息区，调整音源、格式和显示秒数。",
+      "topic": "display-seconds"
+    },
+    {
+      "duration_ms": 5920,
+      "file": "zh/plugin-avatar-game-plugins.mp3",
+      "language": "zh",
+      "page": "plugin:avatar",
+      "text": "选游戏并按说明安装对应包，再用Avatar的XRT控件启动。",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 5040,
+      "file": "zh/plugin-avatar-header.mp3",
+      "language": "zh",
+      "page": "plugin:avatar",
+      "text": "选中预览的页眉或页脚，填写要常驻显示的文字。",
+      "topic": "header"
+    },
+    {
+      "duration_ms": 6040,
+      "file": "zh/plugin-bigwalk-big-walk.mp3",
+      "language": "zh",
+      "page": "plugin:bigwalk",
+      "text": "按配置指南连接桥接，再选发送到游戏聊天的音源。",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 4690,
+      "file": "zh/plugin-chilloutvr_osc-format.mp3",
+      "language": "zh",
+      "page": "plugin:chilloutvr_osc",
+      "text": "在格式中选择仅译文、双语分行或行内显示。",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 4360,
+      "file": "zh/plugin-chilloutvr_osc-maximum-display-time.mp3",
+      "language": "zh",
+      "page": "plugin:chilloutvr_osc",
+      "text": "用最长显示时间设置聊天框消息保留多久。",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 5850,
+      "file": "zh/plugin-chilloutvr_osc-osc.mp3",
+      "language": "zh",
+      "page": "plugin:chilloutvr_osc",
+      "text": "打开OSC，勾选要把译文发送到聊天框的音源。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4800,
+      "file": "zh/plugin-media-import-media.mp3",
+      "language": "zh",
+      "page": "plugin:media",
+      "text": "导入文件或链接，选好语言后生成字幕。",
+      "topic": "import-media"
+    },
+    {
+      "duration_ms": 5440,
+      "file": "zh/plugin-media-subtitle-character-limit.mp3",
+      "language": "zh",
+      "page": "plugin:media",
+      "text": "打开任务，设置字幕字符上限，再优化字幕分句。",
+      "topic": "subtitle-character-limit"
+    },
+    {
+      "duration_ms": 5210,
+      "file": "zh/plugin-media-subtitle-style.mp3",
+      "language": "zh",
+      "page": "plugin:media",
+      "text": "设置字幕样式，再导出字幕文件或带字幕的视频。",
+      "topic": "subtitle-style"
+    },
+    {
+      "duration_ms": 4700,
+      "file": "zh/plugin-meeting-new-meeting.mp3",
+      "language": "zh",
+      "page": "plugin:meeting",
+      "text": "新建会议选音源，按需勾选保留录音，再开始记录。",
+      "topic": "new-meeting"
+    },
+    {
+      "duration_ms": 5640,
+      "file": "zh/plugin-meeting-organize.mp3",
+      "language": "zh",
+      "page": "plugin:meeting",
+      "text": "打开会议标记重点，再到整理页生成纪要。",
+      "topic": "organize"
+    },
+    {
+      "duration_ms": 5790,
+      "file": "zh/plugin-motion-follow-speech.mp3",
+      "language": "zh",
+      "page": "plugin:motion",
+      "text": "勾选跟随语音，把刚说完的内容转换成连续动作。",
+      "topic": "follow-speech"
+    },
+    {
+      "duration_ms": 5030,
+      "file": "zh/plugin-motion-motion.mp3",
+      "language": "zh",
+      "page": "plugin:motion",
+      "text": "输入动作描述后生成，在预览中播放动作。",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 5230,
+      "file": "zh/plugin-osc-format.mp3",
+      "language": "zh",
+      "page": "plugin:osc",
+      "text": "在格式中选择仅译文、双语分行或行内显示。",
+      "topic": "format"
+    },
+    {
+      "duration_ms": 5270,
+      "file": "zh/plugin-osc-maximum-display-time.mp3",
+      "language": "zh",
+      "page": "plugin:osc",
+      "text": "用最长显示时间设置聊天框消息保留多久。",
+      "topic": "maximum-display-time"
+    },
+    {
+      "duration_ms": 5370,
+      "file": "zh/plugin-osc-osc.mp3",
+      "language": "zh",
+      "page": "plugin:osc",
+      "text": "打开OSC，勾选要把译文发送到聊天框的音源。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 5077,
+      "file": "zh/plugin-osc-sync-game-microphone.mp3",
+      "language": "zh",
+      "page": "plugin:osc",
+      "text": "在VRChat开启Toggle Voice，再打开麦克风同步。",
+      "topic": "sync-game-microphone"
+    },
+    {
+      "duration_ms": 2410,
+      "file": "zh/plugin-vocabulary-generate-example.mp3",
+      "language": "zh",
+      "page": "plugin:vocabulary",
+      "text": "打开词条，编辑译法或生成例句。",
+      "topic": "generate-example"
+    },
+    {
+      "duration_ms": 4740,
+      "file": "zh/plugin-vocabulary-vocabulary.mp3",
+      "language": "zh",
+      "page": "plugin:vocabulary",
+      "text": "在译文中收藏词语，用单词本归档整理。",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 4860,
+      "file": "zh/plugin-vr_overlay-distance-in-front.mp3",
+      "language": "zh",
+      "page": "plugin:vr_overlay",
+      "text": "拖动字幕预览摆放位置，再调整距离和宽度。",
+      "topic": "distance-in-front"
+    },
+    {
+      "duration_ms": 5110,
+      "file": "zh/plugin-vr_overlay-steamvr.mp3",
+      "language": "zh",
+      "page": "plugin:vr_overlay",
+      "text": "连接SteamVR并开启字幕，在VR中显示译文。",
+      "topic": "steamvr"
+    }
+  ]
+}

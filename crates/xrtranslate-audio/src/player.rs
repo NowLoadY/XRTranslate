@@ -1,0 +1,465 @@
+//! Local audio playback without an optional video runtime. Decode off the UI
+//! thread, keep at most two seconds queued, and never do I/O in the audio callback.
+use super::{PlaybackStatus, source};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossbeam_channel::{Sender, bounded};
+use parking_lot::Mutex;
+use std::{collections::VecDeque, path::PathBuf, sync::Arc, thread::JoinHandle, time::Duration};
+
+#[derive(Default)]
+struct State {
+    frames: VecDeque<[f32; 2]>,
+    generation: u64,
+    rate: u32,
+    channels: usize,
+    duration_ms: i64,
+    position: f64,
+    phase: f64,
+    playing: bool,
+    eof: bool,
+    volume: f32,
+    muted: bool,
+    enabled: Vec<bool>,
+    error: Option<String>,
+    fade: Option<(f64, f64)>,
+}
+enum Command {
+    Load(source::Source, u64),
+    Seek(i64),
+    Stop,
+    Play,
+    Pause,
+    Quit,
+}
+pub struct AudioPlayer {
+    state: Arc<Mutex<State>>,
+    commands: Sender<Command>,
+    worker: Option<JoinHandle<()>>,
+}
+impl AudioPlayer {
+    pub fn new() -> Result<Self, String> {
+        let state = Arc::new(Mutex::new(State {
+            volume: 1.0,
+            ..Default::default()
+        }));
+        let (commands, rx) = bounded(16);
+        let shared = state.clone();
+        let worker = std::thread::Builder::new()
+            .name("media-audio-playback".into())
+            .spawn(move || {
+                let mut source: Option<source::Source> = None;
+                let mut output = None;
+                let mut generation = 0;
+                loop {
+                    let active = shared.lock().playing;
+                    if !active {
+                        output = None;
+                    }
+                    let command = if active {
+                        rx.recv_timeout(Duration::from_millis(5)).ok()
+                    } else {
+                        rx.recv().ok()
+                    };
+                    match command {
+                        Some(Command::Quit) => break,
+                        Some(Command::Load(loaded, loaded_generation)) => {
+                            output = None;
+                            source = Some(loaded);
+                            generation = loaded_generation;
+                        }
+                        Some(Command::Seek(ms)) => {
+                            if {
+                                let state = shared.lock();
+                                generation == state.generation
+                            } && let Some(source) = &mut source
+                            {
+                                let was_playing = shared.lock().playing;
+                                let result = source.seek(ms);
+                                let mut state = shared.lock();
+                                if generation != state.generation {
+                                    continue;
+                                }
+                                match result {
+                                    Ok(()) => {
+                                        state.frames.clear();
+                                        state.position =
+                                            ms.max(0) as f64 * state.rate as f64 / 1000.0;
+                                        state.phase = 0.0;
+                                        state.eof = false;
+                                        state.playing = was_playing;
+                                    }
+                                    Err(error) => {
+                                        state.error = Some(error);
+                                        state.playing = false;
+                                    }
+                                }
+                            }
+                        }
+                        Some(Command::Stop) => {
+                            output = None;
+                            if let Some(source) = &mut source {
+                                let _ = source.seek(0);
+                            }
+                            let mut state = shared.lock();
+                            state.playing = false;
+                            state.frames.clear();
+                            state.position = 0.0;
+                            state.phase = 0.0;
+                            state.eof = false;
+                        }
+                        Some(Command::Play) => {
+                            if {
+                                let state = shared.lock();
+                                generation == state.generation
+                            } && let Some(source) = &mut source
+                            {
+                                let restart = {
+                                    let state = shared.lock();
+                                    state.eof && state.frames.is_empty()
+                                };
+                                let result = if restart { source.seek(0) } else { Ok(()) };
+                                let mut state = shared.lock();
+                                if generation != state.generation {
+                                    continue;
+                                }
+                                match result {
+                                    Ok(()) => {
+                                        if restart {
+                                            state.position = 0.0;
+                                            state.phase = 0.0;
+                                            state.eof = false;
+                                        }
+                                        state.playing = true;
+                                    }
+                                    Err(error) => {
+                                        state.error = Some(error);
+                                        state.playing = false;
+                                    }
+                                }
+                            }
+                        }
+                        Some(Command::Pause) => shared.lock().playing = false,
+                        None => {}
+                    }
+                    if {
+                        let state = shared.lock();
+                        !state.playing || generation != state.generation
+                    } {
+                        continue;
+                    }
+                    if output.is_none() {
+                        match create_output(shared.clone()) {
+                            Ok(stream) => output = Some(stream),
+                            Err(error) => {
+                                let mut state = shared.lock();
+                                state.error = Some(error);
+                                state.playing = false;
+                                continue;
+                            }
+                        }
+                    }
+                    let enabled = {
+                        let state = shared.lock();
+                        if state.eof || state.frames.len() >= state.rate as usize * 2 {
+                            continue;
+                        }
+                        state.enabled.clone()
+                    };
+                    if let Some(source) = &mut source {
+                        let result = source.read(&enabled);
+                        let mut state = shared.lock();
+                        if generation != state.generation {
+                            continue;
+                        }
+                        match result {
+                            Ok(Some(frames)) => state.frames.extend(frames),
+                            Ok(None) => state.eof = true,
+                            Err(error) => {
+                                state.error = Some(error);
+                                state.playing = false;
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            state,
+            commands,
+            worker: Some(worker),
+        })
+    }
+    fn command(&self, command: Command) {
+        if self.commands.send(command).is_err() {
+            self.state.lock().error = Some("Audio playback stopped unexpectedly".into());
+        }
+    }
+}
+impl Drop for AudioPlayer {
+    fn drop(&mut self) {
+        // Silence the callback immediately, including a Play still in the queue.
+        {
+            let mut state = self.state.lock();
+            state.playing = false;
+            state.generation = state.generation.wrapping_add(1);
+            state.frames.clear();
+        }
+        let _ = self.commands.send(Command::Quit);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+impl AudioPlayer {
+    pub fn load_local_file(&mut self, path: PathBuf) -> Result<(), String> {
+        let source = source::Source::open(&path)?;
+        self.load(source)
+    }
+    /// Play bundled narration without extracting temporary files or copying audio.
+    pub fn load_embedded(&mut self, bytes: &'static [u8]) -> Result<(), String> {
+        self.load(source::Source::embedded(bytes)?)
+    }
+    fn load(&mut self, source: source::Source) -> Result<(), String> {
+        let mut state = self.state.lock();
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        state.playing = false;
+        state.frames.clear();
+        state.position = 0.0;
+        state.phase = 0.0;
+        state.eof = false;
+        state.error = None;
+        state.fade = None;
+        state.rate = source.rate;
+        state.channels = source.channels;
+        state.duration_ms = source.duration_ms;
+        drop(state);
+        self.command(Command::Load(source, generation));
+        Ok(())
+    }
+    pub fn play(&mut self) {
+        self.state.lock().fade = None;
+        self.command(Command::Play);
+    }
+    pub fn pause(&mut self) {
+        self.state.lock().playing = false;
+        self.command(Command::Pause);
+    }
+    pub fn stop(&mut self) {
+        self.state.lock().playing = false;
+        self.command(Command::Stop);
+    }
+    /// Finish the current sound smoothly; progress follows the output clock,
+    /// so callers need neither a timer thread nor UI repaints.
+    pub fn fade_out(&mut self, duration: Duration) {
+        if duration.is_zero() {
+            self.stop();
+        } else {
+            let seconds = duration.as_secs_f64();
+            self.state.lock().fade = Some((seconds, seconds));
+        }
+    }
+    pub fn seek(&mut self, ms: i64) {
+        let duration = self.state.lock().duration_ms;
+        let position = if duration > 0 {
+            ms.clamp(0, duration.saturating_sub(1))
+        } else {
+            ms.max(0)
+        };
+        self.command(Command::Seek(position));
+    }
+    pub fn set_volume(&mut self, volume: f32) {
+        self.state.lock().volume = volume.clamp(0.0, 1.0);
+    }
+    pub fn set_mute(&mut self, mute: bool) {
+        self.state.lock().muted = mute;
+    }
+    pub fn get_time_ms(&self) -> i64 {
+        let state = self.state.lock();
+        (state.position * 1000.0 / state.rate.max(1) as f64) as i64
+    }
+    pub fn get_duration_ms(&self) -> i64 {
+        self.state.lock().duration_ms
+    }
+    pub fn get_status(&self) -> PlaybackStatus {
+        let state = self.state.lock();
+        if state.playing {
+            PlaybackStatus::Playing
+        } else if state.position > 0.0 && !(state.eof && state.frames.is_empty()) {
+            PlaybackStatus::Paused
+        } else {
+            PlaybackStatus::Stopped
+        }
+    }
+    pub fn take_error(&mut self) -> Option<String> {
+        self.state.lock().error.take()
+    }
+    pub fn get_audio_channel_count(&self) -> Option<usize> {
+        let count = self.state.lock().channels;
+        (count > 0).then_some(count)
+    }
+    pub fn set_enabled_channels(&mut self, enabled: Vec<bool>) {
+        let changed = {
+            let mut state = self.state.lock();
+            if state.enabled == enabled {
+                false
+            } else {
+                state.enabled = enabled;
+                true
+            }
+        };
+        if changed {
+            self.seek(self.get_time_ms());
+        }
+    }
+}
+fn create_output(state: Arc<Mutex<State>>) -> Result<cpal::Stream, String> {
+    // Playback follows the system audio service; it has no saved device IDs.
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or("No audio output device is available.")?;
+    let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let mut config = supported.config();
+    if let cpal::SupportedBufferSize::Range { min, max } = *supported.buffer_size() {
+        // Keep the playback clock and controls responsive even when the server
+        // defaults to queuing several seconds of audio.
+        config.buffer_size =
+            cpal::BufferSize::Fixed((config.sample_rate / 100).max(1).clamp(min, max));
+    }
+    macro_rules! stream {
+        ($sample:ty) => {
+            build_output::<$sample>(&device, config, state)
+        };
+    }
+    let output = match supported.sample_format() {
+        cpal::SampleFormat::F32 => stream!(f32),
+        cpal::SampleFormat::F64 => stream!(f64),
+        cpal::SampleFormat::I16 => stream!(i16),
+        cpal::SampleFormat::I24 => stream!(cpal::I24),
+        cpal::SampleFormat::I32 => stream!(i32),
+        cpal::SampleFormat::U8 => stream!(u8),
+        cpal::SampleFormat::U16 => stream!(u16),
+        _ => Err("Unsupported audio output format".into()),
+    }?;
+    output.play().map_err(|e| e.to_string())?;
+    Ok(output)
+}
+fn build_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    state: Arc<Mutex<State>>,
+) -> Result<cpal::Stream, String> {
+    let error_state = state.clone();
+    let channels = config.channels as usize;
+    let rate = config.sample_rate as f64;
+    device
+        .build_output_stream(
+            config,
+            move |output: &mut [T], _| {
+                let Some(mut state) = state.try_lock() else {
+                    output.fill(T::from_sample(0.0));
+                    return;
+                };
+                for frame in output.chunks_mut(channels) {
+                    let stereo = next_frame(&mut state, rate);
+                    for (index, sample) in frame.iter_mut().enumerate() {
+                        let value = if channels == 1 {
+                            (stereo[0] + stereo[1]) * 0.5
+                        } else {
+                            stereo[index.min(1)]
+                        };
+                        *sample = T::from_sample(value);
+                    }
+                }
+            },
+            move |error| {
+                // These notifications leave the stream usable; CPAL handles recovery.
+                if matches!(
+                    error.kind(),
+                    cpal::ErrorKind::DeviceChanged
+                        | cpal::ErrorKind::RealtimeDenied
+                        | cpal::ErrorKind::Xrun
+                ) {
+                    return;
+                }
+                let mut state = error_state.lock();
+                state.error = Some(error.to_string());
+                state.playing = false;
+            },
+            None,
+        )
+        .map_err(|e| e.to_string())
+}
+fn next_frame(state: &mut State, output_rate: f64) -> [f32; 2] {
+    if !state.playing {
+        return [0.0; 2];
+    }
+    let envelope = if let Some((remaining, total)) = &mut state.fade {
+        let phase = (*remaining / *total).clamp(0.0, 1.0);
+        *remaining -= 1.0 / output_rate;
+        if *remaining <= 0.0 {
+            state.playing = false;
+            state.frames.clear();
+            state.eof = true;
+            return [0.0; 2];
+        }
+        (phase * phase * (3.0 - 2.0 * phase)) as f32
+    } else {
+        1.0
+    };
+    // A short decode underrun must not extrapolate past the next source frame.
+    while state.phase >= 1.0 && !state.frames.is_empty() {
+        state.frames.pop_front();
+        state.position += 1.0;
+        state.phase -= 1.0;
+    }
+    let Some(current) = state.frames.front().copied() else {
+        if state.eof {
+            state.playing = false;
+        }
+        return [0.0; 2];
+    };
+    let next = state.frames.get(1).copied().unwrap_or(current);
+    let gain = if state.muted {
+        0.0
+    } else {
+        state.volume * envelope
+    };
+    let frame =
+        std::array::from_fn(|i| (current[i] + (next[i] - current[i]) * state.phase as f32) * gain);
+    state.phase += state.rate as f64 / output_rate;
+    while state.phase >= 1.0 && !state.frames.is_empty() {
+        state.frames.pop_front();
+        state.position += 1.0;
+        state.phase -= 1.0;
+    }
+    frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fade_uses_the_output_clock_and_reaches_silence_smoothly() {
+        let mut state = State {
+            frames: vec![[1.0, 1.0]; 24_000].into(),
+            rate: 24_000,
+            playing: true,
+            volume: 1.0,
+            fade: Some((0.18, 0.18)),
+            ..Default::default()
+        };
+        let mut previous = 1.0;
+        for index in 0..8641 {
+            let sample = next_frame(&mut state, 48_000.0)[0];
+            assert!(sample <= previous && previous - sample < 0.001);
+            if index == 4320 {
+                assert!((sample - 0.5).abs() < 0.001);
+            }
+            previous = sample;
+        }
+        assert!(!state.playing && state.frames.is_empty());
+        assert_eq!(next_frame(&mut state, 48_000.0), [0.0, 0.0]);
+    }
+}

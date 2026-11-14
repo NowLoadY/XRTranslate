@@ -229,6 +229,15 @@ impl ModelPackage {
         client
             .ensure_not_cancelled("model package")
             .map_err(ModelDownloadError::Download)?;
+        self.publish(&staging, destination, &missing)
+    }
+
+    pub(crate) fn publish(
+        &self,
+        staging: &Path,
+        destination: &Path,
+        missing: &HashSet<&str>,
+    ) -> Result<PathBuf, ModelDownloadError> {
         // Validate every new file before publishing any of them.
         for file in self
             .files
@@ -265,7 +274,7 @@ impl ModelPackage {
                 })?;
             }
             fs::remove_dir_all(&staging).map_err(|source| ModelDownloadError::Removal {
-                path: staging,
+                path: staging.into(),
                 source,
             })?;
         } else {
@@ -278,7 +287,7 @@ impl ModelPackage {
         }
         Ok(destination.into())
     }
-    fn validate(&self) -> Result<(), ModelDownloadError> {
+    pub(crate) fn validate(&self) -> Result<(), ModelDownloadError> {
         for name in [&self.id, &self.revision] {
             if name.is_empty()
                 || !name

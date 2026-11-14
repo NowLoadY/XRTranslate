@@ -8,6 +8,7 @@ license.workspace = true
 mpv = ["dep:libmpv-sys", "dep:ash", "dep:glutin"]
 
 [dependencies]
+xrtranslate-audio = { path = "../xrtranslate-audio" }
 futures = "0.3.33"
 glam = { version = "0.33.10", default-features = false, features = ["std"] }
 cpal = "0.18.1"

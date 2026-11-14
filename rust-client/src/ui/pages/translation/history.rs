@@ -1,9 +1,9 @@
 //! One chronological feed for source text, translation previews and completed results.
-use crate::ui::components;
 use crate::ui::components::annotated_text::{AnnotatedText, TextLayout};
-use crate::ui::components::selectable_text::SelectionState;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+
+mod text;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -11,6 +11,7 @@ pub enum DisplayMode {
     #[default]
     Bubbles,
     Text,
+    Split,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +20,7 @@ pub struct HistoryDisplay {
     #[serde(rename = "translation")]
     pub mode: DisplayMode,
     pub presentation_dark: bool,
+    pub presentation_bilingual: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -81,22 +83,51 @@ fn history_card_frame(ctx: &egui::Context, scale: &HistoryFeedScale) -> egui::Fr
         ))
 }
 
-fn history_card_with_activity(
+fn history_bubble(
     ui: &mut egui::Ui,
-    id: egui::Id,
+    row: &HistoryRow<'_>,
     activity: f32,
     row_height: f32,
     scale: &HistoryFeedScale,
-    add_contents: impl FnOnce(&mut egui::Ui),
+    language: crate::i18n::UiLanguage,
+    copy_text: impl FnOnce() -> String,
 ) -> egui::Response {
     let frame = history_card_frame(ui.ctx(), scale);
     let res = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.set_min_height((row_height - frame.total_margin().sum().y).max(0.0));
         ui.spacing_mut().item_spacing.y = 2.0;
-        crate::ui::animation::AnimationSystem::render_data_text(ui, id, activity, add_contents);
+        ui.style_mut().interaction.selectable_labels = false;
+        crate::ui::animation::AnimationSystem::render_data_text(ui, row.id, activity, |ui| {
+            row.show(ui)
+        });
     });
-    res.response.interact(egui::Sense::click())
+    let response = ui.interact(res.response.rect, row.id, egui::Sense::click());
+    let now = ui.input(|input| input.time);
+    let copied_id = row.id.with("copied");
+    if response.clicked() {
+        ui.ctx().copy_text(copy_text());
+        ui.data_mut(|data| data.insert_temp(copied_id, now));
+    }
+    let copied = ui
+        .data(|data| data.get_temp::<f64>(copied_id))
+        .is_some_and(|at| now - at < 1.2);
+    if copied {
+        ui.painter().rect_stroke(
+            response.rect,
+            scale.card_radius,
+            egui::Stroke::new(1.0, crate::ui::theme::primary().gamma_multiply(0.65)),
+            egui::StrokeKind::Inside,
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1200));
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(crate::i18n::tr(
+            language,
+            if copied { "Copied" } else { "Copy" },
+        ))
 }
 
 struct HistoryRow<'a> {
@@ -106,18 +137,10 @@ struct HistoryRow<'a> {
 }
 
 impl HistoryRow<'_> {
-    fn show(&self, ui: &mut egui::Ui, selection: Option<&mut SelectionState>) {
-        if let Some(selection) = selection {
-            self.text
-                .show_selectable(ui, selection, self.id.with("source"));
-            if let Some(translation) = &self.translation {
-                translation.show_selectable(ui, selection, self.id.with("translation"));
-            }
-        } else {
-            self.text.show(ui);
-            if let Some(translation) = &self.translation {
-                translation.show(ui);
-            }
+    fn show(&self, ui: &mut egui::Ui) {
+        self.text.show(ui);
+        if let Some(translation) = &self.translation {
+            translation.show(ui);
         }
     }
 }
@@ -145,6 +168,29 @@ pub(super) struct HistorySegment<'a> {
 }
 
 impl HistorySegment<'_> {
+    fn has_output(&self) -> bool {
+        self.translations.iter().any(|entry| {
+            !entry.translated.trim().is_empty()
+                || entry
+                    .additional_translations
+                    .iter()
+                    .any(|extra| !extra.translated_text.trim().is_empty())
+        })
+    }
+
+    fn asr_output_replaces_source(&self) -> bool {
+        !self.translations.is_empty()
+            && self.translations.iter().all(|entry| {
+                entry.asr_only && !entry.translated.trim().is_empty()
+            })
+            // An arriving prefix must not hide the still-pending recognition tail.
+            && (self.recognition.is_empty()
+                || self.recognition.iter().flat_map(|entry| entry.text.chars())
+                    .filter(|character| !character.is_whitespace())
+                    .eq(self.translations.iter().flat_map(|entry| entry.source.chars())
+                        .filter(|character| !character.is_whitespace())))
+    }
+
     fn live(&self) -> bool {
         self.recognition.iter().any(|entry| entry.live)
             || self.translations.iter().any(|entry| entry.live)
@@ -262,38 +308,17 @@ fn prepare_turn<'a>(
     ui: &egui::Ui,
     turn: &HistorySegment<'a>,
     scale: &HistoryFeedScale,
-    plain: bool,
     id: egui::Id,
-    selection: Option<&SelectionState>,
 ) -> (f32, HistoryRow<'a>) {
-    let mut has_output = turn.translations.iter().any(|entry| {
-        !entry.translated.trim().is_empty()
-            || entry
-                .additional_translations
-                .iter()
-                .any(|extra| !extra.translated_text.trim().is_empty())
-    });
-    let output_is_source = turn.translations.iter().all(|entry| entry.asr_only);
-    if output_is_source && !turn.recognition.is_empty() {
-        // ASR-only output replaces raw recognition once the whole turn is
-        // covered; an arriving prefix must not hide the still-pending tail.
-        has_output &= turn
-            .recognition
-            .iter()
-            .flat_map(|entry| entry.text.chars())
-            .filter(|character| !character.is_whitespace())
-            .eq(turn
-                .translations
-                .iter()
-                .flat_map(|entry| entry.source.chars())
-                .filter(|character| !character.is_whitespace()));
-    }
+    let has_output = turn.has_output()
+        && (!turn.translations.iter().all(|entry| entry.asr_only)
+            || turn.asr_output_replaces_source());
     let has_source = !turn.recognition.is_empty()
         || turn
             .translations
             .iter()
             .any(|entry| !entry.source.trim().is_empty());
-    let show_source = has_source && !(has_output && output_is_source);
+    let show_source = has_source && !turn.asr_output_replaces_source();
     let mut source = history_text(ui, turn.speaker(), scale.speaker_size);
     if show_source {
         let color = if has_output {
@@ -378,17 +403,9 @@ fn prepare_turn<'a>(
         }
     }
     if show_source {
-        prepare_history_row(
-            ui,
-            scale,
-            source,
-            has_output.then_some(output),
-            plain,
-            id,
-            selection,
-        )
+        prepare_history_row(ui, scale, source, has_output.then_some(output), id)
     } else {
-        prepare_history_row(ui, scale, output, None, plain, id, selection)
+        prepare_history_row(ui, scale, output, None, id)
     }
 }
 
@@ -397,46 +414,23 @@ fn prepare_history_row<'a>(
     scale: &HistoryFeedScale,
     text: AnnotatedText<'a>,
     translation: Option<AnnotatedText<'a>>,
-    plain: bool,
     id: egui::Id,
-    selection: Option<&SelectionState>,
 ) -> (f32, HistoryRow<'a>) {
-    let margin = if plain {
-        egui::Vec2::ZERO
-    } else {
-        history_card_frame(ui.ctx(), scale).total_margin().sum()
-    };
+    let margin = history_card_frame(ui.ctx(), scale).total_margin().sum();
     let width = (ui.available_width() - margin.x).max(1.0);
-    let mut row = HistoryRow {
+    let row = HistoryRow {
         id,
         text: text.layout(ui, width),
         translation: translation.map(|text| text.layout(ui, width)),
     };
-    if let Some(selection) = selection {
-        row.text.freeze_selection(selection, id.with("source"));
-        if let Some(translation) = &mut row.translation {
-            translation.freeze_selection(selection, id.with("translation"));
-        }
-    }
     let height = row.text.height()
         + row
             .translation
             .as_ref()
             .map_or(0.0, |text| text.height() + 2.0)
-        + if plain {
-            0.0
-        } else {
-            crate::ui::theme::data_text_motion(ui.ctx()).max_offset
-        }
+        + crate::ui::theme::data_text_motion(ui.ctx()).max_offset
         + margin.y;
-    (
-        if plain {
-            height
-        } else {
-            height.max(scale.min_row_height)
-        },
-        row,
-    )
+    (height.max(scale.min_row_height), row)
 }
 
 fn history_activity(index: usize, row_count: usize) -> f32 {
@@ -446,28 +440,21 @@ fn history_activity(index: usize, row_count: usize) -> f32 {
     index as f32 / (row_count - 1) as f32
 }
 
-fn render_feed(
-    app: &crate::XRTranslateApp,
-    ui: &mut egui::Ui,
-    scale: &HistoryFeedScale,
-    display: DisplayMode,
-    mut selection: Option<&mut SelectionState>,
-    follow_latest: bool,
-    jump_to_latest: bool,
-) -> bool {
-    let plain = display == DisplayMode::Text;
+fn render_feed(app: &crate::XRTranslateApp, ui: &mut egui::Ui, scale: &HistoryFeedScale) {
     let turns = history_segments(app);
-    let stamp = (app.history_timeline.revision, plain);
+    let stamp = app.history_timeline.revision;
     let id = ui.make_persistent_id("history_scroll_state");
-    let changed = ui.data(|data| data.get_temp::<(u64, bool)>(id)) != Some(stamp);
+    let changed = ui.data(|data| data.get_temp::<u64>(id)) != Some(stamp);
     let count = turns.len() + usize::from(!app.partial_text.is_empty());
-    let frozen_selection = selection.as_deref().cloned();
-    let mut clicked = false;
+    if count == 0 {
+        ui.weak(crate::i18n::tr(app.ui_language, "No results yet"));
+        return;
+    }
     crate::ui::virtual_list::show_variable_virtual_rows(
         ui,
         "history_scroll",
-        if plain { 12.0 } else { scale.row_gap },
-        jump_to_latest || changed && follow_latest,
+        scale.row_gap,
+        changed,
         Some(|row: &HistoryRow<'_>| row.id),
         |ui| {
             let mut rows = turns
@@ -481,7 +468,7 @@ fn render_feed(
                         turn.segment_index,
                         if turn.turn_id.is_empty() { index } else { 0 },
                     ));
-                    prepare_turn(ui, turn, scale, plain, id, frozen_selection.as_ref())
+                    prepare_turn(ui, turn, scale, id)
                 })
                 .collect::<Vec<_>>();
             if !app.partial_text.is_empty() {
@@ -497,51 +484,25 @@ fn render_feed(
                     scale,
                     text,
                     None,
-                    plain,
                     ui.make_persistent_id("history_partial"),
-                    None,
-                ));
-            }
-            if rows.is_empty() {
-                let mut text = AnnotatedText::default();
-                text.append(
-                    ui,
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "No results yet"))
-                        .color(crate::ui::theme::text_weak())
-                        .size(scale.text_size),
-                );
-                rows.push(prepare_history_row(
-                    ui,
-                    scale,
-                    text,
-                    None,
-                    true,
-                    ui.make_persistent_id("history_empty"),
-                    None,
                 ));
             }
             rows
         },
         |ui, index, height, row| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            if plain || count == 0 {
-                row.show(ui, selection.as_deref_mut());
+            let turn = turns.get(index);
+            let activity = if turn.is_none_or(HistorySegment::live) {
+                1.0
             } else {
-                let turn = turns.get(index);
-                let activity = if turn.is_none_or(HistorySegment::live) {
-                    1.0
-                } else {
-                    history_activity(index, count)
-                };
-                clicked |= history_card_with_activity(ui, row.id, activity, height, scale, |ui| {
-                    row.show(ui, selection.as_deref_mut())
-                })
-                .clicked();
-            }
+                history_activity(index, count)
+            };
+            history_bubble(ui, row, activity, height, scale, app.ui_language, || {
+                turn.map_or_else(|| app.partial_text.trim().to_owned(), text::segment_text)
+            });
         },
     );
     ui.data_mut(|data| data.insert_temp(id, stamp));
-    clicked
 }
 
 fn render_header(
@@ -549,10 +510,12 @@ fn render_header(
     ui: &mut egui::Ui,
     header_size: f32,
     openable: bool,
-) -> (bool, DisplayMode) {
+) -> bool {
     let count = history_segments(app).len() + usize::from(!app.partial_text.is_empty());
-    let response = ui.add(
-        egui::Label::new(
+    let previous = app.history_display.mode;
+    let mut toggle_fullscreen = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
             egui::RichText::new(format!(
                 "{} ({count})",
                 crate::i18n::tr(app.ui_language, "History")
@@ -560,62 +523,125 @@ fn render_header(
             .size(header_size)
             .color(crate::ui::theme::text_strong())
             .strong(),
-        )
-        .truncate()
-        .sense(if openable {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        }),
-    );
-    let response = if openable {
-        ui_director::egui::Control::button(crate::i18n::tr(
-            app.ui_language,
-            "Click to view full screen",
-        ))
-        .response(ui, response)
-    } else {
-        response
-    };
-    let clicked = openable && response.clicked();
-    if openable {
-        response
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(crate::i18n::tr(
-                app.ui_language,
-                "Click to view full screen",
-            ));
-    }
-    let display = &mut app.history_display.mode;
-    let mut plain = *display == DisplayMode::Text;
-    if components::segmented_switch(
-        ui,
-        &mut plain,
-        [
-            crate::i18n::tr(
-                app.ui_language,
+        );
+        ui.add_space((ui.available_rect_before_wrap().width() - 120.0).max(0.0));
+        ui.horizontal(|ui| {
+            toolbar_group(ui, |ui| {
+                for (mode, label, icon) in [
+                    (
+                        DisplayMode::Bubbles,
+                        if openable { "Conversation" } else { "Presentation mode" },
+                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/messages.svg"),
+                    ),
+                    (
+                        DisplayMode::Text,
+                        "Bilingual text",
+                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/text-lines.svg"),
+                    ),
+                    (
+                        DisplayMode::Split,
+                        "Split view",
+                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/panels-top-bottom.svg"),
+                    ),
+                ] {
+                    if toolbar_button(
+                        ui,
+                        crate::i18n::tr(app.ui_language, label),
+                        icon,
+                        app.history_display.mode == mode,
+                    ).clicked() {
+                        app.history_display.mode = mode;
+                    }
+                }
+            });
+            toggle_fullscreen = toolbar_button(
+                ui,
+                crate::i18n::tr(
+                    app.ui_language,
+                    if openable { "Click to view full screen" } else { "Back" },
+                ),
                 if openable {
-                    "Bubbles"
+                    egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/media-expand.svg")
                 } else {
-                    "Presentation mode"
+                    egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/media-collapse.svg")
                 },
-            ),
-            crate::i18n::tr(app.ui_language, "Plain text"),
-        ],
-    )
-    .changed()
-    {
-        *display = if plain {
-            DisplayMode::Text
-        } else {
-            DisplayMode::Bubbles
-        };
-        if !openable && !plain {
+                false,
+            ).clicked();
+        });
+    });
+    if app.history_display.mode != previous {
+        app.history_selection.clear();
+        if !openable && app.history_display.mode == DisplayMode::Bubbles {
             app.history_presentation.enter();
         }
         app.save_settings();
     }
-    (clicked, app.history_display.mode)
+    toggle_fullscreen
+}
+
+pub(super) fn toolbar_group(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    let color = ui.visuals().text_color();
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.035))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.12)))
+        .corner_radius(7)
+        .inner_margin(2)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(contents);
+        });
+}
+
+pub(super) fn toolbar_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    icon: egui::ImageSource<'_>,
+    selected: bool,
+) -> egui::Response {
+    ui.push_id(label, |ui| {
+        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+        ui.spacing_mut().interact_size = egui::Vec2::splat(24.0);
+        let response = ui.add_sized(egui::Vec2::splat(24.0), egui::Button::new("").frame(false));
+        let response = ui_director::egui::Control::button(label).response(ui, response);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, label)
+        });
+        let color = if selected {
+            ui.visuals().hyperlink_color
+        } else {
+            ui.visuals().text_color()
+        };
+        let hover = crate::ui::animation::AnimationSystem::hover(
+            ui.ctx(),
+            response.id.with("hover"),
+            response.hovered() || response.has_focus(),
+        );
+        ui.painter().rect_filled(
+            response.rect,
+            5,
+            color.gamma_multiply(if selected {
+                0.12 + hover * 0.05
+            } else {
+                hover * 0.07
+            }),
+        );
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect,
+                5,
+                egui::Stroke::new(1.0, color.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        egui::Image::new(icon).tint(color).paint_at(
+            ui,
+            egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(16.0)),
+        );
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(label)
+    })
+    .inner
 }
 
 pub(super) fn render_history_feed(
@@ -637,9 +663,9 @@ pub(super) fn render_history_feed(
         .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let (header_clicked, display) = render_header(app, ui, scale.header_size, true);
+            fullscreen = render_header(app, ui, scale.header_size, true);
             ui.add_space(6.0);
-            let body_clicked = egui::Frame::new()
+            egui::Frame::new()
                 .fill(crate::ui::theme::history_viewport())
                 .corner_radius(scale.card_radius)
                 .inner_margin(egui::Margin::symmetric(
@@ -647,11 +673,14 @@ pub(super) fn render_history_feed(
                     scale.card_margin_y,
                 ))
                 .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     ui.set_height((height - 8.0).max(0.0));
-                    render_feed(app, ui, &scale, display, None, true, false)
-                })
-                .inner;
-            fullscreen = header_clicked || body_clicked;
+                    if app.history_display.mode == DisplayMode::Bubbles {
+                        render_feed(app, ui, &scale)
+                    } else {
+                        text::render(app, ui, scale.text_size.max(14.0));
+                    }
+                });
         });
     if fullscreen {
         app.fullscreen_history = true;
@@ -661,42 +690,22 @@ pub(super) fn render_history_feed(
 }
 
 pub(super) fn render_fullscreen_history(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
-    let mut back = exit_on_escape(app, ui.ctx());
-    ui.horizontal(|ui| {
-        back |= components::back_button(ui, crate::i18n::tr(app.ui_language, "Back")).clicked();
-        if app.history_presentation.follow_button(ui, app.ui_language) {
-            app.history_selection.clear();
-        }
-    });
-    if back {
+    if exit_on_escape(app, ui.ctx()) {
         app.fullscreen_history = false;
         return;
     }
     ui.push_id("fullscreen_history", |ui| {
-        let (_, display) = render_header(app, ui, 18.0, false);
-        if display == DisplayMode::Bubbles {
+        if render_header(app, ui, 18.0, false) {
+            app.fullscreen_history = false;
+            return;
+        }
+        if app.history_display.mode == DisplayMode::Bubbles {
             ui.ctx().request_repaint();
             return;
         }
         ui.add_space(10.0);
-        let scale = HistoryFeedScale {
-            text_size: 16.0,
-            source_size: 13.5,
-            speaker_size: 12.0,
-            ..HistoryFeedScale::compute(ui.available_width(), ui.available_height())
-        };
-        app.history_presentation.observe_input(ui);
-        let mut selection = std::mem::take(&mut app.history_selection);
-        let follow = app.history_presentation.following() && !selection.is_active();
-        let jump = app.history_presentation.take_follow_request();
-        let selectable = cfg!(any(windows, target_os = "linux")).then_some(&mut selection);
-        render_feed(app, ui, &scale, display, selectable, follow, jump);
-        if selection.is_active() {
-            app.history_presentation.pause();
-        }
-        app.history_selection = selection;
+        text::render(app, ui, 16.0);
     });
-    show_lookup(app, ui.ctx());
 }
 
 pub(super) fn exit_on_escape(app: &mut crate::XRTranslateApp, ctx: &egui::Context) -> bool {

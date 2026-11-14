@@ -46,6 +46,7 @@ host features do not require existing plugins to adopt them.
 | Source | Platforms | Responsibility |
 |---|---|---|
 | `agent` | Linux, Windows | Ongoing conversation, tool execution, context and progress |
+| `guide` | Linux, Windows | Tutorial catalogue and manual topic selection; shared with recording |
 | `media` | Linux, Windows | Media projects, subtitle editing/optimization, dubbing and export |
 | `meeting` | Linux, Windows | Meeting records, recording navigation and transcript processing |
 | `vocabulary` | Linux, Windows | Wordbook pages and example work using the shared bookmark store |
@@ -65,7 +66,7 @@ packages. A plugin can use a host panel or its own window, depending on its need
 ## Android
 
 The Android build automatically builds plugins whose Cargo package metadata has
-`xrtranslate.android = true`. Currently these are Agent, Media, Meeting,
+`xrtranslate.android = true`. Currently these are Agent, Guide, Media, Meeting,
 Vocabulary and the two OSC outputs. They remain independent executables packaged
 by the APK installer, with the same host protocol and separate settings/data.
 Desktop-only plugins and private source are not bundled.

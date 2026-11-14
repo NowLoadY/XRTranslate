@@ -80,7 +80,7 @@ fn speech_rendered() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SpeechClip {
     pub id: String,
     pub path: PathBuf,
@@ -89,6 +89,31 @@ pub struct SpeechClip {
     pub text: String,
     #[serde(default)]
     pub peaks: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SpeechOrigin>,
+    /// One previous take is enough to compare or undo a regeneration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<Box<SpeechClip>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpeechOrigin {
+    pub cue_id: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    #[serde(default)]
+    pub language: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectVoice {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub reference: PathBuf,
+    pub range: [i64; 2],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -123,6 +148,12 @@ pub struct MediaTask {
     pub speech_use_source_voice: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech_reference_range: Option<[i64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speech_voices: Vec<ProjectVoice>,
+    /// Legacy projects can recover their source references once; an intentionally
+    /// emptied voice library must stay empty when the project is reopened.
+    #[serde(default)]
+    pub speech_voices_migrated: bool,
     #[serde(default)]
     pub play_speech_track: bool,
     /// None preserves the playback choice of tasks saved before multi-selection.
@@ -360,6 +391,8 @@ impl MediaTask {
             speech_track: None,
             speech_use_source_voice: false,
             speech_reference_range: None,
+            speech_voices: Vec::new(),
+            speech_voices_migrated: true,
             play_speech_track: false,
             playback_tracks: None,
             audio_mix: Default::default(),
@@ -539,6 +572,7 @@ mod tests {
                 duration_ms: 600,
                 text: "Hello".into(),
                 peaks: Vec::new(),
+                ..Default::default()
             }],
         });
         let vocal_settings = |task: &MediaTask| {

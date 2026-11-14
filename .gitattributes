@@ -4,3 +4,5 @@ crates/xrtranslate-assets/resources/** text=auto eol=lf
 rust-client/resources/** text=auto eol=lf
 
 third_party/sherpa-onnx/*.tar.* -text
+plugin-src/guide/assets/audio/**/*.mp3 -text
+rust-client/resources/companion/**/*.mp3 -text

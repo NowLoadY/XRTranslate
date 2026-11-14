@@ -1,4 +1,5 @@
 //! A window-filling, bottom-anchored view of the existing live translation feed.
+use super::history::{toolbar_button, toolbar_group};
 use crate::{i18n::tr, ui::components};
 use eframe::egui::{self, Color32};
 
@@ -16,19 +17,11 @@ impl Presentation {
         self.last_layout = None;
     }
 
-    pub(super) fn following(&self) -> bool {
-        self.following
-    }
-
-    pub(super) fn take_follow_request(&mut self) -> bool {
-        self.following && std::mem::take(&mut self.first_frame)
-    }
-
-    pub(super) fn pause(&mut self) {
+    fn pause(&mut self) {
         self.following = false;
     }
 
-    pub(super) fn observe_input(&mut self, ui: &egui::Ui) {
+    fn observe_input(&mut self, ui: &egui::Ui) {
         let viewport = ui.available_rect_before_wrap();
         if ui.input(|input| {
             input.pointer.hover_pos().is_some_and(|pos| viewport.contains(pos))
@@ -41,18 +34,15 @@ impl Presentation {
         }
     }
 
-    pub(super) fn follow_button(
-        &mut self,
-        ui: &mut egui::Ui,
-        language: crate::i18n::UiLanguage,
-    ) -> bool {
+    fn follow_button(&mut self, ui: &mut egui::Ui, language: crate::i18n::UiLanguage) -> bool {
         if !self.following
-            && components::icon_button(
+            && toolbar_button(
                 ui,
                 tr(language, "Follow latest"),
                 egui::include_image!(
                     "../../../../../crates/xrtranslate-client-core/resources/icons/chevron-down.svg"
                 ),
+                false,
             )
             .clicked()
         {
@@ -80,20 +70,51 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     };
     ui.visuals_mut().panel_fill = backdrop;
     ui.visuals_mut().override_text_color = Some(foreground);
+    ui.visuals_mut().hyperlink_color = foreground;
     ui.spacing_mut().scroll.fade.strength = 0.0;
 
     let mut back = super::history::exit_on_escape(app, ui.ctx());
-    egui::Frame::new().inner_margin(16).show(ui, |ui| {
+    egui::Frame::new().inner_margin(12).show(ui, |ui| {
         ui.horizontal(|ui| {
-            back |= components::icon_button(
+            back |= toolbar_button(
                 ui,
                 tr(language, "Back"),
                 egui::include_image!(
                     "../../../../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg"
                 ),
+                false,
             )
             .clicked();
-            if components::icon_button(
+            let previous = app.history_display.presentation_bilingual;
+            toolbar_group(ui, |ui| {
+                for (bilingual, label, icon) in [
+                    (
+                        false,
+                        "Translation only",
+                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/text.svg"),
+                    ),
+                    (
+                        true,
+                        "Bilingual text",
+                        egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/text-lines.svg"),
+                    ),
+                ] {
+                    if toolbar_button(
+                        ui,
+                        tr(language, label),
+                        icon,
+                        app.history_display.presentation_bilingual == bilingual,
+                    ).clicked() {
+                        app.history_display.presentation_bilingual = bilingual;
+                    }
+                }
+            });
+            if app.history_display.presentation_bilingual != previous {
+                app.history_selection.clear();
+                app.history_presentation.enter();
+                app.save_settings();
+            }
+            if toolbar_button(
                 ui,
                 tr(
                     language,
@@ -106,6 +127,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 egui::include_image!(
                     "../../../../../crates/xrtranslate-client-core/resources/icons/contrast.svg"
                 ),
+                false,
             )
             .clicked()
             {
@@ -126,7 +148,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     // The same turn/segment ordering and revision selection as the normal feed
     // keeps a streamed preview in place when its final translation arrives.
-    app.history_presentation.observe_input(ui);
+    let bilingual = app.history_display.presentation_bilingual;
     let lines = super::history::history_segments(app)
         .iter()
         .flat_map(|turn| &turn.translations)
@@ -139,27 +161,9 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 entry.segment_index,
                 if entry.turn_id.is_empty() { index } else { 0 },
             ));
-            let mut text = entry.translated.clone();
-            let mut ranges = Vec::new();
-            if !text.trim().is_empty() {
-                ranges.push(0..text.len());
-            }
-            for extra in &entry.additional_translations {
-                if extra.translated_text.trim().is_empty() {
-                    continue;
-                }
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(&extra.target_lang);
-                text.push_str(" · ");
-                let start = text.len();
-                text.push_str(&extra.translated_text);
-                ranges.push(start..text.len());
-            }
-            (id, text, ranges)
+            PresentationLine::new(id, entry, bilingual)
         })
-        .filter(|(_, text, _)| !text.trim().is_empty())
+        .filter(|line| !line.text.is_empty())
         .collect::<Vec<_>>();
     render_lines(
         &lines,
@@ -173,8 +177,51 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     super::history::show_lookup(app, ui.ctx());
 }
 
+struct PresentationLine {
+    id: egui::Id,
+    text: String,
+    ranges: Vec<std::ops::Range<usize>>,
+    source_end: usize,
+}
+
+impl PresentationLine {
+    fn new(id: egui::Id, entry: &crate::history::TranslationHistoryEntry, bilingual: bool) -> Self {
+        let mut line = Self {
+            id,
+            text: String::new(),
+            ranges: Vec::new(),
+            source_end: 0,
+        };
+        if bilingual && !entry.asr_only {
+            line.append(&entry.source);
+            if !line.text.is_empty() {
+                line.source_end = line.text.len() + 1;
+            }
+        }
+        line.append(&entry.translated);
+        for extra in &entry.additional_translations {
+            line.append(&extra.translated_text);
+        }
+        line.source_end = line.source_end.min(line.text.len());
+        line
+    }
+
+    fn append(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        let start = self.text.len();
+        self.text.push_str(text);
+        self.ranges.push(start..self.text.len());
+    }
+}
+
 fn render_lines(
-    lines: &[(egui::Id, String, Vec<std::ops::Range<usize>>)],
+    lines: &[PresentationLine],
     state: &mut Presentation,
     selection: &mut components::selectable_text::SelectionState,
     language: crate::i18n::UiLanguage,
@@ -182,12 +229,13 @@ fn render_lines(
     foreground: Color32,
     ui: &mut egui::Ui,
 ) {
+    state.observe_input(ui);
     let viewport = ui.available_rect_before_wrap();
     let size = (viewport.width() * 0.05).clamp(30.0, 64.0);
     let width = (viewport.width() * 0.84).min(1120.0).max(1.0);
     let breathing_room = (viewport.height() * 0.13).clamp(32.0, 100.0);
     let gap = size * 0.65;
-    egui::ScrollArea::vertical()
+    let output = egui::ScrollArea::vertical()
         .id_salt("translation_presentation")
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -208,6 +256,7 @@ fn render_lines(
                 let galley = lyric_layout(
                     ui,
                     tr(language, "No results yet"),
+                    0,
                     width,
                     size * 0.65,
                     foreground.gamma_multiply(0.45),
@@ -215,7 +264,7 @@ fn render_lines(
                 );
                 paint_lyric(ui, galley, foreground);
             }
-            for (index, (id, text, ranges)) in lines.iter().enumerate() {
+            for (index, line) in lines.iter().enumerate() {
                 let age = lines.len() - 1 - index;
                 let latest = age == 0;
                 let opacity = if latest {
@@ -225,18 +274,19 @@ fn render_lines(
                 };
                 let galley = lyric_layout(
                     ui,
-                    text,
+                    &line.text,
+                    line.source_end,
                     width,
                     if latest { size } else { size * 0.65 },
                     foreground.gamma_multiply(opacity),
                     latest,
                 );
                 let response = if cfg!(any(windows, target_os = "linux")) {
-                    selection.show(ui, *id, galley, ranges)
+                    selection.show(ui, line.id, galley, &line.ranges)
                 } else {
                     paint_lyric(ui, galley, foreground)
                 };
-                ui_director::egui::record_text_output(ui, text, &response);
+                ui_director::egui::record_text_output(ui, &line.text, &response);
                 if !latest {
                     ui.add_space(gap);
                 }
@@ -259,12 +309,25 @@ fn render_lines(
             state.last_layout = Some(layout);
             state.first_frame = false;
         });
+    // Rejoin the live stream when manual scrolling reaches the bottom. Keep a
+    // selected sentence stable until the selection is released or following is requested.
+    let at_bottom =
+        output.state.clamped_offset().y + output.inner_rect.height() + 2.0 >= output.content_size.y;
+    if !state.following
+        && at_bottom
+        && !selection.is_active()
+        && !ui.input(|input| input.pointer.primary_down())
+    {
+        state.following = true;
+        ui.ctx().request_repaint();
+    }
     fade_top(ui, viewport, backdrop);
 }
 
 fn lyric_layout(
     ui: &egui::Ui,
     text: &str,
+    source_end: usize,
     width: f32,
     size: f32,
     color: Color32,
@@ -278,9 +341,31 @@ fn lyric_layout(
             egui::FontFamily::Proportional
         },
     );
-    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, width);
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = width;
     job.halign = egui::Align::Center;
-    job.sections[0].format.line_height = Some(size * 1.4);
+    if source_end > 0 {
+        job.append(
+            &text[..source_end],
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(size * 0.65),
+                color: color.gamma_multiply(0.72),
+                line_height: Some(size * 0.91),
+                ..Default::default()
+            },
+        );
+    }
+    job.append(
+        &text[source_end..],
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color,
+            line_height: Some(size * 1.4),
+            ..Default::default()
+        },
+    );
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
@@ -311,3 +396,6 @@ fn fade_top(ui: &egui::Ui, viewport: egui::Rect, backdrop: Color32) {
     mesh.add_triangle(2, 1, 3);
     ui.painter().add(egui::Shape::mesh(mesh));
 }
+
+#[cfg(test)]
+mod tests;

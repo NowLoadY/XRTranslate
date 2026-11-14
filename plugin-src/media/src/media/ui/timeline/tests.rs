@@ -53,6 +53,8 @@ fn vocals_are_visible_without_subtitles_and_select_an_independent_reference() {
                     &controller.subtitles,
                     true,
                     crate::i18n::UiLanguage::English,
+                    None,
+                    false,
                     ui,
                 );
             },
@@ -178,6 +180,8 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                     &controller.subtitles,
                     true,
                     crate::i18n::UiLanguage::English,
+                    None,
+                    false,
                     ui,
                 );
                 view = ui.data(|data| {
@@ -199,11 +203,17 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                 _ => None,
             })
             .unwrap();
+        let delete_button = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Delete this speech" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        });
         output.textures_delta.clear();
         if let Some(action) = action {
             action.apply(controller);
         }
-        (view.unwrap(), rect)
+        (view.unwrap(), rect, delete_button)
     };
     let button = |pos, pressed| egui::Event::PointerButton {
         pos,
@@ -212,7 +222,7 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
         modifiers: egui::Modifiers::NONE,
     };
     frame(&mut controller, vec![]);
-    let (initial, rect) = frame(&mut controller, vec![]);
+    let (initial, rect, _) = frame(&mut controller, vec![]);
     let press = egui::pos2(
         rect.left() + initial.fraction(23_000.0) as f32 * rect.width() - 2.0,
         rect.center().y,
@@ -346,6 +356,7 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
             duration_ms: 1_000,
             text: "你好。".into(),
             peaks: vec![128; 32],
+            ..Default::default()
         }],
     });
     controller.prepare_speech_track(&task_id);
@@ -489,7 +500,7 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
             frame(&mut controller, vec![button(pointer, false)]);
         }
         assert!(
-            !controller
+            controller
                 .store
                 .get(&task_id)
                 .unwrap()
@@ -499,7 +510,38 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                 .clips
                 .iter()
                 .any(|clip| clip.id == clip_id),
-            "double-click deletes the audio clip"
+            "double-click must preserve the audio clip"
+        );
+        for pressed in [true, false] {
+            frame(
+                &mut controller,
+                vec![egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        let delete = frame(&mut controller, vec![])
+            .2
+            .expect("the clip menu exposes an explicit delete action");
+        frame(
+            &mut controller,
+            vec![egui::Event::PointerMoved(delete), button(delete, true)],
+        );
+        frame(&mut controller, vec![button(delete, false)]);
+        assert!(
+            !controller
+                .store
+                .get(&task_id)
+                .unwrap()
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .clips
+                .iter()
+                .any(|item| item.id == clip_id)
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {

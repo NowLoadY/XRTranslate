@@ -62,15 +62,6 @@ pub(super) fn render_task_control_card(
                 .is_some_and(|text| !text.trim().is_empty())
         })
         .count();
-    let current_cue = controller
-        .subtitles
-        .active_cue_at(controller.get_time_ms())
-        .filter(|cue| {
-            cue.translated_text
-                .as_ref()
-                .is_some_and(|text| !text.trim().is_empty())
-        })
-        .map(|cue| cue.id.clone());
     let Some(task) = controller.store.get_mut(&id) else {
         return MediaAction::None;
     };
@@ -107,15 +98,6 @@ pub(super) fn render_task_control_card(
     let mut routing = false;
     let mut preprocessing_action = None;
     let can_edit = controller.subtitle_edit.is_none();
-    let speech_progress = controller
-        .speech_job
-        .as_ref()
-        .filter(|job| job.task_id == id)
-        .map(|job| (job.progress(), job.is_waiting()));
-    let mut generate_speech = None;
-    let mut generate_cue_speech = None;
-    let mut cancel_speech = false;
-    let mut preview_reference = None;
     let card_top = ui.next_widget_position();
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -193,7 +175,7 @@ pub(super) fn render_task_control_card(
                         if subtitles && count > 0 && translated == count {
                             "Retranslate all"
                         } else if subtitles && translated > 0 {
-                            "Continue translation"
+                            "Translate missing subtitles"
                         } else if subtitles {
                             "Translate subtitles"
                         } else if count > 0 {
@@ -239,177 +221,6 @@ pub(super) fn render_task_control_card(
                 );
             }
         });
-        if let Some((progress, waiting)) = speech_progress {
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.spinner();
-                ui.label(tr(
-                    language,
-                    if waiting {
-                        "Waiting for service"
-                    } else {
-                        "Generating speech"
-                    },
-                ));
-                cancel_speech = components::secondary_button(ui, tr(language, "Cancel")).clicked();
-            });
-            ui.add(egui::ProgressBar::new(progress).show_percentage());
-        } else if snapshot.can_synthesize && local_file && count > 0 {
-            let enabled = !task.is_task_running
-                && !optimizing
-                && can_edit
-                && translated == count
-                && controller.speech_job.is_none();
-            let can_clone = snapshot.can_clone_speech
-                && task
-                    .separated_audio
-                    .as_ref()
-                    .is_some_and(|stems| stems.vocals.is_file());
-            let use_source_voice = if task.speech_track.is_some() {
-                task.speech_use_source_voice
-            } else {
-                can_clone
-            };
-            let partial = task.speech_track.as_ref().is_some_and(|track| {
-                let completed = track.completed(task);
-                completed > 0 && completed < count
-            });
-            let restart_label = if use_source_voice {
-                "Regenerate cloned speech"
-            } else {
-                "Regenerate speech track"
-            };
-            crate::ui::layout::flow_row(ui, |ui| {
-                if components::secondary_button_enabled(
-                    ui,
-                    tr(
-                        language,
-                        if partial && use_source_voice {
-                            "Continue cloned speech"
-                        } else if partial {
-                            "Continue speech track"
-                        } else if task.speech_track.is_some() {
-                            restart_label
-                        } else if use_source_voice {
-                            "Generate cloned speech"
-                        } else {
-                            "Generate speech track"
-                        },
-                    ),
-                    enabled && (!use_source_voice || can_clone),
-                )
-                .on_disabled_hover_text(tr(
-                    language,
-                    if enabled && !snapshot.can_clone_speech {
-                        "The selected TTS model does not support reference audio."
-                    } else if enabled && use_source_voice && !can_clone {
-                        "Separate the original vocals before cloning a voice."
-                    } else {
-                        "Finish translating the subtitles first."
-                    },
-                ))
-                .clicked()
-                {
-                    task.speech_use_source_voice = use_source_voice;
-                    changed = true;
-                    generate_speech = Some(!partial && task.speech_track.is_some());
-                }
-                if partial || use_source_voice || can_clone {
-                    ui.add_enabled_ui(enabled, |ui| {
-                        components::icon_menu(
-                            ui,
-                            tr(language, "Task actions"),
-                            xrtranslate_client_core::ui::icon!("more.svg"),
-                            |ui| {
-                                if partial
-                                    && components::secondary_button_enabled(
-                                        ui,
-                                        tr(language, restart_label),
-                                        !use_source_voice || can_clone,
-                                    )
-                                    .clicked()
-                                {
-                                    task.speech_use_source_voice = use_source_voice;
-                                    changed = true;
-                                    generate_speech = Some(true);
-                                    ui.close();
-                                }
-                                if (use_source_voice || can_clone)
-                                    && components::secondary_button(
-                                        ui,
-                                        tr(
-                                            language,
-                                            if use_source_voice {
-                                                "Regenerate with TTS Center voice"
-                                            } else if task.speech_track.is_some() {
-                                                "Regenerate cloned speech"
-                                            } else {
-                                                "Generate cloned speech"
-                                            },
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    task.speech_use_source_voice = !use_source_voice;
-                                    changed = true;
-                                    generate_speech = Some(true);
-                                    ui.close();
-                                }
-                            },
-                        );
-                    });
-                }
-            });
-        }
-        if snapshot.can_synthesize {
-            if let Some([start, end]) = task.speech_reference_range {
-                crate::ui::layout::flow_row(ui, |ui| {
-                    ui.weak(format!(
-                        "{} – {}",
-                        super::super::format_cue_time(start),
-                        super::super::format_cue_time(end)
-                    ));
-                    if components::icon_button(
-                        ui,
-                        tr(language, "Preview voice"),
-                        xrtranslate_client_core::ui::icon!("play.svg"),
-                    )
-                    .clicked()
-                    {
-                        preview_reference = Some([start, end]);
-                    }
-                    if components::secondary_button_enabled(
-                        ui,
-                        tr(language, "Dub current subtitle with this voice"),
-                        current_cue.is_some()
-                            && snapshot.can_clone_speech
-                            && end - start >= 5000
-                            && !task.is_task_running
-                            && !optimizing
-                            && can_edit
-                            && controller.speech_edit.is_none()
-                            && controller.speech_job.is_none(),
-                    )
-                    .clicked()
-                    {
-                        generate_cue_speech = current_cue.clone();
-                    }
-                    if ui
-                        .add_enabled_ui(controller.speech_job.is_none(), |ui| {
-                            components::icon_button(
-                                ui,
-                                tr(language, "Clear voice reference"),
-                                xrtranslate_client_core::ui::icon!("x.svg"),
-                            )
-                        })
-                        .inner
-                        .clicked()
-                    {
-                        task.speech_reference_range = None;
-                        changed = true;
-                    }
-                });
-            }
-        }
         if subtitles && task.is_task_running {
             let progress = if count == 0 {
                 0.0
@@ -591,19 +402,8 @@ pub(super) fn render_task_control_card(
     if changed || language_changed {
         controller.save_active();
     }
-    if cancel_speech {
-        controller.cancel_speech();
-    }
-    if let Some([start, end]) = preview_reference {
-        controller.audition_vocals(start, end);
-    }
-    if let Some(cue) = generate_cue_speech {
-        controller.start_cue_speech(cue);
-    }
     if pause {
         MediaAction::StopTranslation
-    } else if let Some(restart) = generate_speech {
-        MediaAction::GenerateSpeech { restart }
     } else if let Some(action) = preprocessing_action {
         MediaAction::AudioPreprocessing(action)
     } else if repair {

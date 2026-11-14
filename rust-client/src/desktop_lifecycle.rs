@@ -1,4 +1,4 @@
-//! Windows owns the tray menu; hiding the window leaves application work running.
+//! Windows tray and close confirmation; hiding the window leaves application work running.
 use crate::i18n::{self, UiLanguage};
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -16,13 +16,14 @@ use windows::{
         UI::{
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow, WM_ENDSESSION,
-                WM_QUERYENDSESSION,
+                FindWindowW, PostMessageW, WM_APP, WM_ENDSESSION, WM_QUERYENDSESSION,
             },
         },
     },
     core::w,
 };
+
+const SHOW_APPLICATION: u32 = WM_APP + 1;
 
 pub(crate) struct Instance(HANDLE);
 
@@ -35,8 +36,8 @@ impl Instance {
             let instance = Self(handle);
             if exists {
                 if let Ok(window) = FindWindowW(None, w!("XRTranslate")) {
-                    let _ = ShowWindow(window, SW_RESTORE);
-                    let _ = SetForegroundWindow(window);
+                    // Let the owner update both native and egui visibility state.
+                    let _ = PostMessageW(Some(window), SHOW_APPLICATION, WPARAM(0), LPARAM(0));
                 }
                 Ok(None)
             } else {
@@ -61,11 +62,11 @@ enum Action {
 
 pub(crate) struct Tray {
     _icon: TrayIcon,
-    _shutdown: Box<Shutdown>,
+    _messages: Box<WindowMessages>,
     exit: MenuItem,
     language: UiLanguage,
     actions: Receiver<Action>,
-    exiting: bool,
+    close: WindowClose,
 }
 
 impl Tray {
@@ -76,7 +77,7 @@ impl Tray {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let ctx = &cc.egui_ctx;
         let (send, actions) = mpsc::channel();
-        let shutdown = Shutdown::attach(cc, send.clone())?;
+        let messages = WindowMessages::attach(cc, send.clone())?;
         let show = MenuItem::new("XRTranslate", true, None);
         let exit = MenuItem::new(i18n::tr(language, "Exit"), true, None);
         let menu = Menu::with_items(&[&show, &exit])?;
@@ -121,17 +122,20 @@ impl Tray {
         }));
         Ok(Self {
             _icon: icon,
-            _shutdown: shutdown,
+            _messages: messages,
             exit,
             language,
             actions,
-            exiting: false,
+            close: WindowClose::Running,
         })
     }
 
     pub fn exit(&mut self, ctx: &egui::Context) {
-        self.exiting = true;
-        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        self.close.exit(ctx);
+    }
+
+    pub fn render_close_prompt(&mut self, ctx: &egui::Context, language: UiLanguage) -> bool {
+        self.close.render(ctx, language)
     }
 
     pub fn update(&mut self, ctx: &egui::Context, language: UiLanguage) {
@@ -153,21 +157,89 @@ impl Tray {
                 Action::Exit => self.exit(ctx),
             }
         }
-        if !self.exiting && ctx.input(|input| input.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
+        self.close.update(ctx);
     }
 }
 
-/// Restart Manager and Windows sign-out request an actual exit, not close-to-tray.
-struct Shutdown {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowClose {
+    Running,
+    Confirming,
+    Exiting,
+}
+
+impl WindowClose {
+    fn exit(&mut self, ctx: &egui::Context) {
+        *self = Self::Exiting;
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+    }
+
+    fn update(&mut self, ctx: &egui::Context) {
+        if *self != Self::Exiting && ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+            *self = Self::Confirming;
+        }
+    }
+
+    /// Takes priority over other dialogs without discarding their pending actions.
+    fn render(&mut self, ctx: &egui::Context, language: UiLanguage) -> bool {
+        if *self != Self::Confirming {
+            return false;
+        }
+        let response = egui::Modal::new(egui::Id::unique("window_close"))
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::ui::theme::modal_backdrop())
+                    .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
+                    .corner_radius(crate::ui::theme::container_radius(12))
+                    .inner_margin(egui::Margin::symmetric(12, 10)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(i18n::tr(language, "Also stop running in the background?"));
+                    ui.add_space(4.0);
+                    let background = crate::ui::components::secondary_button(
+                        ui,
+                        i18n::tr(language, "Keep running in background"),
+                    )
+                    .clicked();
+                    let exit = crate::ui::components::primary_button(
+                        ui,
+                        i18n::tr(language, "Exit completely"),
+                    )
+                    .clicked();
+                    let cancel = ui.add_sized([24.0, 24.0], egui::Button::new("×").frame(false));
+                    let cancel = ui_director::egui::Control::button(i18n::tr(language, "Cancel"))
+                        .response(ui, cancel)
+                        .on_hover_text(i18n::tr(language, "Cancel"));
+                    (background, exit, cancel.clicked())
+                })
+                .inner
+            });
+        let (background, exit, cancel) = response.inner;
+        if exit {
+            self.exit(ctx);
+        } else if background || cancel || response.should_close() {
+            *self = Self::Running;
+            if background {
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId::ROOT,
+                    egui::ViewportCommand::Visible(false),
+                );
+            }
+        }
+        true
+    }
+}
+
+/// Reopening and session shutdown use the same actions as the tray menu.
+struct WindowMessages {
     window: HWND,
     send: Sender<Action>,
     ctx: egui::Context,
 }
 
-impl Shutdown {
+impl WindowMessages {
     fn attach(
         cc: &eframe::CreationContext<'_>,
         send: Sender<Action>,
@@ -183,7 +255,7 @@ impl Shutdown {
         unsafe {
             SetWindowSubclass(
                 state.window,
-                Some(session_message),
+                Some(window_message),
                 1,
                 &*state as *const Self as usize,
             )
@@ -193,15 +265,15 @@ impl Shutdown {
     }
 }
 
-impl Drop for Shutdown {
+impl Drop for WindowMessages {
     fn drop(&mut self) {
         unsafe {
-            let _ = RemoveWindowSubclass(self.window, Some(session_message), 1);
+            let _ = RemoveWindowSubclass(self.window, Some(window_message), 1);
         }
     }
 }
 
-unsafe extern "system" fn session_message(
+unsafe extern "system" fn window_message(
     window: HWND,
     message: u32,
     wparam: WPARAM,
@@ -212,12 +284,22 @@ unsafe extern "system" fn session_message(
     if message == WM_QUERYENDSESSION {
         return LRESULT(1);
     }
-    if message == WM_ENDSESSION && wparam.0 != 0 {
+    let action = if message == SHOW_APPLICATION {
+        Some(Action::Show)
+    } else if message == WM_ENDSESSION && wparam.0 != 0 {
+        Some(Action::Exit)
+    } else {
+        None
+    };
+    if let Some(action) = action {
         // The box stays owned by Tray, and its callback is removed before it is freed.
-        let state = unsafe { &*(data as *const Shutdown) };
-        let _ = state.send.send(Action::Exit);
+        let state = unsafe { &*(data as *const WindowMessages) };
+        let _ = state.send.send(action);
         state.ctx.request_repaint();
         return LRESULT(0);
     }
     unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }
+
+#[cfg(test)]
+mod tests;

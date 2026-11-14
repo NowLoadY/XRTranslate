@@ -1,13 +1,15 @@
 //! Synthesize translated clips independently; keep completed work as it arrives.
 mod reference;
 pub(super) mod track;
+pub(super) mod voices;
+#[cfg(test)]
+mod workflow_tests;
 use super::{
     controller::MediaController,
-    task::{MediaTask, SpeechClip, SpeechTrack},
+    task::{MediaTask, SpeechClip, SpeechOrigin, SpeechTrack},
 };
 use eframe::egui;
 use std::{
-    hash::{DefaultHasher, Hash, Hasher},
     io::{BufWriter, Cursor},
     path::Path,
     sync::{
@@ -35,13 +37,73 @@ pub(super) struct SpeechJob {
     result: Option<crossbeam_channel::Receiver<SpeechEvent>>,
     cancelled: Arc<AtomicBool>,
     progress: Arc<SpeechProgress>,
-    total: usize,
-    input_key: u64,
-    replace_existing: bool,
+    cues: Vec<String>,
+    selection: Selection,
+}
+
+#[derive(Clone, Default)]
+struct Selection {
     cue_id: Option<String>,
+    voice_id: Option<String>,
+    restart: bool,
+    scope: Scope,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::media) enum Scope {
+    #[default]
+    Unfinished,
+    Missing,
+    Changed,
+    All,
+}
+
+impl Scope {
+    pub(in crate::media) fn contains(
+        self,
+        task: &MediaTask,
+        cue: &super::subtitles::SubtitleCue,
+    ) -> bool {
+        let track = task.speech_track.as_ref();
+        let missing = || {
+            track
+                .and_then(|track| track.clip_for_cue(cue))
+                .is_none_or(|clip| !clip.path.is_file())
+        };
+        let current = || track.is_some_and(|track| track.current(task, cue));
+        match self {
+            Self::Unfinished => !current(),
+            Self::Missing => missing(),
+            Self::Changed => !missing() && !current(),
+            Self::All => true,
+        }
+    }
+}
+
+impl Selection {
+    fn contains(&self, task: &MediaTask, cue: &super::subtitles::SubtitleCue) -> bool {
+        if let Some(id) = &self.cue_id {
+            cue.id == *id
+        } else {
+            self.restart || self.scope.contains(task, cue)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::media) enum CueSpeech {
+    Queued,
+    Generating,
+}
+
+pub(in crate::media) struct QueuedSpeech {
+    task_id: String,
+    cue_id: String,
+    voice_id: Option<String>,
 }
 
 enum SpeechEvent {
+    Voice(reference::Prepared),
     Clip(SpeechClip, tempfile::TempPath),
     Finished(Result<(), String>),
 }
@@ -54,7 +116,7 @@ struct SpeechProgress {
 
 impl SpeechJob {
     pub fn progress(&self) -> f32 {
-        self.progress.completed.load(Ordering::Relaxed) as f32 / self.total as f32
+        self.progress.completed.load(Ordering::Relaxed) as f32 / self.cues.len().max(1) as f32
     }
 
     pub fn is_waiting(&self) -> bool {
@@ -101,7 +163,7 @@ impl SpeechJob {
         };
         self.preparing = None;
         let task = self.pending.take()?;
-        let cue_id = self.cue_id.clone();
+        let selection = self.selection.clone();
         let (send, receive) = crossbeam_channel::unbounded();
         let (server, directory, ctx) = (server.to_owned(), directory.to_owned(), ctx.clone());
         let (cancelled, progress) = (self.cancelled.clone(), self.progress.clone());
@@ -115,14 +177,8 @@ impl SpeechJob {
                         .map_err(|e| e.to_string())?
                         .block_on(async {
                             generate(
-                                &task,
-                                cue_id.as_deref(),
-                                &server,
-                                &directory,
-                                &cancelled,
-                                &progress,
-                                &ctx,
-                                &send,
+                                &task, &selection, &server, &directory, &cancelled, &progress,
+                                &ctx, &send,
                             )
                             .await
                         })
@@ -210,27 +266,9 @@ fn validate(task: &MediaTask, cue_id: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn input_key(task: &MediaTask) -> u64 {
-    let mut key = DefaultHasher::new();
-    task.target_language.hash(&mut key);
-    task.duration_ms.hash(&mut key);
-    task.speech_use_source_voice.hash(&mut key);
-    task.speech_reference_range.hash(&mut key);
-    for cue in task.subtitles.cues() {
-        (
-            cue.start_ms,
-            cue.end_ms,
-            &cue.translated_text,
-            &cue.target_language,
-        )
-            .hash(&mut key);
-    }
-    key.finish()
-}
-
 async fn generate(
     task: &MediaTask,
-    cue_id: Option<&str>,
+    selection: &Selection,
     server: &str,
     directory: &Path,
     cancelled: &AtomicBool,
@@ -238,6 +276,7 @@ async fn generate(
     ctx: &egui::Context,
     send: &crossbeam_channel::Sender<SpeechEvent>,
 ) -> Result<(), String> {
+    let cue_id = selection.cue_id.as_deref();
     validate(task, cue_id)?;
     let mut url = reqwest::Url::parse(server).map_err(|e| e.to_string())?;
     url.set_scheme(if matches!(url.scheme(), "wss" | "https") {
@@ -255,16 +294,33 @@ async fn generate(
     let reference_session = uuid::Uuid::new_v4().to_string();
     let work = async {
         let mut references = reference::References::default();
+        let targets: std::collections::HashSet<_> = task
+            .subtitles
+            .cues()
+            .iter()
+            .filter(|cue| selection.contains(task, cue))
+            .map(|cue| cue.id.as_str())
+            .collect();
         url.set_path("/tts/voice");
         let status: VoiceStatus = response(client.get(url.clone()), progress)
             .await?
             .json()
             .await
             .map_err(|e| e.to_string())?;
-        if task.speech_use_source_voice && !status.supports_reference_audio {
+        let uses_reference = task.speech_use_source_voice
+            || selection.voice_id.is_some()
+            || (!selection.restart
+                && task.speech_track.as_ref().is_some_and(|track| {
+                    track.clips.iter().any(|clip| {
+                        clip.origin.as_ref().is_some_and(|origin| {
+                            origin.voice_id.is_some() && targets.contains(origin.cue_id.as_str())
+                        })
+                    })
+                }));
+        if uses_reference && !status.supports_reference_audio {
             return Err("The selected TTS model does not support reference audio.".into());
         }
-        if !task.speech_use_source_voice && !status.ready {
+        if !uses_reference && !status.ready {
             return Err("Choose an available voice in the TTS Center first.".into());
         }
         url.set_path("/tts/synthesize");
@@ -275,14 +331,19 @@ async fn generate(
             .cues()
             .iter()
             .enumerate()
-            .filter(|(_, cue)| cue_id.is_none_or(|id| cue.id == id))
+            .filter(|(_, cue)| targets.contains(cue.id.as_str()))
             .enumerate()
         {
-            if existing.is_some_and(|track| track.overlaps(cue.start_ms, cue.end_ms)) {
-                progress.completed.store(completed + 1, Ordering::Relaxed);
-                continue;
-            }
-            let start = cue.start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
+            let previous = existing.and_then(|track| track.clip_for_cue(cue));
+            let offset = previous
+                .and_then(|clip| {
+                    clip.origin
+                        .as_ref()
+                        .map(|origin| clip.start_ms - origin.start_ms)
+                })
+                .unwrap_or(0);
+            let start_ms = cue.start_ms.saturating_add(offset).max(0);
+            let start = start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
             // Natural speech may use the following pause, but must not displace the next cue.
             let mut end_ms = task
                 .subtitles
@@ -292,10 +353,13 @@ async fn generate(
             if cue_id.is_some() {
                 end_ms = end_ms.min(cue.end_ms);
             }
+            end_ms = end_ms.saturating_add(offset).max(start_ms + 1);
             if let Some(next) = existing
                 .into_iter()
                 .flat_map(|track| &track.clips)
-                .filter(|clip| clip.start_ms > cue.start_ms)
+                .filter(|clip| {
+                    previous.is_none_or(|old| old.id != clip.id) && clip.start_ms > start_ms
+                })
                 .map(|clip| clip.start_ms)
                 .min()
             {
@@ -303,13 +367,28 @@ async fn generate(
             }
             let end = end_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
             let available = usize::try_from(end - start).map_err(|e| e.to_string())?;
+            let mut used_voice = None;
             let audio = async {
-                let chosen = if task.speech_use_source_voice {
+                let saved_voice = selection.voice_id.as_deref().or_else(|| {
+                    (task.speech_reference_range.is_none() && !selection.restart)
+                        .then(|| {
+                            previous
+                                .and_then(|clip| clip.origin.as_ref())
+                                .and_then(|origin| origin.voice_id.as_deref())
+                        })
+                        .flatten()
+                });
+                let chosen = if let Some(id) = saved_voice {
+                    Some(voices::saved(task, id)?)
+                } else if task.speech_use_source_voice {
                     Some(references.choose(task, index)?)
                 } else {
                     None
                 };
                 let fallback = chosen.as_ref().and_then(|chosen| {
+                    if saved_voice.is_some() || task.speech_reference_range.is_some() {
+                        return None;
+                    }
                     references
                         .previous(task, index)
                         .filter(|previous| previous.id != chosen.id)
@@ -353,6 +432,7 @@ async fn generate(
                     match output {
                         Ok(body) => {
                             if let Some(reference) = reference {
+                                used_voice = Some(reference.clone());
                                 references.remember(task, index, reference);
                             }
                             result = Ok(body);
@@ -404,13 +484,25 @@ async fn generate(
                 writer.write_sample(sample).map_err(|e| e.to_string())?;
             }
             writer.finalize().map_err(|e| e.to_string())?;
+            if let Some(voice) = &used_voice {
+                send.send(SpeechEvent::Voice(voice.clone()))
+                    .map_err(|_| "Speech generation cancelled")?;
+            }
             let clip = SpeechClip {
                 id: uuid::Uuid::new_v4().to_string(),
                 path: directory.join(format!("{}.wav", uuid::Uuid::new_v4())),
-                start_ms: cue.start_ms,
+                start_ms,
                 duration_ms,
                 text: cue.translated_text.clone().unwrap(),
                 peaks,
+                origin: Some(SpeechOrigin {
+                    cue_id: cue.id.clone(),
+                    start_ms: cue.start_ms,
+                    end_ms: cue.end_ms,
+                    language: task.target_language.clone(),
+                    voice_id: used_voice.map(|voice| voice.id),
+                }),
+                previous: None,
             };
             send.send(SpeechEvent::Clip(clip, output.into_temp_path()))
                 .map_err(|_| "Speech generation cancelled")?;
@@ -428,7 +520,10 @@ async fn generate(
         } => Ok(()),
         result = work => result,
     };
-    if task.speech_use_source_voice {
+    if task.speech_use_source_voice
+        || selection.voice_id.is_some()
+        || !task.speech_voices.is_empty()
+    {
         url.set_path(&format!("/tts/reference/session/{reference_session}"));
         match client
             .delete(url)
@@ -570,83 +665,141 @@ fn fit(samples: Vec<i16>, available: usize, cancelled: &AtomicBool) -> Result<Ve
 
 impl MediaController {
     pub(crate) fn start_speech(&mut self, restart: bool) {
-        self.start_speech_selection(restart, None);
+        self.start_speech_scope(Scope::Unfinished, restart);
+    }
+
+    pub(in crate::media) fn start_speech_scope(&mut self, scope: Scope, restart: bool) {
+        if self.subtitle_edit.is_some() || self.speech_edit.is_some() {
+            return;
+        }
+        let Some(task) = self.active_task_id.clone() else {
+            return;
+        };
+        self.start_speech_selection(
+            &task,
+            Selection {
+                restart,
+                scope,
+                ..Default::default()
+            },
+        );
     }
 
     pub(crate) fn start_cue_speech(&mut self, cue_id: String) {
-        self.start_speech_selection(false, Some(cue_id));
+        self.start_cue_with_voice(cue_id, None);
     }
 
-    fn start_speech_selection(&mut self, restart: bool, cue_id: Option<String>) {
-        if self.speech_job.is_some() || self.subtitle_edit.is_some() || self.speech_edit.is_some() {
+    pub(in crate::media) fn start_cue_with_voice(
+        &mut self,
+        cue_id: String,
+        voice_id: Option<String>,
+    ) {
+        if self.subtitle_edit.is_some() || self.speech_edit.is_some() {
             return;
         }
-        self.save_active();
-        let Some(task) = self
-            .active_task_id
-            .as_deref()
-            .and_then(|id| self.store.get(id))
-        else {
+        let Some(task_id) = self.active_task_id.clone() else {
             return;
         };
-        if let Err(error) = validate(task, cue_id.as_deref()) {
+        if self.speech_job.is_some() {
+            if let Some(queued) = self
+                .speech_queue
+                .iter_mut()
+                .find(|queued| queued.task_id == task_id && queued.cue_id == cue_id)
+            {
+                queued.voice_id = voice_id;
+            } else {
+                self.speech_queue.push_back(QueuedSpeech {
+                    task_id,
+                    cue_id,
+                    voice_id,
+                });
+            }
+            return;
+        }
+        self.start_speech_selection(
+            &task_id,
+            Selection {
+                cue_id: Some(cue_id),
+                voice_id,
+                ..Default::default()
+            },
+        );
+    }
+
+    pub(in crate::media) fn cue_speech(&self, cue_id: &str) -> Option<CueSpeech> {
+        if let Some(job) = self.speech_job.as_ref().filter(|job| {
+            Some(&job.task_id) == self.active_task_id.as_ref()
+                && !job.cancelled.load(Ordering::Relaxed)
+        }) {
+            let completed = job.progress.completed.load(Ordering::Relaxed);
+            if let Some(index) = job.cues.iter().position(|id| id == cue_id) {
+                if index == completed {
+                    return Some(CueSpeech::Generating);
+                } else if index > completed {
+                    return Some(CueSpeech::Queued);
+                }
+            }
+        }
+        self.speech_queue
+            .iter()
+            .any(|queued| {
+                Some(&queued.task_id) == self.active_task_id.as_ref() && queued.cue_id == cue_id
+            })
+            .then_some(CueSpeech::Queued)
+    }
+
+    fn start_speech_selection(&mut self, task_id: &str, selection: Selection) {
+        if self.speech_job.is_some() {
+            return;
+        }
+        let cue_id = selection.cue_id.as_deref();
+        self.save_active();
+        if self.dirty {
+            return;
+        }
+        let Some(task) = self.store.get(task_id) else {
+            return;
+        };
+        if let Err(error) = validate(task, cue_id) {
             self.error = Some(error);
+            return;
+        }
+        let cues: Vec<_> = task
+            .subtitles
+            .cues()
+            .iter()
+            .filter(|cue| selection.contains(task, cue))
+            .map(|cue| cue.id.clone())
+            .collect();
+        if cues.is_empty() {
             return;
         }
         self.error = None;
         let mut pending = task.clone();
-        if cue_id.is_none() {
-            // Whole-track dubbing always chooses references automatically.
-            pending.speech_reference_range = None;
-        } else if pending.speech_reference_range.is_some() {
-            // A manually selected reference applies only to this local repair.
-            pending.speech_use_source_voice = true;
-        }
+        // A timeline selection becomes a voice only through Save selected voice.
+        // Merely selecting audio must not silently change the next cue's assigned voice.
+        pending.speech_reference_range = None;
         // The worker generates replacements, while the published track retains
         // every old clip until its own replacement has been saved successfully.
-        let replace_existing = restart
-            || cue_id.is_some()
-            || (cue_id.is_none()
-                && pending
-                    .speech_track
-                    .as_ref()
-                    .is_some_and(|track| track.completed(task) == task.subtitles.count()));
-        if cue_id.is_some() {
-            let cue = pending
-                .subtitles
-                .cues()
-                .iter()
-                .find(|cue| Some(&cue.id) == cue_id.as_ref())
-                .unwrap();
-            if let Some(track) = &mut pending.speech_track {
-                track
-                    .clips
-                    .retain(|clip| clip.end_ms() <= cue.start_ms || clip.start_ms >= cue.end_ms);
-            }
-        } else if replace_existing {
-            pending.speech_track = None;
-        }
         self.speech_job = Some(SpeechJob {
             task_id: task.id.clone(),
             language: task.target_language.clone(),
-            total: if cue_id.is_some() {
-                1
-            } else {
-                task.subtitles.count()
-            },
-            input_key: input_key(task),
-            replace_existing,
+            cues,
             pending: Some(pending),
             preparing: None,
             result: None,
             cancelled: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(SpeechProgress::default()),
-            cue_id,
+            selection,
         });
     }
 
-    pub(crate) fn cancel_speech(&mut self) {
-        if let Some(job) = &self.speech_job {
+    pub(in crate::media) fn cancel_project_speech(&mut self) {
+        self.speech_queue
+            .retain(|queued| Some(&queued.task_id) != self.active_task_id.as_ref());
+        if let Some(job) = &self.speech_job
+            && Some(&job.task_id) == self.active_task_id.as_ref()
+        {
             job.cancelled.store(true, Ordering::Relaxed);
         }
     }
@@ -669,11 +822,17 @@ impl MediaController {
         };
         let old = track.clone();
         let removed = track.clips.remove(index);
-        let retired = if track.clips.iter().any(|clip| clip.path == removed.path) {
-            Vec::new()
-        } else {
-            vec![removed.path]
-        };
+        let retired = removed
+            .files()
+            .filter(|path| {
+                !track
+                    .clips
+                    .iter()
+                    .flat_map(SpeechClip::files)
+                    .any(|kept| kept == *path)
+            })
+            .cloned()
+            .collect();
         track.rendered = false;
         if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
             self.store.get_mut(&task_id).unwrap().speech_track = Some(old);
@@ -701,10 +860,19 @@ impl MediaController {
             .and_then(|job| job.poll(client, &self.storage_dir.join("media-speech"), ctx))
         {
             match event {
+                SpeechEvent::Voice(voice) => {
+                    let task_id = self.speech_job.as_ref().unwrap().task_id.clone();
+                    if let Err(error) = self.save_project_voice(&task_id, voice) {
+                        self.error = Some(error);
+                        self.speech_job = None;
+                        self.speech_queue.clear();
+                    }
+                }
                 SpeechEvent::Finished(result) => {
                     self.speech_job = None;
                     if let Err(error) = result {
                         self.error = Some(error);
+                        self.speech_queue.clear();
                     }
                 }
                 SpeechEvent::Clip(clip, temporary) => {
@@ -712,7 +880,32 @@ impl MediaController {
                         log::warn!("Media speech not saved: {error}");
                         self.error = Some(error);
                         self.speech_job = None;
+                        self.speech_queue.clear();
                     }
+                }
+            }
+        }
+        self.start_queued_speech();
+    }
+
+    fn start_queued_speech(&mut self) {
+        if self.speech_job.is_none() {
+            while let Some(queued) = self.speech_queue.pop_front() {
+                if self.store.get(&queued.task_id).is_some_and(|task| {
+                    task.subtitles
+                        .cues()
+                        .iter()
+                        .any(|cue| cue.id == queued.cue_id)
+                }) {
+                    self.start_speech_selection(
+                        &queued.task_id,
+                        Selection {
+                            cue_id: Some(queued.cue_id),
+                            voice_id: queued.voice_id,
+                            ..Default::default()
+                        },
+                    );
+                    break;
                 }
             }
         }
@@ -720,25 +913,39 @@ impl MediaController {
 
     fn save_speech_clip(
         &mut self,
-        clip: SpeechClip,
+        mut clip: SpeechClip,
         temporary: tempfile::TempPath,
     ) -> Result<(), String> {
         let job = self.speech_job.as_ref().unwrap();
-        let (task_id, language, key, replace_existing) = (
-            job.task_id.clone(),
-            job.language.clone(),
-            job.input_key,
-            job.replace_existing,
-        );
+        if job.cancelled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let (task_id, language) = (job.task_id.clone(), job.language.clone());
         self.save_active();
         let task = self
             .store
             .get_mut(&task_id)
             .ok_or("Media project no longer exists")?;
-        if input_key(task) != key {
-            return Err(
-                "Subtitles changed during speech generation. Generate the track again.".into(),
-            );
+        let origin = clip
+            .origin
+            .as_ref()
+            .ok_or("Speech clip has no subtitle link.")?;
+        let Some(cue) = task
+            .subtitles
+            .cues()
+            .iter()
+            .find(|cue| cue.id == origin.cue_id)
+        else {
+            return Ok(());
+        };
+        let unchanged = task.target_language == language
+            && cue.start_ms == origin.start_ms
+            && cue.end_ms == origin.end_ms
+            && cue.translated_text.as_deref().map(str::trim) == Some(clip.text.trim());
+        if !unchanged {
+            // Keep the published take. An explicit Save and update request may
+            // already be queued with newer text; a late result must not cancel it.
+            return Ok(());
         }
         let was_selected = task.play_speech_track;
         let mut track = task.speech_track.clone().unwrap_or_else(|| SpeechTrack {
@@ -750,35 +957,23 @@ impl MediaController {
             clips: Vec::new(),
             rendered: false,
         });
-        if replace_existing {
-            let index = task
-                .subtitles
-                .cues()
-                .iter()
-                .position(|cue| cue.start_ms == clip.start_ms)
-                .ok_or("Subtitle no longer exists.")?;
-            let cue = &task.subtitles.cues()[index];
-            let end = task
-                .subtitles
-                .cues()
-                .get(index + 1)
-                .map_or(task.duration_ms.max(cue.end_ms), |next| next.start_ms);
-            if track.clips.iter().any(|old| {
-                old.start_ms < cue.end_ms
-                    && old.end_ms() > cue.start_ms
-                    && (old.start_ms < cue.start_ms || old.end_ms() > end)
-            }) {
-                return Err("An existing speech clip crosses this subtitle's boundaries. Adjust it before replacing this range.".into());
+        if let Some(old_id) = track.clip_for_cue(cue).map(|old| old.id.clone()) {
+            let index = track.clips.iter().position(|old| old.id == old_id).unwrap();
+            let mut previous = track.clips.remove(index);
+            if let Some(old_origin) = &previous.origin {
+                clip.start_ms = cue
+                    .start_ms
+                    .saturating_add(previous.start_ms - old_origin.start_ms)
+                    .max(0);
             }
-            track.language = language;
-            track
-                .clips
-                .retain(|old| old.end_ms() <= cue.start_ms || old.start_ms >= cue.end_ms);
+            previous.previous = None;
+            clip.previous = Some(Box::new(previous));
         }
         if track.overlaps(clip.start_ms, clip.end_ms()) {
             return Err("This time range already contains speech.".into());
         }
         track.clips.push(clip.clone());
+        track.language = language;
         track.clips.sort_by_key(|clip| clip.start_ms);
         track.rendered = false;
         temporary.persist(&clip.path).map_err(|e| e.to_string())?;
@@ -799,10 +994,17 @@ impl MediaController {
             .as_ref()
             .unwrap();
         let retired = old
-            .into_iter()
-            .flat_map(|track| track.clips)
-            .filter(|clip| !current.clips.iter().any(|new| new.path == clip.path))
-            .map(|clip| clip.path)
+            .iter()
+            .flat_map(|track| &track.clips)
+            .flat_map(SpeechClip::files)
+            .filter(|path| {
+                !current
+                    .clips
+                    .iter()
+                    .flat_map(SpeechClip::files)
+                    .any(|kept| kept == *path)
+            })
+            .cloned()
             .collect();
         self.queue_speech_render(&task_id, retired)?;
         log::info!(
@@ -814,6 +1016,47 @@ impl MediaController {
         // Retired assets are removed after mixing, so queued renders
         // may still finish reading the preceding revision.
         Ok(())
+    }
+
+    pub(in crate::media) fn restore_speech(&mut self, id: &str) {
+        if self.speech_job.is_some() || self.speech_edit.is_some() {
+            return;
+        }
+        let Some(task_id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(track) = self
+            .store
+            .get_mut(&task_id)
+            .and_then(|task| task.speech_track.as_mut())
+        else {
+            return;
+        };
+        let Some(index) = track
+            .clips
+            .iter()
+            .position(|clip| clip.id == id && clip.previous.is_some())
+        else {
+            return;
+        };
+        let old = track.clone();
+        let mut current = track.clips.remove(index);
+        let mut previous = *current.previous.take().unwrap();
+        if track.overlaps(previous.start_ms, previous.end_ms()) {
+            *track = old;
+            self.error = Some("This time range already contains speech.".into());
+            return;
+        }
+        previous.previous = Some(Box::new(current));
+        track.clips.push(previous);
+        track.clips.sort_by_key(|clip| clip.start_ms);
+        track.rendered = false;
+        if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+            self.store.get_mut(&task_id).unwrap().speech_track = Some(old);
+            self.error = Some(error.to_string());
+        } else if let Err(error) = self.queue_speech_render(&task_id, Vec::new()) {
+            self.error = Some(error);
+        }
     }
 
     pub(super) fn queue_speech_render(
@@ -839,6 +1082,27 @@ impl MediaController {
         let Some(track) = &mut task.speech_track else {
             return;
         };
+        // Link legacy per-cue clips before an edit or a timeline move changes their timing.
+        let mut linked = false;
+        for clip in &mut track.clips {
+            if clip.origin.is_none()
+                && !clip.text.is_empty()
+                && let Some(cue) = task
+                    .subtitles
+                    .cues()
+                    .iter()
+                    .find(|cue| cue.start_ms == clip.start_ms)
+            {
+                clip.origin = Some(SpeechOrigin {
+                    cue_id: cue.id.clone(),
+                    start_ms: cue.start_ms,
+                    end_ms: cue.end_ms,
+                    language: track.language.clone(),
+                    voice_id: None,
+                });
+                linked = true;
+            }
+        }
         // Existing mixed tracks remain usable as one movable clip; new synthesis
         // publishes individual clips without trying to infer their old boundaries.
         if track.clips.is_empty()
@@ -853,6 +1117,7 @@ impl MediaController {
                     / i64::from(reader.spec().sample_rate),
                 text: String::new(),
                 peaks: Vec::new(),
+                ..Default::default()
             });
             track.path = track.path.with_file_name(format!(
                 "{}-mix.wav",
@@ -870,6 +1135,8 @@ impl MediaController {
             {
                 self.error = Some(error);
             }
+        } else if linked && let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+            self.error = Some(error.to_string());
         }
     }
 
@@ -1057,7 +1324,7 @@ mod tests {
             .unwrap()
             .block_on(generate(
                 &task,
-                None,
+                &Selection::default(),
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1077,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_cue_can_replace_speech_with_a_selected_reference() {
+    fn single_cue_regeneration_preserves_its_track_and_manual_position() {
         use crate::media::{backend::MediaSource, subtitles::SubtitleTimeline, task::SubtitleMode};
         use std::io::BufRead;
         let directory = tempfile::tempdir().unwrap();
@@ -1158,7 +1425,10 @@ mod tests {
             .unwrap()
             .block_on(generate(
                 &task,
-                Some(&cue.id),
+                &Selection {
+                    cue_id: Some(cue.id.clone()),
+                    ..Default::default()
+                },
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1188,9 +1458,9 @@ mod tests {
         controller.store.tasks = vec![task];
         controller.start_cue_speech(cue.id.clone());
         let job = controller.speech_job.as_ref().unwrap();
-        assert!(job.replace_existing);
+        assert_eq!(job.selection.cue_id.as_deref(), Some(cue.id.as_str()));
         assert!(
-            job.pending
+            !job.pending
                 .as_ref()
                 .unwrap()
                 .speech_track
@@ -1216,8 +1486,16 @@ mod tests {
             .start_ms = 7000;
         controller.set_vocal_reference(Some([10_000, 18_000]));
         controller.start_cue_speech(cue.id);
-        assert_eq!(controller.speech_job.as_ref().unwrap().total, 1);
-        assert!(controller.speech_job.as_ref().unwrap().replace_existing);
+        assert_eq!(controller.speech_job.as_ref().unwrap().cues.len(), 1);
+        assert!(
+            controller
+                .speech_job
+                .as_ref()
+                .unwrap()
+                .selection
+                .cue_id
+                .is_some()
+        );
         let pending = controller
             .speech_job
             .as_ref()
@@ -1225,8 +1503,8 @@ mod tests {
             .pending
             .as_ref()
             .unwrap();
-        assert!(pending.speech_use_source_voice);
-        assert_eq!(pending.speech_reference_range, Some([10_000, 18_000]));
+        assert!(!pending.speech_use_source_voice);
+        assert_eq!(pending.speech_reference_range, None);
         assert!(!controller.store.tasks[0].speech_use_source_voice);
         assert_eq!(
             controller.store.tasks[0]
@@ -1271,6 +1549,14 @@ mod tests {
             duration_ms: 2000,
             text: "你好。".into(),
             peaks: Vec::new(),
+            origin: Some(SpeechOrigin {
+                cue_id: ids[0].clone(),
+                start_ms: 1000,
+                end_ms: task.subtitles.cues()[0].end_ms,
+                language: "zh".into(),
+                voice_id: None,
+            }),
+            ..Default::default()
         };
         let write_audio = |path: &Path| {
             let mut writer = hound::WavWriter::create(path, SPEC).unwrap();
@@ -1296,17 +1582,14 @@ mod tests {
         for restart in [false, true] {
             controller.start_speech(restart);
             let job = controller.speech_job.as_ref().unwrap();
-            assert_eq!(job.replace_existing, restart);
+            assert_eq!(job.selection.restart, restart);
             assert!(job.pending.as_ref().unwrap().speech_use_source_voice);
             assert_eq!(job.pending.as_ref().unwrap().speech_reference_range, None);
             assert_eq!(
                 controller.store.tasks[0].speech_reference_range,
                 Some([10_000, 18_000])
             );
-            assert_eq!(
-                job.pending.as_ref().unwrap().speech_track.is_none(),
-                restart
-            );
+            assert!(job.pending.as_ref().unwrap().speech_track.is_some());
             assert_eq!(
                 controller.store.tasks[0]
                     .speech_track
@@ -1323,6 +1606,13 @@ mod tests {
             path: directory.path().join("later.wav"),
             start_ms: 4000,
             text: "再见。".into(),
+            origin: Some(SpeechOrigin {
+                cue_id: ids[1].clone(),
+                start_ms: 4000,
+                end_ms: controller.subtitles.cues()[1].end_ms,
+                language: "zh".into(),
+                voice_id: None,
+            }),
             ..clip.clone()
         };
         write_audio(&later.path);
@@ -1337,7 +1627,7 @@ mod tests {
             .unwrap()
             .into_temp_path();
         write_audio(&temporary);
-        let replacement = SpeechClip {
+        let mut replacement = SpeechClip {
             id: "replacement".into(),
             path: directory.path().join("replacement.wav"),
             ..clip.clone()
@@ -1345,6 +1635,7 @@ mod tests {
         controller
             .save_speech_clip(replacement.clone(), temporary)
             .unwrap();
+        replacement.previous = Some(Box::new(clip.clone()));
         assert_eq!(
             controller.store.tasks[0]
                 .speech_track
@@ -1353,7 +1644,7 @@ mod tests {
                 .clips,
             [replacement.clone(), later.clone()]
         );
-        controller.cancel_speech();
+        controller.cancel_project_speech();
         controller.speech_job = None;
         assert!(
             later.path.is_file(),
@@ -1533,7 +1824,7 @@ mod tests {
         runtime
             .block_on(generate(
                 &task,
-                None,
+                &Selection::default(),
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1587,7 +1878,7 @@ mod tests {
         let error = runtime
             .block_on(generate(
                 &task,
-                None,
+                &Selection::default(),
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1624,7 +1915,7 @@ mod tests {
         runtime
             .block_on(generate(
                 &task,
-                None,
+                &Selection::default(),
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
@@ -1647,7 +1938,8 @@ mod tests {
             let progress = SpeechProgress::default();
             let cancelled = AtomicBool::new(false);
             let ctx = egui::Context::default();
-            let generation = generate(&task, None, &server, directory.path(), &cancelled, &progress, &ctx, &send);
+            let selection = Selection::default();
+            let generation = generate(&task, &selection, &server, directory.path(), &cancelled, &progress, &ctx, &send);
             tokio::pin!(generation);
             tokio::select! {
                 result = &mut generation => panic!("should still be waiting: {result:?}"),
@@ -1691,9 +1983,14 @@ mod tests {
             task.playback_audio(),
             super::super::backend::PlaybackAudio::External(_)
         ));
-        let fingerprint = input_key(&task);
         task.target_language = "ja".into();
-        assert_ne!(input_key(&task), fingerprint);
+        assert!(
+            task.subtitles.cues().iter().all(|cue| !task
+                .speech_track
+                .as_ref()
+                .unwrap()
+                .current(&task, cue))
+        );
         assert!(
             std::fs::read_dir(directory.path())
                 .unwrap()

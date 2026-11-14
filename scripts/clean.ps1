@@ -3,14 +3,14 @@
 .SYNOPSIS
 Preview or remove reproducible files in this checkout.
 .DESCRIPTION
-Common: Debug and Python caches, plus unused packages directly staged in .temp.
+All (default): Build and Packages combined. Nothing is removed without -Apply.
+Common: Smaller cleanup of Debug/Python caches and unused packages in .temp.
 Build: All Cargo and Python caches. Packages: Only temporary staged packages.
-All: Build and Packages combined. Nothing is removed without -Apply.
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Common', 'Build', 'Packages', 'All')]
-    [string]$Scope = 'Common',
+    [string]$Scope = 'All',
     [switch]$Apply
 )
 
@@ -201,7 +201,12 @@ $candidates | Sort-Object Path | Select-Object Kind,
 $total = ($candidates | Measure-Object Bytes -Sum).Sum
 Write-Host ('Total: {0:N2} GiB in {1} locations.' -f ($total / 1GB), $candidates.Count)
 if (-not $Apply) {
-    Write-Host "Preview only. To remove these files: clean.cmd -Scope $Scope -Apply"
+    if ($Scope -eq 'All') {
+        Write-Host 'Preview only. To remove these files: clean.cmd -Apply'
+        Write-Host 'Smaller cleanup, keeping Release caches: clean.cmd -Scope Common'
+    } else {
+        Write-Host "Preview only. To remove these files: clean.cmd -Scope $Scope -Apply"
+    }
     return
 }
 

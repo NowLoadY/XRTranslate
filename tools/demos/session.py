@@ -87,26 +87,31 @@ def run(args):
                                    startupinfo=startup, creationflags=subprocess.CREATE_NO_WINDOW)
         processes.append(process)
         return process
-    try:
-        corpus_url = f"http://127.0.0.1:{args.port + 4}"
-        config_args = ["--config", str(stage / "config.json")]
-        start("corpus", [str(stage / manifest["entrypoints"]["corpus"]), *config_args, "--listen", f"127.0.0.1:{args.port + 4}"])
-        backend = start("backend", [str(stage / manifest["entrypoints"]["backend"]), *config_args, "--corpus-url", corpus_url,
-                                    *(["--manage-llama-servers"] if inference else [])])
+
+    def wait_healthy(name, process, url):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         deadline = time.monotonic() + 180
         while True:
-            if backend.poll() is not None:
-                raise RuntimeError(f"Demo backend exited; see {args.session / 'backend.log'}")
+            if process.poll() is not None:
+                raise RuntimeError(f"Demo {name} exited; see {args.session / (name + '.log')}")
             try:
-                with opener.open(f"http://127.0.0.1:{args.port + 1}/healthz", timeout=1) as response:
+                with opener.open(url + "/healthz", timeout=1) as response:
                     if response.status == 200:
-                        break
+                        return
             except OSError:
                 pass
             if time.monotonic() >= deadline:
-                raise RuntimeError("Demo backend did not become ready")
+                raise TimeoutError(f"Demo {name} did not become ready")
             time.sleep(0.25)
+
+    try:
+        corpus_url = f"http://127.0.0.1:{args.port + 4}"
+        config_args = ["--config", str(stage / "config.json")]
+        corpus = start("corpus", [str(stage / manifest["entrypoints"]["corpus"]), *config_args, "--listen", f"127.0.0.1:{args.port + 4}"])
+        wait_healthy("corpus", corpus, corpus_url)
+        backend = start("backend", [str(stage / manifest["entrypoints"]["backend"]), *config_args, "--corpus-url", corpus_url,
+                                    *(["--manage-llama-servers"] if inference else [])])
+        wait_healthy("backend", backend, f"http://127.0.0.1:{args.port + 1}")
         start("app", [str(executable), "--director-port", str(args.port)])
         write_json(args.session / "processes.json", [p.pid for p in processes])
         # The recording client separately waits for the UI's first usable frame.

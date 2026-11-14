@@ -15,7 +15,8 @@ impl Attention {
         match self {
             Self::Feature(index) => 1 << index,
             Self::Next => 1 << 3,
-            Self::Control(_) | Self::Avatar => 0,
+            Self::Avatar => 1 << 4,
+            Self::Control(_) => 0,
         }
     }
 }
@@ -83,5 +84,60 @@ impl Target {
             .filter_map(read)
             .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
             .or_else(|| ctx.memory(|memory| memory.focused()).and_then(read))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{
+        Guide,
+        dialogue::{Context, Cue, Route},
+    };
+    use super::*;
+    use crate::{i18n::UiLanguage, ui::Page};
+
+    #[test]
+    fn page_introductions_wait_for_attention_and_speak_once_per_visit() {
+        let scene = Context {
+            hint: None,
+            route: Route::Page(Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+            automatic: false,
+        };
+        let mut guide = Guide::new(0.0, UiLanguage::English, egui::Pos2::ZERO, &scene, false);
+        let avatar = Some(Target {
+            attention: Attention::Avatar,
+            rect: Rect::EVERYTHING,
+        });
+        guide.attend(avatar, &scene);
+        guide.clock = 1.9;
+        guide.attend(avatar, &scene);
+        assert!(guide.last_spoken < 0.0);
+        guide.clock = 2.1;
+        guide.attend(avatar, &scene);
+        assert_eq!(guide.last_spoken, 2.1);
+        assert_eq!(
+            guide.line.text(UiLanguage::English),
+            Cue::Translation.text()
+        );
+        guide.clock = 20.0;
+        guide.speech.advance(guide.clock);
+        guide.clock = 30.0;
+        guide.attend(avatar, &scene);
+        assert_eq!(guide.last_spoken, 2.1);
+
+        let next = Context {
+            route: Route::Page(Page::AudioStudio),
+            cue: Cue::Audio,
+            ..scene
+        };
+        guide.follow_scene(&next);
+        assert!(guide.pending.is_none());
+        guide.attend(avatar, &next);
+        guide.clock = 32.1;
+        guide.attend(avatar, &next);
+        assert_eq!(guide.last_spoken, 32.1);
+        assert_eq!(guide.line.text(UiLanguage::English), Cue::Audio.text());
     }
 }

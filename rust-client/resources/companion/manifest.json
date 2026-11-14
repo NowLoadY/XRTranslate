@@ -1,0 +1,1444 @@
+{
+  "clips": [
+    {
+      "duration_ms": 2520,
+      "file": "en/Companion-agreement.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Read and accept the Usage Guidelines to continue.",
+      "topic": "agreement"
+    },
+    {
+      "duration_ms": 2840,
+      "file": "en/Companion-api-key.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Enter the API keys for your selected services.",
+      "topic": "api-key"
+    },
+    {
+      "duration_ms": 4460,
+      "file": "en/Companion-audio.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Use Quick controls to choose input devices and output volume.",
+      "topic": "audio"
+    },
+    {
+      "duration_ms": 5020,
+      "file": "en/Companion-big-walk.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Connect the bridge via Setup guide and choose chat audio sources.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 2080,
+      "file": "en/Companion-checking.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Checking installed resources.",
+      "topic": "checking"
+    },
+    {
+      "duration_ms": 2130,
+      "file": "en/Companion-extracting.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Extracting downloaded resources.",
+      "topic": "extracting"
+    },
+    {
+      "duration_ms": 2590,
+      "file": "en/Companion-failed.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Open the error details, then retry the failed task.",
+      "topic": "failed"
+    },
+    {
+      "duration_ms": 5360,
+      "file": "en/Companion-game-plugins.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Install your game's package, then use its Avatar XRT control.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 1790,
+      "file": "en/Companion-here.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Hehe, I'm right here!",
+      "topic": "here"
+    },
+    {
+      "duration_ms": 3270,
+      "file": "en/Companion-meeting.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Create a meeting, select sources and recording, then start.",
+      "topic": "meeting"
+    },
+    {
+      "duration_ms": 1880,
+      "file": "en/Companion-model-download.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Downloading selected models.",
+      "topic": "model-download"
+    },
+    {
+      "duration_ms": 2410,
+      "file": "en/Companion-models.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose speech recognition and translation models.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 2950,
+      "file": "en/Companion-motion.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Describe an action and generate its motion preview.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 2930,
+      "file": "en/Companion-next-resources.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Next, review and download the required resources.",
+      "topic": "next-resources"
+    },
+    {
+      "duration_ms": 2650,
+      "file": "en/Companion-optional-mobile.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose optional voice and assistant features.",
+      "topic": "optional-mobile"
+    },
+    {
+      "duration_ms": 5320,
+      "file": "en/Companion-optional.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose optional voice, assistant and image recognition features.",
+      "topic": "optional"
+    },
+    {
+      "duration_ms": 4610,
+      "file": "en/Companion-osc.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Enable OSC and choose audio sources to send to game chat.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4870,
+      "file": "en/Companion-player.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Import media, choose languages, then generate subtitles.",
+      "topic": "player"
+    },
+    {
+      "duration_ms": 3110,
+      "file": "en/Companion-ready.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Setup is complete. Open Translation to begin.",
+      "topic": "ready"
+    },
+    {
+      "duration_ms": 2610,
+      "file": "en/Companion-resources.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Download the resources for your selected models.",
+      "topic": "resources"
+    },
+    {
+      "duration_ms": 1790,
+      "file": "en/Companion-runtime-download.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Downloading the runtime.",
+      "topic": "runtime-download"
+    },
+    {
+      "duration_ms": 2590,
+      "file": "en/Companion-runtime.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Install the runtime for your selected local models.",
+      "topic": "runtime"
+    },
+    {
+      "duration_ms": 5460,
+      "file": "en/Companion-settings.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Adjust language, appearance, model limits and enabled plugins.",
+      "topic": "settings"
+    },
+    {
+      "duration_ms": 2440,
+      "file": "en/Companion-sign-in.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Sign in to your selected account services.",
+      "topic": "sign-in"
+    },
+    {
+      "duration_ms": 4890,
+      "file": "en/Companion-styles.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose a style card to apply its tone to subsequent translations.",
+      "topic": "styles"
+    },
+    {
+      "duration_ms": 3300,
+      "file": "en/Companion-terms.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose a domain, then add terms and their preferred translations.",
+      "topic": "terms"
+    },
+    {
+      "duration_ms": 5500,
+      "file": "en/Companion-translation.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Choose languages, enable an audio source, then start translation.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 4890,
+      "file": "en/Companion-vocabulary.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Bookmark words from translations and organize them in wordbooks.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 5100,
+      "file": "en/Companion-voice-cards.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Preview a voice, then select Use voice to apply it to TTS.",
+      "topic": "voice-cards"
+    },
+    {
+      "duration_ms": 4800,
+      "file": "en/Companion-vr.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Connect SteamVR and enable Subtitles to show translations in VR.",
+      "topic": "vr"
+    },
+    {
+      "duration_ms": 2120,
+      "file": "en/Companion-working.mp3",
+      "language": "en",
+      "page": "Companion",
+      "text": "Preparing selected resources.",
+      "topic": "working"
+    },
+    {
+      "duration_ms": 2280,
+      "file": "en/Welcome-audio-input.mp3",
+      "language": "en",
+      "page": "Welcome",
+      "text": "I can hear your mic or computer audio.",
+      "topic": "audio-input"
+    },
+    {
+      "duration_ms": 2590,
+      "file": "en/Welcome-hello.mp3",
+      "language": "en",
+      "page": "Welcome",
+      "text": "Hi! I'm your companion. Let's get started!",
+      "topic": "hello"
+    },
+    {
+      "duration_ms": 2280,
+      "file": "en/Welcome-integrations.mp3",
+      "language": "en",
+      "page": "Welcome",
+      "text": "Subtitles can join you in VRChat!",
+      "topic": "integrations"
+    },
+    {
+      "duration_ms": 2981,
+      "file": "en/Welcome-next.mp3",
+      "language": "en",
+      "page": "Welcome",
+      "text": "Next, choose your speech and translation models.",
+      "topic": "next"
+    },
+    {
+      "duration_ms": 2320,
+      "file": "en/Welcome-translation.mp3",
+      "language": "en",
+      "page": "Welcome",
+      "text": "Choose local or cloud translation.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 3460,
+      "file": "ja/Companion-agreement.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "利用ガイドラインを読んで同意すると先に進めます。",
+      "topic": "agreement"
+    },
+    {
+      "duration_ms": 3170,
+      "file": "ja/Companion-api-key.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したサービスのAPIキーを入力します。",
+      "topic": "api-key"
+    },
+    {
+      "duration_ms": 3100,
+      "file": "ja/Companion-audio.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "クイック操作で入力デバイスと出力音量を選びます。",
+      "topic": "audio"
+    },
+    {
+      "duration_ms": 5630,
+      "file": "ja/Companion-big-walk.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "設定ガイドでブリッジを接続し、ゲームチャットに送る音源を選びます。",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 2760,
+      "file": "ja/Companion-checking.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "インストール済みのリソースを確認しています。",
+      "topic": "checking"
+    },
+    {
+      "duration_ms": 2160,
+      "file": "ja/Companion-extracting.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "ダウンロードしたリソースを展開しています。",
+      "topic": "extracting"
+    },
+    {
+      "duration_ms": 3420,
+      "file": "ja/Companion-failed.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "エラーの詳細を確認し、失敗した処理を再試行します。",
+      "topic": "failed"
+    },
+    {
+      "duration_ms": 5890,
+      "file": "ja/Companion-game-plugins.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "ゲームを選んで対応パッケージを導入し、アバターのXRT操作で開始します。",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 1840,
+      "file": "ja/Companion-here.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "えへへ、ここにいますよ！",
+      "topic": "here"
+    },
+    {
+      "duration_ms": 5660,
+      "file": "ja/Companion-meeting.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "会議を作成し、音源と録音保存を選んで記録を開始します。",
+      "topic": "meeting"
+    },
+    {
+      "duration_ms": 2290,
+      "file": "ja/Companion-model-download.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したモデルをダウンロードしています。",
+      "topic": "model-download"
+    },
+    {
+      "duration_ms": 2440,
+      "file": "ja/Companion-models.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "音声認識と翻訳のモデルを選びます。",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 3670,
+      "file": "ja/Companion-motion.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "動作の説明を入力して生成し、プレビューで再生します。",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 3320,
+      "file": "ja/Companion-next-resources.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "次に、必要なリソースを確認してダウンロードします。",
+      "topic": "next-resources"
+    },
+    {
+      "duration_ms": 3200,
+      "file": "ja/Companion-optional-mobile.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "音声とアシスタントを必要に応じて選びます。",
+      "topic": "optional-mobile"
+    },
+    {
+      "duration_ms": 3440,
+      "file": "ja/Companion-optional.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "音声・アシスタント・画像認識を必要に応じて選びます。",
+      "topic": "optional"
+    },
+    {
+      "duration_ms": 3880,
+      "file": "ja/Companion-osc.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "OSCを有効にして、訳文をチャットへ送る音源を選びます。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 3710,
+      "file": "ja/Companion-player.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "ファイルかリンクを取り込み、言語を選んで字幕を生成します。",
+      "topic": "player"
+    },
+    {
+      "duration_ms": 2630,
+      "file": "ja/Companion-ready.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "準備完了です。翻訳画面に進みましょう。",
+      "topic": "ready"
+    },
+    {
+      "duration_ms": 3240,
+      "file": "ja/Companion-resources.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したモデルに必要なリソースをダウンロードします。",
+      "topic": "resources"
+    },
+    {
+      "duration_ms": 2220,
+      "file": "ja/Companion-runtime-download.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "実行環境をダウンロードしています。",
+      "topic": "runtime-download"
+    },
+    {
+      "duration_ms": 3340,
+      "file": "ja/Companion-runtime.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したローカルモデルの実行環境をインストールします。",
+      "topic": "runtime"
+    },
+    {
+      "duration_ms": 6590,
+      "file": "ja/Companion-settings.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "言語・外観・モデルの上限・有効なプラグインを設定します。",
+      "topic": "settings"
+    },
+    {
+      "duration_ms": 2760,
+      "file": "ja/Companion-sign-in.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したサービスのアカウントにログインします。",
+      "topic": "sign-in"
+    },
+    {
+      "duration_ms": 3660,
+      "file": "ja/Companion-styles.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "スタイルカードを選ぶと、以降の翻訳にその口調を使います。",
+      "topic": "styles"
+    },
+    {
+      "duration_ms": 3380,
+      "file": "ja/Companion-terms.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "分野を選び、用語と使いたい訳語を追加します。",
+      "topic": "terms"
+    },
+    {
+      "duration_ms": 3280,
+      "file": "ja/Companion-translation.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "言語と音源を選び、翻訳を開始します。",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 3240,
+      "file": "ja/Companion-vocabulary.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "訳文の単語を保存し、単語帳にまとめます。",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3220,
+      "file": "ja/Companion-voice-cards.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "試聴してから「音声を使用」で翻訳の読み上げに使います。",
+      "topic": "voice-cards"
+    },
+    {
+      "duration_ms": 6320,
+      "file": "ja/Companion-vr.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "SteamVRに接続して字幕を有効にし、VR内で訳文を表示します。",
+      "topic": "vr"
+    },
+    {
+      "duration_ms": 2230,
+      "file": "ja/Companion-working.mp3",
+      "language": "ja",
+      "page": "Companion",
+      "text": "選択したリソースを準備しています。",
+      "topic": "working"
+    },
+    {
+      "duration_ms": 2560,
+      "file": "ja/Welcome-audio-input.mp3",
+      "language": "ja",
+      "page": "Welcome",
+      "text": "マイクもパソコンの音声も聞き取れるよ。",
+      "topic": "audio-input"
+    },
+    {
+      "duration_ms": 3210,
+      "file": "ja/Welcome-hello.mp3",
+      "language": "ja",
+      "page": "Welcome",
+      "text": "こんにちは！翻訳のおともです。さあ、始めましょう！",
+      "topic": "hello"
+    },
+    {
+      "duration_ms": 2110,
+      "file": "ja/Welcome-integrations.mp3",
+      "language": "ja",
+      "page": "Welcome",
+      "text": "VRChatでも字幕と一緒に！",
+      "topic": "integrations"
+    },
+    {
+      "duration_ms": 3590,
+      "file": "ja/Welcome-next.mp3",
+      "language": "ja",
+      "page": "Welcome",
+      "text": "次に、音声認識と翻訳のモデルを選びます。",
+      "topic": "next"
+    },
+    {
+      "duration_ms": 3080,
+      "file": "ja/Welcome-translation.mp3",
+      "language": "ja",
+      "page": "Welcome",
+      "text": "ローカル翻訳かクラウド翻訳を選びます。",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 2500,
+      "file": "ko/Companion-agreement.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "이용 지침을 읽고 동의한 뒤 계속하세요.",
+      "topic": "agreement"
+    },
+    {
+      "duration_ms": 2760,
+      "file": "ko/Companion-api-key.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 서비스의 API 키를 입력하세요.",
+      "topic": "api-key"
+    },
+    {
+      "duration_ms": 2950,
+      "file": "ko/Companion-audio.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "빠른 제어에서 입력 장치와 출력 음량을 선택하세요.",
+      "topic": "audio"
+    },
+    {
+      "duration_ms": 6000,
+      "file": "ko/Companion-big-walk.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "설정 가이드로 브리지를 연결하고 게임 채팅에 보낼 음원을 고르세요.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 2430,
+      "file": "ko/Companion-checking.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "설치된 리소스를 확인하고 있어요.",
+      "topic": "checking"
+    },
+    {
+      "duration_ms": 2720,
+      "file": "ko/Companion-extracting.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "다운로드한 리소스의 압축을 풀고 있어요.",
+      "topic": "extracting"
+    },
+    {
+      "duration_ms": 3320,
+      "file": "ko/Companion-failed.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "오류 내용을 확인하고 실패한 작업을 다시 시도하세요.",
+      "topic": "failed"
+    },
+    {
+      "duration_ms": 5690,
+      "file": "ko/Companion-game-plugins.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "게임과 패키지를 설정하고 아바타의 XRT 컨트롤로 시작하세요.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 1600,
+      "file": "ko/Companion-here.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "헤헤, 여기 있어요!",
+      "topic": "here"
+    },
+    {
+      "duration_ms": 5200,
+      "file": "ko/Companion-meeting.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "회의를 만들고 음원과 녹음 보관을 선택한 뒤 기록을 시작하세요.",
+      "topic": "meeting"
+    },
+    {
+      "duration_ms": 2450,
+      "file": "ko/Companion-model-download.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 모델을 다운로드하고 있어요.",
+      "topic": "model-download"
+    },
+    {
+      "duration_ms": 2510,
+      "file": "ko/Companion-models.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "음성 인식과 번역 모델을 선택하세요.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 4480,
+      "file": "ko/Companion-motion.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "동작 설명을 입력하고 생성해 미리 보기로 재생하세요.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 3490,
+      "file": "ko/Companion-next-resources.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "다음으로 필요한 리소스를 확인하고 다운로드하세요.",
+      "topic": "next-resources"
+    },
+    {
+      "duration_ms": 3200,
+      "file": "ko/Companion-optional-mobile.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "음성과 어시스턴트 기능을 필요에 맞게 선택하세요.",
+      "topic": "optional-mobile"
+    },
+    {
+      "duration_ms": 5330,
+      "file": "ko/Companion-optional.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "음성, 어시스턴트, 이미지 인식 기능을 필요에 맞게 선택하세요.",
+      "topic": "optional"
+    },
+    {
+      "duration_ms": 5360,
+      "file": "ko/Companion-osc.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "OSC를 켜고 번역을 채팅창에 보낼 음원을 선택하세요.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 5620,
+      "file": "ko/Companion-player.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "파일이나 링크를 가져와 언어를 선택하고 자막을 생성하세요.",
+      "topic": "player"
+    },
+    {
+      "duration_ms": 2140,
+      "file": "ko/Companion-ready.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "준비가 끝났어요. 번역 화면으로 이동하세요.",
+      "topic": "ready"
+    },
+    {
+      "duration_ms": 3230,
+      "file": "ko/Companion-resources.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 모델에 필요한 리소스를 다운로드하세요.",
+      "topic": "resources"
+    },
+    {
+      "duration_ms": 2240,
+      "file": "ko/Companion-runtime-download.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "실행 환경을 다운로드하고 있어요.",
+      "topic": "runtime-download"
+    },
+    {
+      "duration_ms": 3300,
+      "file": "ko/Companion-runtime.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 로컬 모델에 필요한 실행 환경을 설치하세요.",
+      "topic": "runtime"
+    },
+    {
+      "duration_ms": 5670,
+      "file": "ko/Companion-settings.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "언어, 외관, 모델 컨텍스트 길이와 사용할 플러그인을 설정하세요.",
+      "topic": "settings"
+    },
+    {
+      "duration_ms": 2590,
+      "file": "ko/Companion-sign-in.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 서비스의 계정에 로그인하세요.",
+      "topic": "sign-in"
+    },
+    {
+      "duration_ms": 3210,
+      "file": "ko/Companion-styles.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "스타일 카드를 선택해 이후 번역에 해당 말투를 적용하세요.",
+      "topic": "styles"
+    },
+    {
+      "duration_ms": 3220,
+      "file": "ko/Companion-terms.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "분야를 선택하고 용어와 원하는 번역을 추가하세요.",
+      "topic": "terms"
+    },
+    {
+      "duration_ms": 2830,
+      "file": "ko/Companion-translation.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "언어와 음원을 선택하고 번역을 시작하세요.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 3480,
+      "file": "ko/Companion-vocabulary.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "번역에서 단어를 저장하고 단어장으로 정리하세요.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3240,
+      "file": "ko/Companion-voice-cards.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "미리 듣고 음성 사용을 눌러 번역 읽기에 적용하세요.",
+      "topic": "voice-cards"
+    },
+    {
+      "duration_ms": 5620,
+      "file": "ko/Companion-vr.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "SteamVR에 연결하고 자막을 켜 VR에서 번역을 표시하세요.",
+      "topic": "vr"
+    },
+    {
+      "duration_ms": 2050,
+      "file": "ko/Companion-working.mp3",
+      "language": "ko",
+      "page": "Companion",
+      "text": "선택한 리소스를 준비하고 있어요.",
+      "topic": "working"
+    },
+    {
+      "duration_ms": 2420,
+      "file": "ko/Welcome-audio-input.mp3",
+      "language": "ko",
+      "page": "Welcome",
+      "text": "마이크도 컴퓨터 소리도 들을 수 있어요.",
+      "topic": "audio-input"
+    },
+    {
+      "duration_ms": 2770,
+      "file": "ko/Welcome-hello.mp3",
+      "language": "ko",
+      "page": "Welcome",
+      "text": "안녕! 저는 번역 친구예요. 함께 시작해요!",
+      "topic": "hello"
+    },
+    {
+      "duration_ms": 2880,
+      "file": "ko/Welcome-integrations.mp3",
+      "language": "ko",
+      "page": "Welcome",
+      "text": "VRChat에서도 자막과 함께할 수 있어요!",
+      "topic": "integrations"
+    },
+    {
+      "duration_ms": 3270,
+      "file": "ko/Welcome-next.mp3",
+      "language": "ko",
+      "page": "Welcome",
+      "text": "다음으로 음성 인식과 번역 모델을 선택하세요.",
+      "topic": "next"
+    },
+    {
+      "duration_ms": 2620,
+      "file": "ko/Welcome-translation.mp3",
+      "language": "ko",
+      "page": "Welcome",
+      "text": "로컬 또는 클라우드 번역을 선택하세요.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 3130,
+      "file": "ru/Companion-agreement.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Прочитайте и примите правила использования.",
+      "topic": "agreement"
+    },
+    {
+      "duration_ms": 3030,
+      "file": "ru/Companion-api-key.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Введите ключи API выбранных сервисов.",
+      "topic": "api-key"
+    },
+    {
+      "duration_ms": 6500,
+      "file": "ru/Companion-audio.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "В быстром управлении выберите устройства ввода и громкость вывода.",
+      "topic": "audio"
+    },
+    {
+      "duration_ms": 6080,
+      "file": "ru/Companion-big-walk.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Подключите мост по руководству и выберите источники для игрового чата.",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 2590,
+      "file": "ru/Companion-checking.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Проверяем установленные ресурсы.",
+      "topic": "checking"
+    },
+    {
+      "duration_ms": 2909,
+      "file": "ru/Companion-extracting.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Распаковываем скачанные ресурсы.",
+      "topic": "extracting"
+    },
+    {
+      "duration_ms": 3490,
+      "file": "ru/Companion-failed.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Посмотрите сведения об ошибке и повторите задачу.",
+      "topic": "failed"
+    },
+    {
+      "duration_ms": 7220,
+      "file": "ru/Companion-game-plugins.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите игру, установите пакет и запустите перевод элементом XRT на аватаре.",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 1200,
+      "file": "ru/Companion-here.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Хе-хе, я тут!",
+      "topic": "here"
+    },
+    {
+      "duration_ms": 5380,
+      "file": "ru/Companion-meeting.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Создайте встречу, выберите источники и сохранение записи, затем начните.",
+      "topic": "meeting"
+    },
+    {
+      "duration_ms": 2580,
+      "file": "ru/Companion-model-download.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Скачиваем выбранные модели.",
+      "topic": "model-download"
+    },
+    {
+      "duration_ms": 2960,
+      "file": "ru/Companion-models.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите модели распознавания речи и перевода.",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 6210,
+      "file": "ru/Companion-motion.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Опишите действие и создайте движение для предпросмотра.",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 3070,
+      "file": "ru/Companion-next-resources.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Далее проверьте и скачайте необходимые ресурсы.",
+      "topic": "next-resources"
+    },
+    {
+      "duration_ms": 3090,
+      "file": "ru/Companion-optional-mobile.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите нужные функции озвучки и помощника.",
+      "topic": "optional-mobile"
+    },
+    {
+      "duration_ms": 6290,
+      "file": "ru/Companion-optional.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите нужные функции: озвучку, помощника и распознавание изображений.",
+      "topic": "optional"
+    },
+    {
+      "duration_ms": 6400,
+      "file": "ru/Companion-osc.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Включите OSC и выберите источники для отправки перевода в чат.",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 6210,
+      "file": "ru/Companion-player.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Импортируйте файл или ссылку, выберите языки и создайте субтитры.",
+      "topic": "player"
+    },
+    {
+      "duration_ms": 2770,
+      "file": "ru/Companion-ready.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Всё готово. Откройте перевод.",
+      "topic": "ready"
+    },
+    {
+      "duration_ms": 2730,
+      "file": "ru/Companion-resources.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Скачайте ресурсы для выбранных моделей.",
+      "topic": "resources"
+    },
+    {
+      "duration_ms": 2660,
+      "file": "ru/Companion-runtime-download.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Скачиваем среду выполнения.",
+      "topic": "runtime-download"
+    },
+    {
+      "duration_ms": 3140,
+      "file": "ru/Companion-runtime.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Установите среду выполнения выбранных локальных моделей.",
+      "topic": "runtime"
+    },
+    {
+      "duration_ms": 5660,
+      "file": "ru/Companion-settings.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Настройте язык, оформление, лимиты моделей и плагины.",
+      "topic": "settings"
+    },
+    {
+      "duration_ms": 2640,
+      "file": "ru/Companion-sign-in.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Войдите в аккаунты выбранных сервисов.",
+      "topic": "sign-in"
+    },
+    {
+      "duration_ms": 3200,
+      "file": "ru/Companion-styles.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите карточку стиля для последующих переводов.",
+      "topic": "styles"
+    },
+    {
+      "duration_ms": 5527,
+      "file": "ru/Companion-terms.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите область и добавьте термины с нужными переводами.",
+      "topic": "terms"
+    },
+    {
+      "duration_ms": 5700,
+      "file": "ru/Companion-translation.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Выберите языки и источник звука, затем начните перевод.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 7370,
+      "file": "ru/Companion-vocabulary.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Сохраняйте слова из переводов и распределяйте по словарям.",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 5540,
+      "file": "ru/Companion-voice-cards.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Прослушайте голос и выберите его для озвучки перевода.",
+      "topic": "voice-cards"
+    },
+    {
+      "duration_ms": 6070,
+      "file": "ru/Companion-vr.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Подключите SteamVR и включите субтитры для показа перевода в VR.",
+      "topic": "vr"
+    },
+    {
+      "duration_ms": 2500,
+      "file": "ru/Companion-working.mp3",
+      "language": "ru",
+      "page": "Companion",
+      "text": "Готовим выбранные ресурсы.",
+      "topic": "working"
+    },
+    {
+      "duration_ms": 2930,
+      "file": "ru/Welcome-audio-input.mp3",
+      "language": "ru",
+      "page": "Welcome",
+      "text": "Я слышу и микрофон, и звук компьютера.",
+      "topic": "audio-input"
+    },
+    {
+      "duration_ms": 3050,
+      "file": "ru/Welcome-hello.mp3",
+      "language": "ru",
+      "page": "Welcome",
+      "text": "Привет! Я твой помощник. Давай начнём!",
+      "topic": "hello"
+    },
+    {
+      "duration_ms": 2810,
+      "file": "ru/Welcome-integrations.mp3",
+      "language": "ru",
+      "page": "Welcome",
+      "text": "Субтитры могут быть с тобой и в VRChat!",
+      "topic": "integrations"
+    },
+    {
+      "duration_ms": 6430,
+      "file": "ru/Welcome-next.mp3",
+      "language": "ru",
+      "page": "Welcome",
+      "text": "Затем выберите модели распознавания речи и перевода.",
+      "topic": "next"
+    },
+    {
+      "duration_ms": 2680,
+      "file": "ru/Welcome-translation.mp3",
+      "language": "ru",
+      "page": "Welcome",
+      "text": "Выберите локальный или облачный перевод.",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 2350,
+      "file": "zh/Companion-agreement.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "阅读并同意使用规范后继续。",
+      "topic": "agreement"
+    },
+    {
+      "duration_ms": 2600,
+      "file": "zh/Companion-api-key.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "填写所选服务的 API 密钥。",
+      "topic": "api-key"
+    },
+    {
+      "duration_ms": 4651,
+      "file": "zh/Companion-audio.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "在快捷控制中选择输入设备，调整输出音量。",
+      "topic": "audio"
+    },
+    {
+      "duration_ms": 6110,
+      "file": "zh/Companion-big-walk.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "按配置指南连接桥接，再选发送到游戏聊天的音源。",
+      "topic": "big-walk"
+    },
+    {
+      "duration_ms": 2070,
+      "file": "zh/Companion-checking.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "正在检查已安装的资源。",
+      "topic": "checking"
+    },
+    {
+      "duration_ms": 2140,
+      "file": "zh/Companion-extracting.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "正在解压下载的资源。",
+      "topic": "extracting"
+    },
+    {
+      "duration_ms": 2734,
+      "file": "zh/Companion-failed.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "查看错误详情，再重试失败的任务。",
+      "topic": "failed"
+    },
+    {
+      "duration_ms": 5780,
+      "file": "zh/Companion-game-plugins.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "选游戏并按说明安装对应包，再用Avatar的XRT控件启动。",
+      "topic": "game-plugins"
+    },
+    {
+      "duration_ms": 1890,
+      "file": "zh/Companion-here.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "嘿嘿，我在这里呀！",
+      "topic": "here"
+    },
+    {
+      "duration_ms": 4700,
+      "file": "zh/Companion-meeting.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "新建会议选音源，按需勾选保留录音，再开始记录。",
+      "topic": "meeting"
+    },
+    {
+      "duration_ms": 2070,
+      "file": "zh/Companion-model-download.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "正在下载所选模型。",
+      "topic": "model-download"
+    },
+    {
+      "duration_ms": 2420,
+      "file": "zh/Companion-models.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "选择语音识别和翻译模型。",
+      "topic": "models"
+    },
+    {
+      "duration_ms": 5030,
+      "file": "zh/Companion-motion.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "输入动作描述后生成，在预览中播放动作。",
+      "topic": "motion"
+    },
+    {
+      "duration_ms": 2470,
+      "file": "zh/Companion-next-resources.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "接下来，查看并下载需要的资源。",
+      "topic": "next-resources"
+    },
+    {
+      "duration_ms": 2310,
+      "file": "zh/Companion-optional-mobile.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "按需选用语音和助手功能。",
+      "topic": "optional-mobile"
+    },
+    {
+      "duration_ms": 4910,
+      "file": "zh/Companion-optional.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "按需选用语音、助手和图像识别功能。",
+      "topic": "optional"
+    },
+    {
+      "duration_ms": 5370,
+      "file": "zh/Companion-osc.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "打开OSC，勾选要把译文发送到聊天框的音源。",
+      "topic": "osc"
+    },
+    {
+      "duration_ms": 4990,
+      "file": "zh/Companion-player.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "导入文件或链接，选好语言后生成字幕。",
+      "topic": "player"
+    },
+    {
+      "duration_ms": 2310,
+      "file": "zh/Companion-ready.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "准备完成，可以进入翻译了。",
+      "topic": "ready"
+    },
+    {
+      "duration_ms": 2629,
+      "file": "zh/Companion-resources.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "下载所选模型需要的资源。",
+      "topic": "resources"
+    },
+    {
+      "duration_ms": 2200,
+      "file": "zh/Companion-runtime-download.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "正在下载运行库。",
+      "topic": "runtime-download"
+    },
+    {
+      "duration_ms": 2717,
+      "file": "zh/Companion-runtime.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "安装所选本地模型需要的运行库。",
+      "topic": "runtime"
+    },
+    {
+      "duration_ms": 5880,
+      "file": "zh/Companion-settings.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "调整语言、外观、模型上下文长度和启用的插件。",
+      "topic": "settings"
+    },
+    {
+      "duration_ms": 2521,
+      "file": "zh/Companion-sign-in.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "登录所选服务的账号。",
+      "topic": "sign-in"
+    },
+    {
+      "duration_ms": 2940,
+      "file": "zh/Companion-styles.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "选择风格卡，让后续译文采用对应语气。",
+      "topic": "styles"
+    },
+    {
+      "duration_ms": 3070,
+      "file": "zh/Companion-terms.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "选择领域，添加术语及希望采用的译法。",
+      "topic": "terms"
+    },
+    {
+      "duration_ms": 3030,
+      "file": "zh/Companion-translation.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "选好语言，开启所需音源，再开始翻译。",
+      "topic": "translation"
+    },
+    {
+      "duration_ms": 4040,
+      "file": "zh/Companion-vocabulary.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "在译文中收藏词语，用单词本归档整理。",
+      "topic": "vocabulary"
+    },
+    {
+      "duration_ms": 3168,
+      "file": "zh/Companion-voice-cards.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "试听后点「使用声音」，将它用于译文朗读。",
+      "topic": "voice-cards"
+    },
+    {
+      "duration_ms": 5370,
+      "file": "zh/Companion-vr.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "连接SteamVR并开启字幕，在VR中显示译文。",
+      "topic": "vr"
+    },
+    {
+      "duration_ms": 2300,
+      "file": "zh/Companion-working.mp3",
+      "language": "zh",
+      "page": "Companion",
+      "text": "正在准备所选资源。",
+      "topic": "working"
+    },
+    {
+      "duration_ms": 2780,
+      "file": "zh/Welcome-audio-input.mp3",
+      "language": "zh",
+      "page": "Welcome",
+      "text": "麦克风和电脑声音，我都能听见。",
+      "topic": "audio-input"
+    },
+    {
+      "duration_ms": 1960,
+      "file": "zh/Welcome-hello.mp3",
+      "language": "zh",
+      "page": "Welcome",
+      "text": "你好呀！我是你的翻译搭子。",
+      "topic": "hello"
+    },
+    {
+      "duration_ms": 2180,
+      "file": "zh/Welcome-integrations.mp3",
+      "language": "zh",
+      "page": "Welcome",
+      "text": "字幕也能陪你去 VRChat！",
+      "topic": "integrations"
+    },
+    {
+      "duration_ms": 2420,
+      "file": "zh/Welcome-next.mp3",
+      "language": "zh",
+      "page": "Welcome",
+      "text": "接下来，选择语音识别和翻译模型。",
+      "topic": "next"
+    },
+    {
+      "duration_ms": 2370,
+      "file": "zh/Welcome-translation.mp3",
+      "language": "zh",
+      "page": "Welcome",
+      "text": "选择本地或云端翻译。",
+      "topic": "translation"
+    }
+  ]
+}

@@ -15,6 +15,10 @@ pub struct Speech {
     next_letter: f64,
     last_letter: Option<f64>,
     dismiss_at: Option<f64>,
+    #[serde(default)]
+    held: bool,
+    #[serde(default)]
+    letter_scale: Option<f64>,
     #[serde(skip)]
     position: Option<Pos2>,
     #[serde(skip)]
@@ -47,15 +51,37 @@ impl Speech {
         self.next_letter = now;
         self.last_letter = None;
         self.dismiss_at = None;
+        self.held = false;
+        self.letter_scale = None;
         self.settled_for = 0.0;
     }
 
+    /// Pace a short narrated line to its bundled audio, then leave time to read it.
+    pub fn say_timed(&mut self, text: impl Into<Cow<'static, str>>, now: f64, seconds: f64) {
+        self.say(text, now);
+        let natural: f64 = self.text.graphemes(true).map(letter_delay).sum();
+        if seconds.is_finite() && seconds > 0.0 && natural > 0.0 {
+            self.letter_scale = Some(seconds / natural);
+        }
+    }
+
     pub fn finished(&self, now: f64) -> bool {
-        self.text.is_empty() || self.dismiss_at.is_some_and(|at| now >= at)
+        self.text.is_empty() || (!self.held && self.dismiss_at.is_some_and(|at| now >= at))
+    }
+
+    /// Keep the last page readable until the owner changes or dismisses it.
+    pub fn hold(&mut self) {
+        self.held = true;
+    }
+
+    /// Typing and the final reading interval have both completed.
+    pub fn completed(&self, now: f64) -> bool {
+        self.end == self.text.len() && now >= self.next_letter
     }
 
     /// Stop typing and let the existing bubble fade from its current position.
     pub fn dismiss(&mut self, now: f64) {
+        self.held = false;
         self.dismiss_at = Some(now);
         self.last_letter = None;
     }
@@ -104,7 +130,7 @@ impl Speech {
             let delay = letter_delay(letter);
             self.last_letter =
                 (delay < 0.15 && !letter.trim().is_empty()).then_some(self.next_letter);
-            self.next_letter += delay;
+            self.next_letter += delay * self.letter_scale.unwrap_or(1.0);
             if self.end == page_end {
                 let reading_time =
                     (self.text[self.page_start..self.end].graphemes(true).count() as f64 * 0.035)
@@ -313,13 +339,7 @@ impl Speech {
 }
 
 /// Place interactive content using the same space/occlusion policy as speech.
-pub fn popup_rect(
-    bounds: Rect,
-    anchor: Pos2,
-    radius: f32,
-    size: Vec2,
-    occupied: &[Rect],
-) -> Rect {
+pub fn popup_rect(bounds: Rect, anchor: Pos2, radius: f32, size: Vec2, occupied: &[Rect]) -> Rect {
     let size = size.min(bounds.size());
     let direction = bubble_direction(
         bounds,
@@ -426,6 +446,48 @@ fn letter_delay(letter: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrated_greeting_types_for_the_clip_duration_and_keeps_a_reading_interval() {
+        let mut speech = Speech::default();
+        speech.say_timed("A short greeting.", 0.0, 6.0);
+        for frame in 0..=30 {
+            speech.advance(frame as f64 / 10.0);
+        }
+        assert!(speech.end < speech.text.len());
+        speech.advance(6.1);
+        assert_eq!(speech.end, speech.text.len());
+        assert!(!speech.finished(6.1));
+        assert!(speech.finished(9.0));
+        speech.say("An ordinary message", 10.0);
+        assert!(speech.letter_scale.is_none());
+    }
+
+    #[test]
+    fn tutorial_speech_finishes_reading_but_waits_for_explicit_dismissal() {
+        let mut speech = Speech::default();
+        speech.say("Read at your own pace.", 0.0);
+        speech.hold();
+        assert!(!speech.completed(0.0));
+        for frame in 0..300 {
+            speech.advance(frame as f64 / 30.0);
+        }
+        assert!(speech.completed(10.0));
+        assert!(!speech.finished(100.0));
+        let restored: Speech =
+            serde_json::from_str(&serde_json::to_string(&speech).unwrap()).unwrap();
+        assert!(!restored.finished(100.0));
+        speech.dismiss(11.0);
+        assert!(speech.finished(11.0));
+        speech.say("Next", 12.0);
+        for frame in 0..300 {
+            speech.advance(12.0 + frame as f64 / 30.0);
+        }
+        assert!(
+            speech.finished(22.0),
+            "ordinary speech must not inherit the hold"
+        );
+    }
 
     #[test]
     fn long_speech_clears_each_page_and_delivers_the_complete_message() {

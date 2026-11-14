@@ -11,12 +11,14 @@ pub(super) enum Message {
     Error(String),
     Text { source: String, text: String },
     Command(super::Command),
+    Tutorial { revision: u64, text: String },
 }
 
 impl Message {
     pub(super) fn text(&self, language: UiLanguage) -> Cow<'static, str> {
         match self {
             Self::Localized(key) => Cow::Borrowed(i18n::tr(language, key)),
+            Self::Tutorial { text, .. } => Cow::Owned(text.clone()),
             Self::Command(command) => Cow::Borrowed(command.reply(language)),
             Self::Text { text, .. } => Cow::Owned(text.clone()),
             Self::Error(detail) => Cow::Owned(format!(
@@ -39,9 +41,26 @@ pub(crate) struct Inbox {
     reading: Option<Message>,
     observed_errors: VecDeque<(&'static str, String)>,
     acknowledgement: Option<super::Command>,
+    tutorial: Option<Message>,
 }
 
 impl Inbox {
+    /// One replaceable priority slot: skipping never leaves old tutorial mail.
+    pub(crate) fn guide(&mut self, revision: u64, text: impl Into<String>) {
+        self.tutorial = Some(Message::Tutorial {
+            revision,
+            text: text.into(),
+        });
+    }
+
+    pub(crate) fn end_guide(&mut self) {
+        self.tutorial = None;
+    }
+
+    pub(super) fn tutorial(&self) -> Option<&Message> {
+        self.tutorial.as_ref()
+    }
+
     pub(crate) fn acknowledge(&mut self, command: super::Command) {
         // Immediate feedback for the latest action, never a backlog of stale replies.
         self.acknowledgement = Some(command);

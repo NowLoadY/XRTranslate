@@ -1,0 +1,116 @@
+{
+  "id": "guide",
+  "version": "0.1.0",
+  "min_host_version": "0.4.5",
+  "title": {
+    "en": "User Guide",
+    "zh": "使用指南",
+    "ja": "使い方ガイド",
+    "ko": "사용 안내",
+    "ru": "Руководство"
+  },
+  "description": {
+    "en": "Short tutorials with manual navigation and reusable recording plans.",
+    "zh": "简明操作讲解，支持手动切换和演示录制。"
+  },
+  "executable": "xrt-guide",
+  "bundle_with_host": true,
+  "requires": [
+    "guide.presentation.v1"
+  ],
+  "subscriptions": [
+    "guide.context"
+  ],
+  "tools": [
+    {
+      "name": "guide.catalog",
+      "description": "Read available localized guide chapters and topics.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": true
+    },
+    {
+      "name": "guide.start",
+      "description": "Start on a requested page, or the current page. Topics wait for explicit navigation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "guide.select",
+      "description": "Select a page and optional topic ID from guide.catalog.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "page"
+        ],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "guide.next",
+      "description": "Explain the next available topic; stop after the final topic.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "guide.previous",
+      "description": "Explain the previous available topic.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "guide.stop",
+      "description": "Exit and release narration and pending view actions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "guide.status",
+      "description": "Read selection and readiness. Wait for ready before recording a prepared view.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": true
+    }
+  ]
+}

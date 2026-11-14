@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use xrtranslate_prompt::{PromptMessage, TranslationPromptContext};
+use xrtranslate_prompt::{PromptMessage, TranslationPromptContext, estimated_tokens};
 
 use crate::openai::remove_completion_markers;
 
@@ -54,6 +54,9 @@ pub fn is_probable_translation_context_leak(
     if output.is_empty() {
         return false;
     }
+    if excessive_expansion(source_text, output) {
+        return true;
+    }
 
     let folded = output.to_ascii_lowercase();
     const CONTEXT_MARKERS: [&str; 8] = [
@@ -101,15 +104,18 @@ pub fn is_probable_translation_context_leak(
         if copied_lines >= 3 {
             return true;
         }
-
-        let source_chars = source_text.trim().chars().count().max(1);
-        let output_chars = output.chars().count();
-        if output_chars > (source_chars.saturating_mul(10) + 64).max(192) {
-            return true;
-        }
     }
 
     false
+}
+
+fn excessive_expansion(source: &str, output: &str) -> bool {
+    // Use the shared language-aware estimate, with room for short phrases and
+    // natural stylistic expansion. This also applies when no history remains.
+    estimated_tokens(output.trim())
+        > estimated_tokens(source.trim())
+            .saturating_mul(6)
+            .saturating_add(32)
 }
 
 /// Validates a cleaned translation against the exact messages rendered for
@@ -122,6 +128,9 @@ pub(in crate::translation) fn translation_output_rejection(
     prompt_messages: &[PromptMessage],
     prompt_context: &TranslationPromptContext,
 ) -> Option<&'static str> {
+    if excessive_expansion(source_text, translated_text) {
+        return Some("translation is disproportionately longer than the input");
+    }
     let reference = prompt_context.reference_text_for_quality_checks();
     if is_probable_translation_context_leak(source_text, translated_text, reference.as_deref()) {
         return Some("copied translation reference context");

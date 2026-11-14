@@ -1,7 +1,7 @@
 # Prompt architecture
 
-Prompt composition is a shared domain. Model delivery, runtime context, and UI
-editing use its contracts without maintaining separate prompt implementations.
+Prompt composition is a shared domain. Model delivery, runtime context, and style
+selection use its contracts without maintaining separate prompt implementations.
 
 Translation models declare a shared prompt profile in their local model card or
 remote capabilities (`translation_prompt_profile`). Prompt Studio and inference
@@ -22,7 +22,7 @@ by the graph, with transport-only conversions owned by the connector.
 | Backend context | Maintain bounded history only for delegated conversations; read snapshots without accumulating results |
 | XR Corpus | Terminology, lexical retrieval, and recognition vocabulary |
 | `xrtranslate-prompt` | Graph schema, validation, built-in graphs, and deterministic rendering into ordered messages |
-| Prompt Studio | Editing, selection, persistence, and display of execution traces |
+| Prompt Studio | Style selection and persistence |
 | Inference profiles and adapters | Delivery target, sampling, transport conversion, and output normalization |
 | Backend pipeline | Capability selection, scheduling, result acceptance, and bounded recovery |
 
@@ -36,9 +36,8 @@ in their dedicated fields, with graph-rendered content delivered as translation
 hints. The connector changes the wire representation without composing a second
 prompt or conversation.
 
-Style selection and graph editing use one prompt library and activation path.
-Canvas layout and editor interaction remain separate from execution semantics.
-Shared editor behavior belongs to the common UI infrastructure.
+Style selection uses one prompt library and activation path. Presentation state
+remains separate from execution semantics.
 
 ## Context and capabilities
 
@@ -114,15 +113,14 @@ changing the configured window or the stored conversation.
 ## Execution and validation
 
 Graphs are validated before activation. Typed connections, required inputs,
-delivery targets, and message ordering have one definition shared by editor and
-backend. Execution produces the messages sent to the selected provider.
+delivery targets, and message ordering have one shared definition. Execution
+produces the messages sent to the selected provider.
 
 Translation execution publishes its trace after graph evaluation and before the
-model request. Prompt Studio follows the latest request automatically, including
-recovery and concurrent tasks, and displays its matching graph values and assembled
-request read-only. Plugin-owned facts are not editable in Studio. Recognition
-traces accompany their corresponding results; neither view runs a second evaluator
-or supplies translation memory.
+model request. Each trace retains the matching graph values and assembled request,
+including recovery and concurrent tasks. Recognition traces accompany their
+corresponding results. Trace collection does not run a second evaluator or supply
+translation memory.
 
 Inference validates normalized output before the pipeline accepts it as a final
 result. The backend coordinates bounded recovery using the same graph and
@@ -133,12 +131,11 @@ translation or an irreversible downstream action.
 
 The shared prompt domain owns schema evolution and built-in defaults. User
 profiles and styles retain authored content through supported normalization.
-Editor layout data does not define prompt behavior, and delivery views do not
+Presentation metadata does not define prompt behavior, and delivery views do not
 create independent copies of the same graph.
 
-Delivery paths use capability names. Import accepts legacy provider-based names
-and preserves node IDs, authored instructions, styles, and connections. Graph
-creation, import/export, and deletion use the same library.
+Delivery paths use capability names. Loading legacy provider-based data preserves
+node IDs, authored instructions, styles, and connections through the same library.
 
 Concrete prompt wording, node definitions, schema versions, and recovery
 algorithms are maintained with their implementation. See

@@ -61,6 +61,8 @@ pub struct MediaController {
     pub(super) video_export: Option<super::video_export::VideoExport>,
     pub(super) pending_video_export: Option<String>,
     pub(super) speech_job: Option<super::speech::SpeechJob>,
+    pub(super) speech_queue: std::collections::VecDeque<super::speech::QueuedSpeech>,
+    pub(super) voice_library: super::speech::voices::Library,
     pub(super) speech_render: Option<super::speech::track::RenderQueue>,
     pub(super) exported_video: Option<PathBuf>,
 
@@ -120,6 +122,8 @@ impl MediaController {
             video_export: None,
             pending_video_export: None,
             speech_job: None,
+            speech_queue: Default::default(),
+            voice_library: Default::default(),
             speech_render: None,
             exported_video: None,
             search_query: String::new(),
@@ -170,6 +174,7 @@ impl MediaController {
     }
 
     pub fn hide_video(&mut self) {
+        self.voice_library.stop_preview();
         self.cancel_subtitle_trim();
         if let Some(backend) = &mut self.backend {
             backend.set_video_visible(false);
@@ -297,6 +302,7 @@ impl MediaController {
     }
 
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
+        self.voice_library.stop_preview();
         self.prepare_speech_track(task_id);
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
         if self.active_task_id.as_deref() != Some(task_id) {
@@ -513,8 +519,47 @@ impl MediaController {
             return false;
         }
         let previous = self.subtitles.clone();
+        let task_id = self.active_task_id.clone().unwrap();
+        let previous_speech = self
+            .store
+            .get(&task_id)
+            .and_then(|task| task.speech_track.clone());
+        let linked = previous
+            .cues()
+            .iter()
+            .find(|cue| cue.id == cue_id)
+            .and_then(|cue| {
+                previous_speech
+                    .as_ref()
+                    .and_then(|track| track.clip_for_cue(cue))
+            })
+            .map(|clip| clip.id.clone());
         if !self.subtitles.remove_cue(cue_id) {
             return false;
+        }
+        let mut retired = Vec::new();
+        if let Some(track) = self
+            .store
+            .get_mut(&task_id)
+            .and_then(|task| task.speech_track.as_mut())
+        {
+            track.clips.retain(|clip| {
+                let remove = Some(&clip.id) == linked.as_ref();
+                if remove {
+                    retired.extend(clip.files().cloned());
+                }
+                !remove
+            });
+            retired.retain(|path| {
+                !track
+                    .clips
+                    .iter()
+                    .flat_map(super::task::SpeechClip::files)
+                    .any(|kept| kept == path)
+            });
+            if !retired.is_empty() {
+                track.rendered = false;
+            }
         }
         let was_dirty = self.dirty;
         self.error = None;
@@ -528,9 +573,15 @@ impl MediaController {
                 .and_then(|id| self.store.get_mut(id))
             {
                 task.subtitles = self.subtitles.clone();
+                task.speech_track = previous_speech;
             }
             self.dirty = was_dirty;
             return false;
+        }
+        if !retired.is_empty()
+            && let Err(error) = self.queue_speech_render(&task_id, retired)
+        {
+            self.error = Some(error);
         }
         self.last_auto_scrolled_cue_id = None;
         self.last_manual_scroll = Some(Instant::now());
@@ -736,17 +787,28 @@ impl MediaController {
             .store
             .get(task_id)
             .and_then(|task| task.speech_track.clone());
+        let voices = self
+            .store
+            .get(task_id)
+            .map(|task| task.speech_voices.clone())
+            .unwrap_or_default();
         self.store.delete(task_id);
         self.save_active();
         if let Some(track) = speech {
             self.remove_speech_file(&track.path);
             for clip in track.clips {
-                self.remove_speech_file(&clip.path);
+                for path in clip.files() {
+                    self.remove_speech_file(path);
+                }
             }
+        }
+        for voice in voices {
+            self.remove_voice_file(&voice.reference);
         }
     }
 
     pub fn toggle_play(&mut self) {
+        self.voice_library.stop_preview();
         if self.previewing_vocals {
             self.finish_vocal_preview();
             return;
@@ -819,6 +881,7 @@ impl MediaController {
     }
 
     pub fn tick(&mut self) {
+        self.poll_project_voices();
         let vocals = self
             .active_task_id
             .as_deref()
@@ -942,6 +1005,7 @@ impl MediaController {
     }
 
     pub fn seek_to(&mut self, ms: i64, play: bool) {
+        self.voice_library.stop_preview();
         self.finish_vocal_preview();
         self.speech_preview_end = None;
         if let Some(backend) = &mut self.backend {

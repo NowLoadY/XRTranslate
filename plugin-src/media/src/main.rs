@@ -81,15 +81,6 @@ impl App {
             .clone();
         match action {
             MediaAction::None => {}
-            MediaAction::GenerateSpeech { restart } => {
-                if cap.tts {
-                    self.media
-                        .as_mut()
-                        .unwrap()
-                        .controller
-                        .start_speech(restart);
-                }
-            }
             MediaAction::OptimizeSubtitles => {
                 if let Some(task) = self
                     .media

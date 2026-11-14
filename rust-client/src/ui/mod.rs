@@ -1,5 +1,6 @@
 pub(crate) mod background;
 pub(crate) mod companion;
+pub(crate) mod tutorial;
 pub use xrtranslate_client_core::ui::{
     animation, fonts, layout, modal, notifications, organic_border, organic_line, theme,
     virtual_list,
@@ -122,7 +123,6 @@ pub fn render_sidebar(
     navigation: &mut NavigationState,
     plugin_pages: &crate::plugins::PluginPages,
     tts_configured: bool,
-    modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
     onboarding_page: &mut usize,
     language: crate::i18n::UiLanguage,
@@ -241,7 +241,6 @@ pub fn render_sidebar(
 
                 guide_button_animated(
                     ui,
-                    modal_dialog,
                     language,
                     icon_guide.clone(),
                     expand_factor,
@@ -345,23 +344,6 @@ fn sidebar_text_button(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response.clicked()
-}
-
-fn open_guide_modal(modal_dialog: &mut modal::ModalDialog, language: crate::i18n::UiLanguage) {
-    *modal_dialog = modal::ModalDialog::carousel(vec![
-        modal::ModalPage::new(
-            crate::i18n::tr(language, "Translation"),
-            crate::i18n::tr(language, "Select audio and start."),
-        ),
-        modal::ModalPage::new(
-            crate::i18n::tr(language, "VRChat OSC"),
-            crate::i18n::tr(language, "Configure chatbox output."),
-        ),
-        modal::ModalPage::new(
-            crate::i18n::tr(language, "Settings"),
-            crate::i18n::tr(language, "Install llama.cpp and models."),
-        ),
-    ]);
 }
 
 fn nav_item_animated(
@@ -495,7 +477,6 @@ fn nav_item_animated(
 
 fn guide_button_animated(
     ui: &mut egui::Ui,
-    modal_dialog: &mut modal::ModalDialog,
     language: crate::i18n::UiLanguage,
     icon: egui::ImageSource<'static>,
     expand_factor: f32,
@@ -563,6 +544,8 @@ fn guide_button_animated(
         });
 
     let response = frame_response.response.interact(egui::Sense::click());
+    let response = ui_director::egui::Control::button(crate::i18n::tr(language, "User Guide"))
+        .response(ui, response);
 
     if expand_factor < 0.3 {
         response
@@ -584,7 +567,7 @@ fn guide_button_animated(
     }
 
     if response.clicked() {
-        open_guide_modal(modal_dialog, language);
+        tutorial::start(ui.ctx());
     }
 }
 
@@ -715,7 +698,6 @@ pub fn render_top_navigation(
     navigation: &mut NavigationState,
     plugins: &crate::plugins::PluginPages,
     tts_configured: bool,
-    modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
     onboarding_page: &mut usize,
     language: crate::i18n::UiLanguage,
@@ -788,18 +770,19 @@ pub fn render_top_navigation(
                 ))
                 .fit_to_exact_size(egui::vec2(16.0, 16.0))
                 .tint(theme::text_strong());
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::image_and_text(
-                            guide_icon,
-                            crate::i18n::tr(language, "User Guide"),
-                        )
-                        .corner_radius(8),
+                let response = ui.add_sized(
+                    [ui.available_width(), 36.0],
+                    egui::Button::image_and_text(
+                        guide_icon,
+                        crate::i18n::tr(language, "User Guide"),
                     )
+                    .corner_radius(8),
+                );
+                if ui_director::egui::Control::button(crate::i18n::tr(language, "User Guide"))
+                    .response(ui, response)
                     .clicked()
                 {
-                    open_guide_modal(modal_dialog, language);
+                    tutorial::start(ui.ctx());
                     ui.close();
                 }
                 ui.add_space(4.0);

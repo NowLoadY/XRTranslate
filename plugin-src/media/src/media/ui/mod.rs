@@ -5,6 +5,7 @@ mod library;
 mod subtitle_edit;
 mod subtitles;
 mod timeline;
+mod voices;
 
 use super::{
     MediaAction, MediaPlugin, MediaUiSnapshot,

@@ -94,6 +94,7 @@ pub fn dispatch(providers: &mut [&mut dyn ToolProvider], call: &ToolCall) -> Too
 }
 
 pub mod cli;
+pub mod client;
 #[cfg(feature = "egui")]
 pub mod egui;
 pub mod feedback;

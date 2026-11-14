@@ -15,6 +15,7 @@ xrtranslate-download = { path = "../xrtranslate-download" }
 xrtranslate-engine = { path = "../xrtranslate-engine" }
 xrtranslate-prompt = { path = "../xrtranslate-prompt" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }

@@ -16,7 +16,7 @@ pub(crate) struct ScreenTextHost {
     requested: bool,
     region: Option<OverlayRegion>,
     result_region: Option<OverlayRegion>,
-    companion_region: Option<OverlayRegion>,
+    controller_region: Option<OverlayRegion>,
     result_moving: bool,
     revision: u64,
     languages: Option<(String, String)>,
@@ -28,7 +28,7 @@ impl ScreenTextHost {
         self.enabled = false;
         self.region = None;
         self.result_region = None;
-        self.companion_region = None;
+        self.controller_region = None;
         self.result_moving = false;
     }
 
@@ -37,7 +37,7 @@ impl ScreenTextHost {
     }
 
     fn exclusions(&self) -> [Option<OverlayRegion>; 2] {
-        [self.result_region, self.companion_region]
+        [self.result_region, self.controller_region]
             .map(|area| crate::screen_capture::intersection(self.region?, area?).ok())
     }
 }
@@ -182,9 +182,9 @@ impl XRTranslateApp {
                     self.request_ocr_capture(false);
                 }
             }
-            OverlayEvent::CompanionRegionChanged(region) => {
+            OverlayEvent::ControllerRegionChanged(region) => {
                 let before = self.screen_text.exclusions();
-                self.screen_text.companion_region = region;
+                self.screen_text.controller_region = region;
                 if before != self.screen_text.exclusions() {
                     self.request_ocr_capture(false);
                 }

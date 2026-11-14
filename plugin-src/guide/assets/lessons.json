@@ -1,0 +1,969 @@
+[
+  {
+    "page": "Translation",
+    "steps": [
+      {
+        "id": "translation",
+        "title": {
+          "en": "Translation",
+          "zh": "翻译",
+          "ja": "翻訳",
+          "ko": "번역",
+          "ru": "Перевод"
+        },
+        "text": {
+          "en": "Choose languages, enable an audio source, then start translation.",
+          "zh": "选好语言，开启所需音源，再开始翻译。",
+          "ja": "言語と音源を選び、翻訳を開始します。",
+          "ko": "언어와 음원을 선택하고 번역을 시작하세요.",
+          "ru": "Выберите языки и источник звука, затем начните перевод."
+        },
+        "targets": [
+          "Translation languages",
+          "Start Translation"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "auto-bidirectional",
+        "title": {
+          "en": "Auto (bidirectional)",
+          "zh": "自动（双向）",
+          "ja": "自動（双方向）",
+          "ko": "자동 (양방향)",
+          "ru": "Авто (двунаправленный)"
+        },
+        "text": {
+          "en": "Choose Auto (bidirectional) and the two conversation languages.",
+          "zh": "输入选「自动（双向）」，再选两种对话语言。",
+          "ja": "入力を「自動（双方向）」にし、会話する2言語を選びます。",
+          "ko": "입력을 자동(양방향)으로 바꾸고 대화할 두 언어를 선택하세요.",
+          "ru": "Выберите автоопределение в обе стороны и два языка разговора."
+        },
+        "targets": [
+          "Translation languages"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "filter-strength",
+        "title": {
+          "en": "Filter strength",
+          "zh": "滤除强度",
+          "ja": "フィルター強度",
+          "ko": "필터 강도",
+          "ru": "Степень фильтрации"
+        },
+        "text": {
+          "en": "Adjust Filter strength to set the speech detection threshold.",
+          "zh": "拖动过滤强度，调整语音的收音门槛。",
+          "ja": "フィルター強度で音声を検出するしきい値を調整します。",
+          "ko": "필터 강도를 움직여 음성 감지 기준을 조정하세요.",
+          "ru": "Настройте силу фильтра, чтобы задать порог обнаружения речи."
+        },
+        "targets": [
+          "Filter strength"
+        ],
+        "reveal": [
+          "Settings",
+          "Recognition settings"
+        ]
+      },
+      {
+        "id": "pause-tolerance",
+        "title": {
+          "en": "Pause tolerance",
+          "zh": "停顿容忍度",
+          "ja": "間の許容度",
+          "ko": "일시 정지 허용",
+          "ru": "Допуск пауз"
+        },
+        "text": {
+          "en": "In Automatic mode, set pauses with Pause tolerance.",
+          "zh": "自动模式下，用停顿容忍度调整断句节奏。",
+          "ja": "ポーズ許容度で、文を区切るまでの無音時間を調整します。",
+          "ko": "일시 정지 허용치로 문장을 끝내는 쉼의 길이를 조정하세요.",
+          "ru": "Настройте длительность паузы, после которой заканчивается фраза."
+        },
+        "targets": [
+          "Pause tolerance"
+        ],
+        "reveal": [
+          "Settings",
+          "Recognition settings"
+        ]
+      },
+      {
+        "id": "audio-preprocessing",
+        "title": {
+          "en": "Audio preprocessing",
+          "zh": "音频预处理",
+          "ja": "音声前処理",
+          "ko": "오디오 전처리",
+          "ru": "Обработка аудио"
+        },
+        "text": {
+          "en": "Choose Speech denoising to reduce background noise.",
+          "zh": "选择语音降噪，减少输入中的背景噪声。",
+          "ja": "音声ノイズ除去を選び、入力の背景ノイズを抑えます。",
+          "ko": "음성 잡음 제거를 선택해 입력의 배경 소음을 줄이세요.",
+          "ru": "Выберите подавление шума речи, чтобы уменьшить фоновый шум."
+        },
+        "targets": [
+          "Audio preprocessing"
+        ],
+        "reveal": [
+          "Settings",
+          "Recognition settings"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "AudioStudio",
+    "steps": [
+      {
+        "id": "quick-controls",
+        "title": {
+          "en": "Quick controls",
+          "zh": "快捷控制",
+          "ja": "クイック操作",
+          "ko": "빠른 설정",
+          "ru": "Быстрые настройки"
+        },
+        "text": {
+          "en": "Use Quick controls to choose input devices and output volume.",
+          "zh": "在快捷控制中选择输入设备，调整输出音量。",
+          "ja": "クイック操作で入力デバイスと出力音量を選びます。",
+          "ko": "빠른 제어에서 입력 장치와 출력 음량을 선택하세요.",
+          "ru": "В быстром управлении выберите устройства ввода и громкость вывода."
+        },
+        "targets": [
+          "Quick controls"
+        ],
+        "reveal": [
+          "Quick controls"
+        ]
+      },
+      {
+        "id": "node-graph",
+        "title": {
+          "en": "Node graph",
+          "zh": "节点图",
+          "ja": "ノードグラフ",
+          "ko": "노드 그래프",
+          "ru": "Граф узлов"
+        },
+        "text": {
+          "en": "Wire sources to recognition, monitoring or a game microphone.",
+          "zh": "把音源节点连接到识别、监听或游戏麦克风。",
+          "ja": "音源ノードを認識、モニター、ゲーム用マイクへ接続します。",
+          "ko": "음원 노드를 인식, 모니터링, 게임 마이크에 연결하세요.",
+          "ru": "Соедините источники с распознаванием, мониторингом или игровым микрофоном."
+        },
+        "targets": [
+          "Node graph"
+        ],
+        "reveal": [
+          "Node graph"
+        ]
+      },
+      {
+        "id": "noise-gate",
+        "title": {
+          "en": "Noise gate",
+          "zh": "阈值器",
+          "ja": "ノイズゲート",
+          "ko": "노이즈 게이트",
+          "ru": "Шумовой гейт"
+        },
+        "text": {
+          "en": "Add Gain for volume or Noise gate for the cutoff level.",
+          "zh": "添加增益调音量，用噪声门设置收音门槛。",
+          "ja": "「＋ノード」からゲインやノイズゲートを追加し、そのノードで調整します。",
+          "ko": "노드 추가에서 게인이나 노이즈 게이트를 추가하고 노드에서 조정하세요.",
+          "ru": "Добавьте усиление или шумовой порог через «+ Узел» и настройте его."
+        },
+        "targets": [
+          "+ Node"
+        ],
+        "reveal": [
+          "Node graph"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "PromptStudio",
+    "steps": [
+      {
+        "id": "translation-style",
+        "title": {
+          "en": "Translation style",
+          "zh": "翻译风格",
+          "ja": "翻訳スタイル",
+          "ko": "번역 스타일",
+          "ru": "Стиль перевода"
+        },
+        "text": {
+          "en": "Choose a style card to apply its tone to subsequent translations.",
+          "zh": "选择风格卡，让后续译文采用对应语气。",
+          "ja": "スタイルカードを選ぶと、以降の翻訳にその口調を使います。",
+          "ko": "스타일 카드를 선택해 이후 번역에 해당 말투를 적용하세요.",
+          "ru": "Выберите карточку стиля для последующих переводов."
+        },
+        "targets": [],
+        "reveal": []
+      },
+      {
+        "id": "edit-prompts",
+        "title": {
+          "en": "Edit prompts",
+          "zh": "编辑提示词",
+          "ja": "プロンプトを編集",
+          "ko": "프롬프트 편집",
+          "ru": "Редактировать промпты"
+        },
+        "text": {
+          "en": "Connect custom instructions, then activate the prompt profile.",
+          "zh": "连接自定义指令，再激活提示词方案。",
+          "ja": "プロンプト編集で指示を接続し、プロファイルを有効にします。",
+          "ko": "프롬프트 편집에서 지시를 연결하고 프로필을 활성화하세요.",
+          "ru": "Откройте редактор промптов, соедините инструкции и активируйте профиль."
+        },
+        "targets": [
+          "Activate",
+          "Save"
+        ],
+        "reveal": [
+          "Edit prompts"
+        ],
+        "requires": [
+          "prompt_editor"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "TtsCenter",
+    "steps": [
+      {
+        "id": "use-voice",
+        "title": {
+          "en": "Use voice",
+          "zh": "使用音色",
+          "ja": "この声を使う",
+          "ko": "목소리 사용",
+          "ru": "Использовать"
+        },
+        "text": {
+          "en": "Preview a voice, then select Use voice to apply it to TTS.",
+          "zh": "试听后点「使用声音」，将它用于译文朗读。",
+          "ja": "試聴してから「音声を使用」で翻訳の読み上げに使います。",
+          "ko": "미리 듣고 음성 사용을 눌러 번역 읽기에 적용하세요.",
+          "ru": "Прослушайте голос и выберите его для озвучки перевода."
+        },
+        "targets": [
+          "Use voice",
+          "Preview"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "reference-transcript",
+        "title": {
+          "en": "Reference transcript",
+          "zh": "音频对应文本",
+          "ja": "音声の書き起こし",
+          "ko": "음성에 해당하는 텍스트",
+          "ru": "Текст образца"
+        },
+        "text": {
+          "en": "Import a 0.5–60 s sample and set its reference transcript.",
+          "zh": "导入0.5–60秒参考音频，自动识别或手填参考文本。",
+          "ja": "0.5〜60秒の参照音声を取り込み、文字起こしを自動取得または入力します。",
+          "ko": "0.5~60초 참조 음성을 가져와 자동으로 전사하거나 내용을 입력하세요.",
+          "ru": "Добавьте образец на 0,5–60 с; распознайте или введите его текст."
+        },
+        "targets": [
+          "Reference transcript",
+          "Automatic (ASR)",
+          "Specify text"
+        ],
+        "reveal": [
+          "Add voice"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "CorpusStudio",
+    "steps": [
+      {
+        "id": "domains",
+        "title": {
+          "en": "Domains",
+          "zh": "领域",
+          "ja": "分野",
+          "ko": "분야",
+          "ru": "Области"
+        },
+        "text": {
+          "en": "Choose a domain, then add terms and their preferred translations.",
+          "zh": "选择领域，添加术语及希望采用的译法。",
+          "ja": "分野を選び、用語と使いたい訳語を追加します。",
+          "ko": "분야를 선택하고 용어와 원하는 번역을 추가하세요.",
+          "ru": "Выберите область и добавьте термины с нужными переводами."
+        },
+        "targets": [
+          "Add term",
+          "Domains"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "paste-terms",
+        "title": {
+          "en": "Paste terms",
+          "zh": "批量粘贴",
+          "ja": "一括貼り付け",
+          "ko": "일괄 붙여넣기",
+          "ru": "Вставить списком"
+        },
+        "text": {
+          "en": "Paste two columns to import terms with their translations.",
+          "zh": "复制表格的词语、译法两列，用批量粘贴一起导入。",
+          "ja": "表の用語・訳語の2列をコピーし、まとめて貼り付けます。",
+          "ko": "표에서 용어와 번역 두 열을 복사해 한 번에 가져오세요.",
+          "ru": "Скопируйте два столбца с терминами и переводами для массовой вставки."
+        },
+        "targets": [
+          "Paste terms"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "domain-rules",
+        "title": {
+          "en": "Domain rules",
+          "zh": "领域规则",
+          "ja": "分野のルール",
+          "ko": "분야 규칙",
+          "ru": "Правила области"
+        },
+        "text": {
+          "en": "Add topic keywords in Domain rules to enable terms as a group.",
+          "zh": "打开领域规则，填入话题提示词来整组启用术语。",
+          "ja": "分野ルールで話題キーワードを指定し、用語をまとめて有効にします。",
+          "ko": "분야 규칙에 주제 키워드를 입력해 용어 묶음을 활성화하세요.",
+          "ru": "В правилах области задайте ключевые слова для включения группы терминов."
+        },
+        "targets": [
+          "Domain rules",
+          "Topic keywords"
+        ],
+        "reveal": [
+          "Domain rules"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "Settings",
+    "steps": [
+      {
+        "id": "quick-translation",
+        "title": {
+          "en": "Quick translation",
+          "zh": "快捷翻译",
+          "ja": "クイック翻訳",
+          "ko": "빠른 번역",
+          "ru": "Быстрый перевод"
+        },
+        "text": {
+          "en": "Enable the shortcut to translate text selected in other apps.",
+          "zh": "启用快捷键，在其他应用选中文字，按键即可翻译。",
+          "ja": "ショートカットを有効にし、他のアプリで文字を選んで押すと翻訳します。",
+          "ko": "단축키를 켜고 다른 앱에서 글을 선택한 뒤 눌러 번역하세요.",
+          "ru": "Включите сочетание клавиш, выделите текст в другом приложении и нажмите его."
+        },
+        "targets": [
+          "Enable global shortcut",
+          "Shortcut"
+        ],
+        "reveal": [
+          "General"
+        ]
+      },
+      {
+        "id": "models",
+        "title": {
+          "en": "Models",
+          "zh": "模型",
+          "ja": "モデル",
+          "ko": "모델",
+          "ru": "Модели"
+        },
+        "text": {
+          "en": "In Models, set the context length for speech recognition and translation.",
+          "zh": "在模型页设置识别和翻译的上下文长度。",
+          "ja": "モデルページで、音声認識と翻訳モデルのコンテキスト長を設定します。",
+          "ko": "모델 페이지에서 음성 인식 및 번역 모델의 컨텍스트 길이를 설정하세요.",
+          "ru": "На странице моделей задайте длину контекста для распознавания и перевода."
+        },
+        "targets": [
+          "Context length"
+        ],
+        "reveal": [
+          "Models"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "plugin:osc",
+    "steps": [
+      {
+        "id": "osc",
+        "title": {
+          "en": "OSC",
+          "zh": "OSC",
+          "ja": "OSC",
+          "ko": "OSC",
+          "ru": "OSC"
+        },
+        "text": {
+          "en": "Enable OSC and choose audio sources to send to game chat.",
+          "zh": "打开OSC，勾选要把译文发送到聊天框的音源。",
+          "ja": "OSCを有効にして、訳文をチャットへ送る音源を選びます。",
+          "ko": "OSC를 켜고 번역을 채팅창에 보낼 음원을 선택하세요.",
+          "ru": "Включите OSC и выберите источники для отправки перевода в чат."
+        },
+        "targets": [
+          "OSC",
+          "Microphone",
+          "System audio"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "format",
+        "title": {
+          "en": "Format:",
+          "zh": "格式：",
+          "ja": "形式:",
+          "ko": "형식:",
+          "ru": "Формат:"
+        },
+        "text": {
+          "en": "Choose translated-only, bilingual or inline text under Format.",
+          "zh": "在格式中选择仅译文、双语分行或行内显示。",
+          "ja": "形式で訳文のみ、原文併記、行内表示を選びます。",
+          "ko": "형식에서 번역만, 이중 언어, 인라인 표시를 선택하세요.",
+          "ru": "В формате выберите только перевод, два языка или текст в одной строке."
+        },
+        "targets": [
+          "Bilingual: original first",
+          "Bilingual: translation first",
+          "Bilingual: one line",
+          "Translation only"
+        ],
+        "reveal": [
+          "Settings"
+        ]
+      },
+      {
+        "id": "maximum-display-time",
+        "title": {
+          "en": "Maximum display time:",
+          "zh": "最长显示时间：",
+          "ja": "最大表示時間:",
+          "ko": "최대 표시 시간:",
+          "ru": "Максимальное время показа:"
+        },
+        "text": {
+          "en": "Set Maximum display time to choose how long messages stay.",
+          "zh": "用最长显示时间设置聊天框消息保留多久。",
+          "ja": "最大表示時間でチャットメッセージを残す時間を設定します。",
+          "ko": "최대 표시 시간으로 채팅 메시지를 유지할 시간을 정하세요.",
+          "ru": "Задайте максимальное время показа сообщений в чате."
+        },
+        "targets": [
+          "Maximum display time:"
+        ],
+        "reveal": [
+          "Settings"
+        ]
+      },
+      {
+        "id": "sync-game-microphone",
+        "title": {
+          "en": "Sync game microphone",
+          "zh": "同步游戏麦克风",
+          "ja": "ゲームのマイクと同期",
+          "ko": "게임 마이크 동기화",
+          "ru": "Синхронизировать микрофон игры"
+        },
+        "text": {
+          "en": "Enable Toggle Voice in VRChat, then turn on Sync game microphone.",
+          "zh": "在VRChat开启Toggle Voice，再打开麦克风同步。",
+          "ja": "VRChatでToggle Voiceを有効にして、マイク同期をオンにします。",
+          "ko": "VRChat에서 Toggle Voice를 켜고 게임 마이크 동기화를 켜세요.",
+          "ru": "Включите Toggle Voice в VRChat, затем синхронизацию микрофона."
+        },
+        "targets": [
+          "Sync game microphone"
+        ],
+        "reveal": [
+          "Settings"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "plugin:avatar",
+    "steps": [
+      {
+        "id": "game-plugins",
+        "title": {
+          "en": "Game Plugins",
+          "zh": "游戏插件",
+          "ja": "ゲームプラグイン",
+          "ko": "게임 플러그인",
+          "ru": "Игровые плагины"
+        },
+        "text": {
+          "en": "Install your game's package, then use its Avatar XRT control.",
+          "zh": "选游戏并按说明安装对应包，再用Avatar的XRT控件启动。",
+          "ja": "ゲームを選んで対応パッケージを導入し、アバターのXRT操作で開始します。",
+          "ko": "게임과 패키지를 설정하고 아바타의 XRT 컨트롤로 시작하세요.",
+          "ru": "Выберите игру, установите пакет и запустите перевод элементом XRT на аватаре."
+        },
+        "targets": [
+          "Game",
+          "Avatar package and setup"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "display-seconds",
+        "title": {
+          "en": "Display seconds",
+          "zh": "显示秒数",
+          "ja": "表示秒数",
+          "ko": "표시 시간(초)",
+          "ru": "Время показа, с"
+        },
+        "text": {
+          "en": "Select Messages to set sources, format and display seconds.",
+          "zh": "选中消息区，调整音源、格式和显示秒数。",
+          "ja": "メッセージ領域を選び、音源・形式・表示秒数を調整します。",
+          "ko": "메시지 영역을 선택하고 음원, 형식, 표시 시간을 조정하세요.",
+          "ru": "Выберите сообщения и настройте источники, формат и время показа."
+        },
+        "targets": [
+          "Display seconds"
+        ],
+        "reveal": [
+          "Messages"
+        ]
+      },
+      {
+        "id": "header",
+        "title": {
+          "en": "Header",
+          "zh": "页头",
+          "ja": "ヘッダー",
+          "ko": "머리글",
+          "ru": "Заголовок"
+        },
+        "text": {
+          "en": "Select Header or Footer, then type the text to keep visible.",
+          "zh": "选中预览的页眉或页脚，填写要常驻显示的文字。",
+          "ja": "プレビューのヘッダーかフッターを選び、常時表示する文字を入力します。",
+          "ko": "미리 보기의 머리글이나 바닥글을 선택해 표시할 글을 입력하세요.",
+          "ru": "Выберите заголовок или подпись в предпросмотре и введите постоянный текст."
+        },
+        "targets": [
+          "Header"
+        ],
+        "reveal": [
+          "Header"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "plugin:meeting",
+    "steps": [
+      {
+        "id": "new-meeting",
+        "title": {
+          "en": "New meeting",
+          "zh": "新建会议",
+          "ja": "新しい会議",
+          "ko": "새 회의",
+          "ru": "Новая встреча"
+        },
+        "text": {
+          "en": "Create a meeting, select sources and recording, then start.",
+          "zh": "新建会议选音源，按需勾选保留录音，再开始记录。",
+          "ja": "会議を作成し、音源と録音保存を選んで記録を開始します。",
+          "ko": "회의를 만들고 음원과 녹음 보관을 선택한 뒤 기록을 시작하세요.",
+          "ru": "Создайте встречу, выберите источники и сохранение записи, затем начните."
+        },
+        "targets": [
+          "New meeting",
+          "Keep the recording"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "organize",
+        "title": {
+          "en": "Organize",
+          "zh": "整理",
+          "ja": "整理",
+          "ko": "정리",
+          "ru": "Обработка"
+        },
+        "text": {
+          "en": "Mark meeting highlights, then generate minutes in Organize.",
+          "zh": "打开会议标记重点，再到整理页生成纪要。",
+          "ja": "保存した会議で重要箇所を付け、「整理」で議事録を作成します。",
+          "ko": "회의에서 중요 부분을 표시하고 정리 탭에서 회의록을 생성하세요.",
+          "ru": "Отметьте важные моменты встречи и создайте протокол во вкладке обработки."
+        },
+        "targets": [
+          "Organize",
+          "Mark latest highlight"
+        ],
+        "reveal": [
+          "Organize"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "plugin:media",
+    "steps": [
+      {
+        "id": "import-media",
+        "title": {
+          "en": "Import media",
+          "zh": "导入媒体",
+          "ja": "メディアを取り込む",
+          "ko": "미디어 가져오기",
+          "ru": "Импорт медиа"
+        },
+        "text": {
+          "en": "Import media, choose languages, then generate subtitles.",
+          "zh": "导入文件或链接，选好语言后生成字幕。",
+          "ja": "ファイルかリンクを取り込み、言語を選んで字幕を生成します。",
+          "ko": "파일이나 링크를 가져와 언어를 선택하고 자막을 생성하세요.",
+          "ru": "Импортируйте файл или ссылку, выберите языки и создайте субтитры."
+        },
+        "targets": [
+          "Import media",
+          "Open link"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "subtitle-character-limit",
+        "title": {
+          "en": "Subtitle character limit",
+          "zh": "字幕字符上限",
+          "ja": "字幕の文字数上限",
+          "ko": "자막 글자 수 제한",
+          "ru": "Предел символов субтитров"
+        },
+        "text": {
+          "en": "Set the character limit, then optimize subtitle segmentation.",
+          "zh": "打开任务，设置字幕字符上限，再优化字幕分句。",
+          "ja": "タスクで字幕の文字数上限を設定し、字幕の区切りを最適化します。",
+          "ko": "작업에서 자막 글자 수 제한을 정하고 자막 분할을 최적화하세요.",
+          "ru": "В задаче задайте предел символов и оптимизируйте деление субтитров."
+        },
+        "targets": [
+          "Subtitle character limit"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "subtitle-style",
+        "title": {
+          "en": "Subtitle style",
+          "zh": "字幕样式",
+          "ja": "字幕スタイル",
+          "ko": "자막 스타일",
+          "ru": "Стиль субтитров"
+        },
+        "text": {
+          "en": "Set subtitle style, then export subtitles or captioned video.",
+          "zh": "设置字幕样式，再导出字幕文件或带字幕的视频。",
+          "ja": "字幕スタイルを設定して、字幕ファイルや字幕付き動画を書き出します。",
+          "ko": "자막 스타일을 설정하고 자막 파일이나 자막 포함 영상을 내보내세요.",
+          "ru": "Настройте стиль и экспортируйте субтитры или видео с ними."
+        },
+        "targets": [
+          "Text color",
+          "Subtitle style",
+          "Export"
+        ],
+        "reveal": [
+          "Subtitle style"
+        ]
+      }
+    ]
+  },
+  {
+    "page": "plugin:vr_overlay",
+    "steps": [
+      {
+        "id": "steamvr",
+        "title": {
+          "en": "SteamVR",
+          "zh": "SteamVR",
+          "ja": "SteamVR",
+          "ko": "SteamVR",
+          "ru": "SteamVR"
+        },
+        "text": {
+          "en": "Connect SteamVR and enable Subtitles to show translations in VR.",
+          "zh": "连接SteamVR并开启字幕，在VR中显示译文。",
+          "ja": "SteamVRに接続して字幕を有効にし、VR内で訳文を表示します。",
+          "ko": "SteamVR에 연결하고 자막을 켜 VR에서 번역을 표시하세요.",
+          "ru": "Подключите SteamVR и включите субтитры для показа перевода в VR."
+        },
+        "targets": [
+          "Connect SteamVR",
+          "Subtitles"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "distance-in-front",
+        "title": {
+          "en": "Distance in Front",
+          "zh": "正前方距离",
+          "ja": "前方距離",
+          "ko": "전방 거리",
+          "ru": "Расстояние спереди"
+        },
+        "text": {
+          "en": "Drag the preview; adjust distance and width for placement.",
+          "zh": "拖动字幕预览摆放位置，再调整距离和宽度。",
+          "ja": "字幕プレビューをドラッグし、距離と幅を調整して配置します。",
+          "ko": "자막 미리 보기를 끌고 거리와 너비를 조정해 배치하세요.",
+          "ru": "Перетащите предпросмотр субтитров и настройте расстояние и ширину."
+        },
+        "targets": [
+          "Distance in Front",
+          "Overlay Width"
+        ],
+        "reveal": []
+      }
+    ]
+  },
+  {
+    "page": "plugin:vocabulary",
+    "steps": [
+      {
+        "id": "vocabulary",
+        "title": {
+          "en": "Vocabulary",
+          "zh": "词汇收藏",
+          "ja": "単語帳",
+          "ko": "어휘 보관함",
+          "ru": "Словарь"
+        },
+        "text": {
+          "en": "Bookmark words from translations and organize them in wordbooks.",
+          "zh": "在译文中收藏词语，用单词本归档整理。",
+          "ja": "訳文の単語を保存し、単語帳にまとめます。",
+          "ko": "번역에서 단어를 저장하고 단어장으로 정리하세요.",
+          "ru": "Сохраняйте слова из переводов и распределяйте по словарям."
+        },
+        "targets": [
+          "New wordbook"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "generate-example",
+        "title": {
+          "en": "Generate example",
+          "zh": "造句",
+          "ja": "例文を作成",
+          "ko": "예문 만들기",
+          "ru": "Создать пример"
+        },
+        "text": {
+          "en": "Open a word to edit translations or generate example sentences.",
+          "zh": "打开词条，编辑译法或生成例句。",
+          "ja": "単語を開いて訳語を編集したり、例文を生成します。",
+          "ko": "단어를 열어 번역을 편집하거나 예문을 생성하세요.",
+          "ru": "Откройте слово, чтобы изменить переводы или создать пример."
+        },
+        "targets": [
+          "Edit translation",
+          "Generate example"
+        ],
+        "reveal": []
+      }
+    ]
+  },
+  {
+    "page": "plugin:bigwalk",
+    "steps": [
+      {
+        "id": "big-walk",
+        "title": {
+          "en": "Big Walk",
+          "zh": "Big Walk",
+          "ja": "Big Walk",
+          "ko": "Big Walk",
+          "ru": "Big Walk"
+        },
+        "text": {
+          "en": "Connect the bridge via Setup guide and choose chat audio sources.",
+          "zh": "按配置指南连接桥接，再选发送到游戏聊天的音源。",
+          "ja": "設定ガイドでブリッジを接続し、ゲームチャットに送る音源を選びます。",
+          "ko": "설정 가이드로 브리지를 연결하고 게임 채팅에 보낼 음원을 고르세요.",
+          "ru": "Подключите мост по руководству и выберите источники для игрового чата."
+        },
+        "targets": [
+          "Setup guide",
+          "Microphone",
+          "System audio"
+        ],
+        "reveal": []
+      }
+    ]
+  },
+  {
+    "page": "plugin:motion",
+    "steps": [
+      {
+        "id": "motion",
+        "title": {
+          "en": "Motion",
+          "zh": "动作表达",
+          "ja": "動作表現",
+          "ko": "동작 표현",
+          "ru": "Движение"
+        },
+        "text": {
+          "en": "Describe an action and generate its motion preview.",
+          "zh": "输入动作描述后生成，在预览中播放动作。",
+          "ja": "動作の説明を入力して生成し、プレビューで再生します。",
+          "ko": "동작 설명을 입력하고 생성해 미리 보기로 재생하세요.",
+          "ru": "Опишите действие и создайте движение для предпросмотра."
+        },
+        "targets": [
+          "Generate motion"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "follow-speech",
+        "title": {
+          "en": "Follow speech",
+          "zh": "跟随语音",
+          "ja": "音声に追従",
+          "ko": "음성 따라가기",
+          "ru": "Следовать речи"
+        },
+        "text": {
+          "en": "Enable Follow speech to animate completed phrases.",
+          "zh": "勾选跟随语音，把刚说完的内容转换成连续动作。",
+          "ja": "音声追従を有効にし、発話した内容を連続した動きに変換します。",
+          "ko": "음성 따라가기를 켜고 말한 내용을 연속 동작으로 바꾸세요.",
+          "ru": "Включите следование речи для преобразования фраз в непрерывные движения."
+        },
+        "targets": [
+          "Follow speech"
+        ],
+        "reveal": []
+      }
+    ]
+  },
+  {
+    "page": "plugin:chilloutvr_osc",
+    "steps": [
+      {
+        "id": "osc",
+        "title": {
+          "en": "OSC",
+          "zh": "OSC",
+          "ja": "OSC",
+          "ko": "OSC",
+          "ru": "OSC"
+        },
+        "text": {
+          "en": "Enable OSC and choose audio sources to send to game chat.",
+          "zh": "打开OSC，勾选要把译文发送到聊天框的音源。",
+          "ja": "OSCを有効にして、訳文をチャットへ送る音源を選びます。",
+          "ko": "OSC를 켜고 번역을 채팅창에 보낼 음원을 선택하세요.",
+          "ru": "Включите OSC и выберите источники для отправки перевода в чат."
+        },
+        "targets": [
+          "OSC",
+          "Microphone",
+          "System audio"
+        ],
+        "reveal": []
+      },
+      {
+        "id": "format",
+        "title": {
+          "en": "Format:",
+          "zh": "格式：",
+          "ja": "形式:",
+          "ko": "형식:",
+          "ru": "Формат:"
+        },
+        "text": {
+          "en": "Choose translated-only, bilingual or inline text under Format.",
+          "zh": "在格式中选择仅译文、双语分行或行内显示。",
+          "ja": "形式で訳文のみ、原文併記、行内表示を選びます。",
+          "ko": "형식에서 번역만, 이중 언어, 인라인 표시를 선택하세요.",
+          "ru": "В формате выберите только перевод, два языка или текст в одной строке."
+        },
+        "targets": [
+          "Bilingual: original first",
+          "Bilingual: translation first",
+          "Bilingual: one line",
+          "Translation only"
+        ],
+        "reveal": [
+          "Settings"
+        ]
+      },
+      {
+        "id": "maximum-display-time",
+        "title": {
+          "en": "Maximum display time:",
+          "zh": "最长显示时间：",
+          "ja": "最大表示時間:",
+          "ko": "최대 표시 시간:",
+          "ru": "Максимальное время показа:"
+        },
+        "text": {
+          "en": "Set Maximum display time to choose how long messages stay.",
+          "zh": "用最长显示时间设置聊天框消息保留多久。",
+          "ja": "最大表示時間でチャットメッセージを残す時間を設定します。",
+          "ko": "최대 표시 시간으로 채팅 메시지를 유지할 시간을 정하세요.",
+          "ru": "Задайте максимальное время показа сообщений в чате."
+        },
+        "targets": [
+          "Maximum display time:"
+        ],
+        "reveal": [
+          "Settings"
+        ]
+      }
+    ]
+  }
+]

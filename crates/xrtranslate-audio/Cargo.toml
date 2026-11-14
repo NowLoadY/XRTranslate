@@ -1,0 +1,17 @@
+[package]
+name = "xrtranslate-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared local audio playback for XRTranslate and standalone plugins"
+
+[dependencies]
+cpal = "0.18.1"
+crossbeam-channel = "0.5.16"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "alac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.1", features = ["pulseaudio"] }

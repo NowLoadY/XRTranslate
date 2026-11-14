@@ -65,7 +65,7 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
         if self.connector == RemoteConnector::OpenaiTranscription {
             // JSON and temperature zero are the protocol defaults. Keep the
             // mandatory request usable by endpoints with only file/model fields.
-            let mut fields = vec![("model".into(), self.model.clone())];
+            let mut fields: Vec<(String, String)> = vec![("model".into(), self.model.clone())];
             if let Some(format) = self.response_format {
                 fields.push(("response_format".into(), format.as_str().into()));
             }
@@ -77,7 +77,20 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
             if let Some(context) = normalized(&options.context_bias) {
                 fields.push(("prompt".into(), context.into()));
             }
-            let mut transcript = self.chat.audio_transcription(fields, wav).await?;
+            let payload = serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), json!(value)))
+                    .collect(),
+            );
+            let record = crate::diagnostics::RequestRecord::start(
+                "Speech recognition",
+                &payload,
+                Vec::new(),
+            );
+            let result = self.chat.audio_transcription(fields, wav).await;
+            record.finish(result.as_ref().map(|transcript| transcript.text.as_str()));
+            let mut transcript = result?;
             transcript.language = transcript
                 .language
                 .or_else(|| language.map(|language| language.code().to_owned()));
@@ -103,7 +116,15 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
         if let Some(reasoning_effort) = &self.reasoning_effort {
             payload["reasoning_effort"] = json!(reasoning_effort);
         }
-        let completion = self.chat.chat_completion(payload).await?;
+        let record =
+            crate::diagnostics::RequestRecord::start("Speech recognition", &payload, Vec::new());
+        let completion = self.chat.chat_completion(payload).await;
+        record.finish(
+            completion
+                .as_ref()
+                .map(|completion| completion.text.as_str()),
+        );
+        let completion = completion?;
         Ok(AsrTranscript {
             language: language.map(|language| language.code().to_owned()),
             text: completion.text.trim().to_owned(),

@@ -1,7 +1,7 @@
 """Record an external screenplay through UI Director; no desktop/audio capture.
 
-Requires Pillow and imageio-ffmpeg. All product copy, navigation, interactions,
-and camera keyframes live in the supplied JSON, not in the application.
+Requires Pillow and imageio-ffmpeg. Screenplays supply camera and interaction
+timing; guide recordings reuse the installed guide plugin's localized lessons.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import wave
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import imageio_ffmpeg
@@ -46,6 +47,8 @@ class Capture:
             fps, offset = self.script["fps"], 0
             with self.director.capture_frames() as frame_at:
                 for index, scene in enumerate(self.script["scenes"]):
+                    # Freeze preparation at the chapter's video time, including speech bubbles.
+                    frame_at(offset / fps)
                     for action in scene.get("prepare", []):
                         result = act(self.director, action)
                         self.actions.append({"chapter": scene["chapter"], "time": offset / fps, "prepare": True, "action": action, "result": result})
@@ -107,6 +110,10 @@ class Capture:
                     offset += round(scene["duration"] * fps)
         except Exception as error:
             self.error = error
+        finally:
+            if any(action.get("do") == "guide" for scene in self.script["scenes"]
+                   for phase in ("prepare", "actions") for action in scene.get(phase, [])):
+                self.director.call("guide.stop")
 
     def next(self):
         while True:
@@ -129,10 +136,16 @@ def wrap(text, font, width):
         line = ""
         for char in paragraph:
             if line and font.getlength(line + char) > width:
-                lines.append(line)
-                line = ""
-            line += char
-        lines.append(line)
+                split = len(line) if char.isspace() else line.rfind(" ")
+                if split > 0:
+                    lines.append(line[:split].rstrip())
+                    line = line[split:].lstrip()
+                else:
+                    lines.append(line)
+                    line = ""
+            if line or not char.isspace():
+                line += char
+        lines.append(line.rstrip())
     return "\n".join(lines)
 
 
@@ -150,10 +163,13 @@ class Composition:
         self.fonts = {size: ImageFont.truetype(script["font"], size) for size in (18, 22, 26, 28, 48)}
         self.base = Image.new("RGB", self.size, "white")
         draw = ImageDraw.Draw(self.base)
-        draw.rounded_rectangle((70, 63, 110, 103), radius=15, fill="#eef2ff")
-        # A little conversation mark keeps the frame quiet and friendly.
-        draw.rounded_rectangle((80, 74, 100, 89), radius=6, outline="#687cba", width=2)
-        draw.line((84, 89, 84, 94, 90, 89), fill="#687cba", width=2)
+        if script.get("logo"):
+            logo = Image.open(script["logo"]).convert("RGBA").resize((40, 40), Image.Resampling.LANCZOS)
+            self.base.paste(logo, (70, 63), logo)
+        else:
+            draw.rounded_rectangle((70, 63, 110, 103), radius=15, fill="#eef2ff")
+            draw.rounded_rectangle((80, 74, 100, 89), radius=6, outline="#687cba", width=2)
+            draw.line((84, 89, 84, 94, 90, 89), fill="#687cba", width=2)
         draw.text((125, 64), script["brand"], font=self.fonts[28], fill="#30343d")
         draw.text((72, 1007), script["footer"], font=self.fonts[18], fill="#89909c")
         x, y, w, h = self.screen
@@ -240,6 +256,18 @@ def action_point(director, action):
 
 def act(director, action):
     kind = action["do"]
+    if kind == "guide":
+        selection = {key: action[key] for key in ("page", "topic") if key in action}
+        selected = checked(director.call("guide.select", selection))["data"]
+        deadline = time.monotonic() + action.get("timeout", 10)
+        while time.monotonic() < deadline:
+            status = checked(director.call("guide.status"))["data"]
+            if status["revision"] != selected["revision"] or status["session"] is None:
+                raise RuntimeError("Guide selection changed during recording")
+            if status["ready"]:
+                return status
+            time.sleep(.05)
+        raise TimeoutError("The guide view did not become ready")
     if kind == "page":
         return checked(director.page(action["target"]))
     if kind == "click":
@@ -267,8 +295,12 @@ def act(director, action):
     if kind == "wait":
         deadline, since, previous = time.monotonic() + action.get("timeout", 120), None, None
         while time.monotonic() < deadline:
-            response = director.inspect(action["target"])
-            value = response.get("data", {}).get("value")
+            if "filter" in action:
+                response = director.call("ui.read", {"filter": action["filter"], "limit": 50})
+                value = [control.get("value") for control in response.get("data", {}).get("controls", [])]
+            else:
+                response = director.inspect(action["target"])
+                value = response.get("data", {}).get("value")
             ready = response.get("success") and ("match" not in action or re.search(action["match"], str(value)))
             if ready:
                 if value != previous or since is None:
@@ -278,7 +310,7 @@ def act(director, action):
             else:
                 since = None
             time.sleep(.1)
-        raise TimeoutError(f"Timed out waiting for {action['target']}")
+        raise TimeoutError(f"Timed out waiting for {action.get('target', action.get('filter'))}")
     raise ValueError(f"Unknown screenplay action: {kind}")
 
 
@@ -290,8 +322,106 @@ def timestamp(seconds, subtitle=False):
     return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}" if subtitle else f"{minutes:02}:{seconds:02}"
 
 
+def guide_scenes(director, options):
+    """Materialize the same admitted topics used by the interactive controller."""
+    deadline = time.monotonic() + 10
+    while True:
+        response = director.call("guide.catalog")
+        if response.get("success") or time.monotonic() >= deadline:
+            chapters = checked(response)["data"]["chapters"]
+            break
+        time.sleep(.1)
+    requested = options.get("pages", [])
+    if requested:
+        by_page = {chapter["page"]: chapter for chapter in chapters}
+        missing = set(requested) - by_page.keys()
+        if missing:
+            raise ValueError(f"Guide pages are unavailable: {', '.join(sorted(missing))}")
+        chapters = [by_page[page] for page in requested]
+    scenes = []
+    audio_root = None
+    manifest = None
+    for chapter in chapters:
+        for step in chapter["steps"]:
+            audio = step.get("audio")
+            if audio and audio_root is None:
+                directory = checked(director.call("plugins.list"))["data"]["directory"]
+                audio_root = (Path(directory) / "guide/assets/audio").resolve()
+                manifest = json.loads((audio_root / "manifest.json").read_text(encoding="utf-8"))["clips"]
+            scene = {
+                "chapter": chapter["label"], "page": chapter["page"],
+                "title": step["title"], "body": step["text"],
+                "duration": max(options.get("minimum_duration", 8),
+                                audio["duration_ms"] / 1000 + 1.2 if audio else len(step["text"]) / 9 + 3),
+                "prepare": [{"do": "guide", "page": chapter["page"], "topic": step["id"]}],
+            }
+            if audio:
+                path = (audio_root / audio["file"]).resolve()
+                if not path.is_relative_to(audio_root) or not path.is_file() or not any(
+                    clip["file"] == audio["file"] and clip["text"] == step["text"]
+                    and clip["duration_ms"] == audio["duration_ms"] for clip in manifest
+                ):
+                    raise ValueError(f"Missing or stale guide narration: {audio['file']}")
+                scene["audio"] = str(path)
+            scenes.append(scene)
+    if not scenes:
+        raise ValueError("No guide topics are available")
+    return scenes
+
+
+def narration_track(scenes, destination, fps):
+    """Place speech on exact video frames, independent of capture or playback speed."""
+    if not any(scene.get("audio") for scene in scenes):
+        return None, []
+    rate, offset, captions = 48000, 0, []
+    with wave.open(str(destination), "wb") as output:
+        output.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        for scene in scenes:
+            end = offset + round(scene["duration"] * fps)
+            samples = round(end * rate / fps) - round(offset * rate / fps)
+            track = bytearray(samples * 2)
+            clips = scene.get("audio", [])
+            if isinstance(clips, str):
+                clips = [{"file": clips, "at": .35, "text": scene["body"]}]
+            previous_end = 0
+            for clip in clips:
+                start = round(round(clip["at"] * fps) * rate / fps)
+                command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+                           "-i", clip["file"], "-f", "s16le", "-ac", "1", "-ar", str(rate), "pipe:1"]
+                pcm = subprocess.run(command, capture_output=True, check=True,
+                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
+                stop = start + len(pcm) // 2
+                if not pcm or len(pcm) % 2 or start < previous_end or stop > samples:
+                    raise ValueError(f"Narration overlaps or exceeds its scene: {clip['file']}")
+                track[start * 2:stop * 2] = pcm
+                captions.append({"start": offset / fps + start / rate,
+                                 "end": offset / fps + stop / rate,
+                                 "text": clip.get("text", scene["body"])})
+                previous_end = stop
+            output.writeframesraw(track)
+            offset = end
+    return destination, captions
+
+
 def record(args):
-    script = json.loads(args.script.read_text(encoding="utf-8"))
+    if args.script:
+        if getattr(args, "guide", False):
+            raise ValueError("Choose a screenplay or --guide")
+        script = json.loads(args.script.read_text(encoding="utf-8"))
+    elif getattr(args, "guide", False):
+        script = {
+            "slug": "user-guide", "brand": "XRTranslate", "footer": "XRTranslate · User Guide",
+            "font": str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/msyh.ttc"),
+            "fps": 60, "viewport": [1440, 900, 1],
+            "guide": {"pages": getattr(args, "page", [])},
+        }
+    else:
+        raise ValueError("Supply a screenplay or --guide")
+    director = UIDirector(port=args.port, timeout=12)
+    if not director.wait_ready():
+        raise RuntimeError("Start the isolated demo app with --director-port first")
+    if "guide" in script:
+        script["scenes"] = guide_scenes(director, script["guide"])
     scenes = script["scenes"]
     fps = script["fps"]
     for scene in scenes:
@@ -306,20 +436,22 @@ def record(args):
     output = args.output / (script["slug"] + ".mp4")
     if output.exists():
         raise FileExistsError(f"Use a new output directory: {output}")
+    narration, captions = narration_track(scenes, args.output / "narration.wav", fps)
     metadata, subtitles, chapters = [";FFMETADATA1", f"title={script['brand']}"], [], []
     cursor = 0.0
     for i, scene in enumerate(scenes):
         end = cursor + scene["duration"]
         metadata.extend(["[CHAPTER]", "TIMEBASE=1/1000", f"START={round(cursor * 1000)}", f"END={round(end * 1000)}", f"title={scene['chapter']}"])
-        subtitles.append(f"{i + 1}\n{timestamp(cursor, True)} --> {timestamp(end, True)}\n{scene['title'].replace(chr(10), '')}\n{scene['body'].replace(chr(10), '')}\n")
+        if not narration:
+            subtitles.append(f"{i + 1}\n{timestamp(cursor, True)} --> {timestamp(end, True)}\n{scene['title'].replace(chr(10), '')}\n{scene['body'].replace(chr(10), '')}\n")
         chapters.append(f"{timestamp(cursor)}  {scene['chapter']}")
         cursor = end
+    if narration:
+        subtitles = [f"{i + 1}\n{timestamp(cue['start'], True)} --> {timestamp(cue['end'], True)}\n{cue['text']}\n"
+                     for i, cue in enumerate(captions)]
     (args.output / "chapters.ffmeta").write_text("\n".join(metadata), encoding="utf-8")
     (args.output / "chapters.txt").write_text("\n".join(chapters), encoding="utf-8")
     (args.output / "captions.srt").write_text("\n".join(subtitles), encoding="utf-8")
-    director = UIDirector(port=args.port, timeout=12)
-    if not director.wait_ready():
-        raise RuntimeError("Start the isolated demo app with --director-port first")
     checked(director.viewport(*script["viewport"]))
     for action in script.get("prepare", []):
         act(director, action)
@@ -328,7 +460,12 @@ def record(args):
     time.sleep(0.8)
     compositor = Composition(script)
     log = (args.output / "encoder.log").open("w", encoding="utf-8")
-    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "1920x1080", "-framerate", str(fps), "-i", "pipe:0", "-f", "ffmetadata", "-i", str(args.output / "chapters.ffmeta"), "-map", "0:v", "-map_metadata", "1", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
+    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "1920x1080", "-framerate", str(fps), "-i", "pipe:0", "-f", "ffmetadata", "-i", str(args.output / "chapters.ffmeta")]
+    if narration:
+        command += ["-i", str(narration), "-map", "2:a:0", "-c:a", "aac", "-b:a", "128k"]
+    else:
+        command += ["-an"]
+    command += ["-map", "0:v", "-map_metadata", "1", "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
     encoder = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     capture = Capture(UIDirector(port=args.port, timeout=12), script)
     saved = set()
@@ -348,7 +485,7 @@ def record(args):
         encoder.stdin.close()
         if encoder.wait(timeout=60):
             raise RuntimeError("Video encoder failed; see encoder.log")
-        (args.output / "recording.json").write_text(json.dumps({"duration": cursor, "fps": fps, "frames": round(cursor * fps), "captured_frames": capture.frames, "held_frames": round(cursor * fps) - capture.frames, "wall_seconds": round(time.monotonic() - started, 2), "capture_mode": "frame_locked", "audio": False, "actions": capture.actions}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (args.output / "recording.json").write_text(json.dumps({"duration": cursor, "fps": fps, "frames": round(cursor * fps), "captured_frames": capture.frames, "held_frames": round(cursor * fps) - capture.frames, "wall_seconds": round(time.monotonic() - started, 2), "capture_mode": "frame_locked", "audio": narration is not None, "narration": captions, "actions": capture.actions}, ensure_ascii=False, indent=2), encoding="utf-8")
         print(output, flush=True)
     finally:
         capture.close()
@@ -360,7 +497,9 @@ def record(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("script", type=Path)
+    parser.add_argument("script", type=Path, nargs="?")
+    parser.add_argument("--guide", action="store_true", help="Record the installed guide's available topics")
+    parser.add_argument("--page", action="append", default=[], help="Page route for --guide; repeat to choose order")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18920)
     parser.add_argument("--preview", type=int, help="Record just the first N scenes")

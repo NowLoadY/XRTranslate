@@ -88,6 +88,15 @@ impl InputRegion {
         })
     }
 
+    /// Immediate viewports do not expose their winit window. Resolve our own
+    /// named window once, then keep using the native input mask as it resizes.
+    pub fn for_viewport(title: &str) -> Result<Self, String> {
+        Ok(Self {
+            platform: Platform::for_viewport(title)?,
+            rectangles: Vec::new(),
+        })
+    }
+
     pub fn update(&mut self, regions: &[(Rect, f32)], scale: f32) -> Result<(), String> {
         let mut rectangles = Vec::new();
         for &(rect, radius) in regions {
@@ -210,6 +219,54 @@ impl Platform {
         })
     }
 
+    fn for_viewport(title: &str) -> Result<Self, String> {
+        use x11rb::{
+            connection::Connection,
+            protocol::xproto::{AtomEnum, ConnectionExt},
+        };
+        let find = || -> Result<Self, Box<dyn std::error::Error>> {
+            let (connection, screen) = x11rb::connect(None)?;
+            let root = connection.setup().roots[screen].root;
+            let atom = |name: &[u8]| -> Result<_, Box<dyn std::error::Error>> {
+                Ok(connection.intern_atom(false, name)?.reply()?.atom)
+            };
+            let clients = atom(b"_NET_CLIENT_LIST")?;
+            let pid = atom(b"_NET_WM_PID")?;
+            let name = atom(b"_NET_WM_NAME")?;
+            // Hidden windows are still direct children; mapped windows may
+            // have been reparented by the window manager.
+            let mut windows = connection.query_tree(root)?.reply()?.children;
+            let managed = connection
+                .get_property(false, root, clients, AtomEnum::WINDOW, 0, u32::MAX)?
+                .reply()?;
+            windows.extend(managed.value32().into_iter().flatten());
+            for window in windows {
+                let Ok(owner) = connection
+                    .get_property(false, window, pid, AtomEnum::CARDINAL, 0, 1)?
+                    .reply()
+                else {
+                    continue;
+                };
+                if owner.value32().and_then(|mut values| values.next()) != Some(std::process::id())
+                {
+                    continue;
+                }
+                let title_bytes = connection
+                    .get_property(false, window, name, AtomEnum::ANY, 0, 256)?
+                    .reply()?;
+                if title_bytes.value == title.as_bytes() {
+                    return Ok(Self {
+                        connection,
+                        window,
+                        root,
+                    });
+                }
+            }
+            Err("Unable to open the OCR window.".into())
+        };
+        find().map_err(|error| error.to_string())
+    }
+
     fn apply(&self, rectangles: &[InputRect]) -> Result<(), String> {
         use x11rb::{
             connection::Connection,
@@ -278,6 +335,38 @@ struct Platform(windows::Win32::Foundation::HWND);
 
 #[cfg(windows)]
 impl Platform {
+    fn for_viewport(title: &str) -> Result<Self, String> {
+        use windows::{
+            Win32::UI::WindowsAndMessaging::{
+                FindWindowExW, GWL_EXSTYLE, GetWindowLongPtrW, GetWindowThreadProcessId,
+                SetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
+            },
+            core::PCWSTR,
+        };
+        let title: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
+        let mut previous = None;
+        unsafe {
+            while let Ok(window) =
+                FindWindowExW(None, previous, PCWSTR::null(), PCWSTR(title.as_ptr()))
+            {
+                let mut pid = 0;
+                GetWindowThreadProcessId(window, Some(&mut pid));
+                if pid == std::process::id() {
+                    // Match the root overlay's DirectComposition transparency.
+                    let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+                    SetWindowLongPtrW(
+                        window,
+                        GWL_EXSTYLE,
+                        style | WS_EX_NOREDIRECTIONBITMAP.0 as isize,
+                    );
+                    return Ok(Self(window));
+                }
+                previous = Some(window);
+            }
+        }
+        Err("Unable to open the OCR window.".into())
+    }
+
     fn pointer_position(&self) -> Option<egui::Pos2> {
         use windows::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
         let mut point = POINT::default();

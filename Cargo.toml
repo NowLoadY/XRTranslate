@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "rust-client",
     "crates/xrtranslate-client-core",
+    "crates/xrtranslate-audio",
     "crates/ui-director",
     "crates/xrtranslate-plugin",
     "crates/xrtranslate-prompt",
@@ -21,6 +22,7 @@ members = [
     "crates/xrtranslate-supervisor",
     "apps/xrtranslate-backend",
     "apps/xrtranslate-account-login",
+    "apps/xrtranslate-guide",
     "apps/xrtranslate-installer",
     "apps/xrtranslate-packager",
     "apps/xrtranslate-updater",
@@ -28,7 +30,7 @@ members = [
 exclude = ["plugin-src", "private-plugins/*", "examples/plugin-window"]
 
 [workspace.package]
-version = "0.4.5"
+version = "0.4.6"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/NowLoadY/XRTranslate"
@@ -44,3 +46,5 @@ incremental = false
 
 [patch.crates-io]
 winit = { path = "third_party/winit" }
+xrtranslate-plugin = { path = "crates/xrtranslate-plugin" }
+xrtranslate-audio = { path = "crates/xrtranslate-audio" }

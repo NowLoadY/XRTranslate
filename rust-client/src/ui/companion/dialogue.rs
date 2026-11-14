@@ -11,67 +11,64 @@ pub(super) enum Route {
     Page(Page),
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum Cue {
-    Hello,
-    Models,
-    Voice,
-    VoiceEnabled,
-    ApiKey,
-    Resources,
-    Runtime,
-    Checking,
-    ModelDownload,
-    RuntimeDownload,
-    Extracting,
-    Working,
-    Failed,
-    Agreement,
-    Ready,
-    Translation,
-    Audio,
-    Styles,
-    VoiceCards,
-    Terms,
-    Settings,
-    Osc,
-    Meeting,
-    Player,
-    Vr,
+// Keep the copy catalogue and coverage checks on the same declaration.
+macro_rules! cues {
+    ($($name:ident => $text:literal),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub(super) enum Cue { $($name),+ }
+
+        impl Cue {
+            #[cfg(test)]
+            pub const ALL: &[Self] = &[$(Self::$name),+];
+            pub fn text(self) -> &'static str {
+                match self { $(Self::$name => $text),+ }
+            }
+        }
+    };
+}
+
+cues! {
+    Quiet => "",
+    Hello => "Hi! I'm your companion. Let's get started!",
+    Models => "Choose speech recognition and translation models.",
+    Optional => "Choose optional voice, assistant and image recognition features.",
+    OptionalMobile => "Choose optional voice and assistant features.",
+    ApiKey => "Enter the API keys for your selected services.",
+    SignIn => "Sign in to your selected account services.",
+    Resources => "Download the resources for your selected models.",
+    Runtime => "Install the runtime for your selected local models.",
+    Checking => "Checking installed resources.",
+    ModelDownload => "Downloading selected models.",
+    RuntimeDownload => "Downloading the runtime.",
+    Extracting => "Extracting downloaded resources.",
+    Working => "Preparing selected resources.",
+    Failed => "Open the error details, then retry the failed task.",
+    Agreement => "Read and accept the Usage Guidelines to continue.",
+    Ready => "Setup is complete. Open Translation to begin.",
+    Translation => "Choose languages, enable an audio source, then start translation.",
+    Audio => "Use Quick controls to choose input devices and output volume.",
+    Styles => "Choose a style card to apply its tone to subsequent translations.",
+    VoiceCards => "Preview a voice, then select Use voice to apply it to TTS.",
+    Terms => "Choose a domain, then add terms and their preferred translations.",
+    Settings => "Adjust language, appearance, model limits and enabled plugins.",
+    Osc => "Enable OSC and choose audio sources to send to game chat.",
+    Meeting => "Create a meeting, select sources and recording, then start.",
+    Player => "Import media, choose languages, then generate subtitles.",
+    Vr => "Connect SteamVR and enable Subtitles to show translations in VR.",
+    GamePlugins => "Install your game's package, then use its Avatar XRT control.",
+    BigWalk => "Connect the bridge via Setup guide and choose chat audio sources.",
+    Vocabulary => "Bookmark words from translations and organize them in wordbooks.",
+    Motion => "Describe an action and generate its motion preview.",
+    AudioInput => "I can hear your mic or computer audio.",
+    TranslationChoice => "Choose local or cloud translation.",
+    Integrations => "Subtitles can join you in VRChat!",
+    NextModels => "Next, choose your speech and translation models.",
+    NextResources => "Next, review and download the required resources.",
+    Here => "Hehe, I'm right here!",
 }
 
 impl Cue {
-    pub fn text(self) -> &'static str {
-        match self {
-            Self::Hello => "Hi! I'm your companion. Let's get started!",
-            Self::Models => "Let's pick your speech and translation models.",
-            Self::Voice => "Voice is optional. Subtitles work on their own.",
-            Self::VoiceEnabled => "Voice is on! Pick one you like.",
-            Self::ApiKey => "Add the required API keys to continue.",
-            Self::Resources => "Let's download the missing models.",
-            Self::Runtime => "Install the runtime, then we're ready to go.",
-            Self::Checking => "Let me check what's already here.",
-            Self::ModelDownload => "Downloading models. We can resume if interrupted.",
-            Self::RuntimeDownload => "Getting the runtime. I'll wait with you.",
-            Self::Extracting => "Downloaded! Let's unpack the runtime.",
-            Self::Working => "Getting things ready. I'll stay with you.",
-            Self::Failed => "Not quite there. Check the error and try again.",
-            Self::Agreement => "One last step: read and accept the guidelines.",
-            Self::Ready => "All set! Let's open translation.",
-            Self::Translation => "Select audio and start.",
-            Self::Audio => "Connect audio sources to the outputs you want.",
-            Self::Styles => "Pick a style card to change how your translations sound.",
-            Self::VoiceCards => "Choose a voice card to use with your TTS.",
-            Self::Terms => "Keep names and terms consistent across translations.",
-            Self::Settings => "Let's make XRTranslate feel right for you.",
-            Self::Osc => "Configure chatbox output.",
-            Self::Meeting => "Your meeting transcript stays together here.",
-            Self::Player => "Open a video and we can follow its dialogue together.",
-            Self::Vr => "Bring your subtitles into VR.",
-        }
-    }
-
-    pub fn bit(self) -> u32 {
+    pub fn bit(self) -> u64 {
         1 << self as u32
     }
 
@@ -79,6 +76,7 @@ impl Cue {
         matches!(
             self,
             Self::ApiKey
+                | Self::SignIn
                 | Self::Resources
                 | Self::Runtime
                 | Self::Failed
@@ -89,12 +87,44 @@ impl Cue {
 
     fn for_requirement(requirement: &'static str) -> Self {
         match requirement {
+            "Sign in to every selected account service to continue." => Self::SignIn,
             "Configure every required API key to continue." => Self::ApiKey,
+            "Download every required model package to continue." => Self::Resources,
             "Install the runtime to continue." => Self::Runtime,
             "Wait for the current model task to finish."
             | "Wait for runtime preparation to finish." => Self::Working,
             "Please agree to the Usage Guidelines to continue." => Self::Agreement,
-            _ => Self::Resources,
+            _ => Self::Quiet,
+        }
+    }
+
+    fn optional() -> Self {
+        if cfg!(target_os = "android") {
+            Self::OptionalMobile
+        } else {
+            Self::Optional
+        }
+    }
+
+    fn for_page(page: Page) -> Self {
+        match page {
+            Page::Translation => Self::Translation,
+            Page::AudioStudio => Self::Audio,
+            Page::PromptStudio => Self::Styles,
+            Page::TtsCenter => Self::VoiceCards,
+            Page::CorpusStudio => Self::Terms,
+            Page::Settings => Self::Settings,
+            Page::Plugin(PluginId::OSC | PluginId::CHILLOUTVR_OSC) => Self::Osc,
+            Page::Plugin(PluginId::MEETING) => Self::Meeting,
+            Page::Plugin(PluginId::MEDIA) => Self::Player,
+            Page::Plugin(PluginId::VR_OVERLAY) => Self::Vr,
+            Page::Plugin(PluginId::AVATAR) => Self::GamePlugins,
+            Page::Plugin(PluginId::VOCABULARY) => Self::Vocabulary,
+            Page::Plugin(id) => match id.as_str() {
+                "bigwalk" => Self::BigWalk,
+                "motion" => Self::Motion,
+                _ => Self::Quiet,
+            },
         }
     }
 
@@ -148,19 +178,7 @@ impl Context {
                     None
                 },
                 route: Route::Page(app.navigation.page),
-                cue: match app.navigation.page {
-                    Page::Translation => Cue::Translation,
-                    Page::AudioStudio => Cue::Audio,
-                    Page::PromptStudio => Cue::Styles,
-                    Page::TtsCenter => Cue::VoiceCards,
-                    Page::CorpusStudio => Cue::Terms,
-                    Page::Settings => Cue::Settings,
-                    Page::Plugin(PluginId::OSC | PluginId::CHILLOUTVR_OSC) => Cue::Osc,
-                    Page::Plugin(PluginId::MEETING) => Cue::Meeting,
-                    Page::Plugin(PluginId::MEDIA) => Cue::Player,
-                    Page::Plugin(PluginId::VR_OVERLAY) => Cue::Vr,
-                    Page::Plugin(_) => Cue::Translation,
-                },
+                cue: Cue::for_page(app.navigation.page),
                 blocked: None,
                 automatic: false,
             };
@@ -178,10 +196,7 @@ impl Context {
         let cue = match app.onboarding_page {
             0 => Cue::Hello,
             1 => blocked.map_or(Cue::Models, Cue::for_requirement),
-            2 => blocked.map_or(
-                if voice { Cue::VoiceEnabled } else { Cue::Voice },
-                Cue::for_requirement,
-            ),
+            2 => blocked.map_or(Cue::optional(), Cue::for_requirement),
             _ => activity
                 .or_else(|| blocked.map(Cue::for_requirement))
                 .unwrap_or(if voice && !app.usage_guidelines_accepted {
@@ -205,10 +220,10 @@ impl Context {
 
     pub fn reply(&self, attention: Attention) -> &'static str {
         match attention {
-            Attention::Feature(0) => "I can hear your mic or computer audio.",
-            Attention::Feature(1) => "Local or cloud translation? You choose.",
-            Attention::Feature(_) => "Subtitles can join you in VRChat!",
-            Attention::Avatar if self.route == Route::Onboarding(0) => "Hehe, I'm right here!",
+            Attention::Feature(0) => Cue::AudioInput.text(),
+            Attention::Feature(1) => Cue::TranslationChoice.text(),
+            Attention::Feature(_) => Cue::Integrations.text(),
+            Attention::Avatar if self.route == Route::Onboarding(0) => Cue::Here.text(),
             Attention::Avatar | Attention::Control(_) => self.cue.text(),
             Attention::Next
                 if matches!(
@@ -225,13 +240,42 @@ impl Context {
             }
             Attention::Next => self.blocked.map_or_else(
                 || match self.route {
-                    Route::Onboarding(0) => "Ready? Let's pick your models.",
-                    Route::Onboarding(1) => Cue::Voice.text(),
-                    Route::Onboarding(2) => "Let's see which resources you need.",
+                    Route::Onboarding(0) => Cue::NextModels.text(),
+                    Route::Onboarding(1) => Cue::optional().text(),
+                    Route::Onboarding(2) => Cue::NextResources.text(),
                     _ => self.cue.text(),
                 },
                 |requirement| Cue::for_requirement(requirement).text(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_and_page_introductions_match_the_current_flow() {
+        assert_eq!(
+            Cue::for_requirement("Sign in to every selected account service to continue."),
+            Cue::SignIn
+        );
+        assert_eq!(
+            Cue::for_requirement("Download every required model package to continue."),
+            Cue::Resources
+        );
+        assert_eq!(Cue::for_requirement("Unknown prerequisite"), Cue::Quiet);
+        assert_eq!(
+            Cue::for_page(Page::Plugin(PluginId::AVATAR)),
+            Cue::GamePlugins
+        );
+        assert_eq!(
+            Cue::for_page(Page::Plugin(PluginId::parse("unknown-plugin").unwrap())),
+            Cue::Quiet
+        );
+        assert_eq!(Cue::for_page(Page::PromptStudio), Cue::Styles);
+        assert!(!Cue::Styles.text().to_lowercase().contains("edit"));
+        assert!(Cue::ALL.len() <= u64::BITS as usize);
     }
 }

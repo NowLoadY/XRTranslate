@@ -849,7 +849,7 @@ mod migration_tests {
         );
     }
 }
-fn locale(language: UiLanguage) -> &'static str {
+pub(crate) fn locale(language: UiLanguage) -> &'static str {
     match language {
         UiLanguage::Chinese => "zh",
         UiLanguage::Japanese => "ja",
