@@ -1,5 +1,7 @@
+mod banners;
 mod chatbox;
 mod game;
+mod pet;
 pub use game::OscGame;
 pub mod runtime;
 pub mod ui;

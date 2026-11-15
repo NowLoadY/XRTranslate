@@ -273,7 +273,7 @@ impl TextTranslation {
             while let Ok(event) = task.connection.rx.try_recv() {
                 match event {
                     SessionEvent::StreamEnded { .. } => task.connection.drained = true,
-                    SessionEvent::Error(message) | SessionEvent::BackendError { message } => {
+                    SessionEvent::Error(message) | SessionEvent::BackendError { message, .. } => {
                         // Speech can fail after the final text result. Keep its
                         // diagnostic visible even though translation completed.
                         if task.scope.active.load(Ordering::Acquire)
@@ -509,17 +509,9 @@ impl TextTranslation {
                             task.fail(error, target, &mut self.errors);
                         }
                     }
-                    SessionEvent::Error(error) => {
+                    SessionEvent::Error(error)
+                    | SessionEvent::BackendError { message: error, .. } => {
                         task.fail(error.clone(), target, &mut self.errors);
-                    }
-                    SessionEvent::BackendError { message } => {
-                        let error = message.clone();
-                        task.connection.close();
-                        task.emit(event, target);
-                        task.finish(error.clone(), target);
-                        if task.scope.publish_to_host_outputs {
-                            self.errors.push(error);
-                        }
                     }
                     SessionEvent::Disconnected(reason) => {
                         task.fail(reason.clone(), target, &mut self.errors);
@@ -714,7 +706,8 @@ mod tests {
                         audio_received = true;
                     }
                     SessionEvent::StreamEnded { .. } => break,
-                    SessionEvent::Error(error) | SessionEvent::BackendError { message: error } => {
+                    SessionEvent::Error(error)
+                    | SessionEvent::BackendError { message: error, .. } => {
                         panic!("{error}")
                     }
                     _ => {}
@@ -798,7 +791,7 @@ mod tests {
                 .unwrap()
             {
                 SessionEvent::StreamEnded { .. } => break,
-                SessionEvent::Error(error) | SessionEvent::BackendError { message: error } => {
+                SessionEvent::Error(error) | SessionEvent::BackendError { message: error, .. } => {
                     panic!("{error}")
                 }
                 _ => {}
@@ -857,6 +850,7 @@ mod tests {
             .tx
             .send(SessionEvent::BackendError {
                 message: "TTS failed: unavailable".into(),
+                scope: xrtranslate_protocol::ErrorScope::Request,
             })
             .unwrap();
         translator.retire_finished();

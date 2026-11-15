@@ -1018,6 +1018,25 @@ pub fn combobox_ui_with_width<R>(
     width: Option<f32>,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
+    combobox_ui_with_close_behavior(
+        ui,
+        id_salt,
+        selected_text,
+        width,
+        egui::PopupCloseBehavior::CloseOnClick,
+        add_contents,
+    )
+}
+
+/// Dropdowns containing text editors must stay open while those editors are used.
+pub fn combobox_ui_with_close_behavior<R>(
+    ui: &mut Ui,
+    id_salt: impl egui::AsIdSalt,
+    selected_text: impl Into<String>,
+    width: Option<f32>,
+    close_behavior: egui::PopupCloseBehavior,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
     let is_hand_drawn = crate::ui::theme::is_hand_drawn(ui.ctx());
     let combo_id = ui.make_persistent_id(&id_salt);
     let selected_text = selected_text.into();
@@ -1064,6 +1083,7 @@ pub fn combobox_ui_with_width<R>(
                         .color(crate::ui::theme::text_strong()),
                 )
                 .width(control_width)
+                .close_behavior(close_behavior)
                 .truncate();
 
             combo.show_ui(ui, add_contents)

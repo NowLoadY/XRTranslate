@@ -28,5 +28,25 @@ if ($TargetDirectory) { $arguments += @('--target-dir', [System.IO.Path]::GetFul
 if ($DebugBuild) { $arguments += '--debug' }
 if ($Offline) { $arguments += '--offline' }
 if ($Locked) { $arguments += '--locked' }
-& $builder @arguments
-if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed.' }
+$previousBuildJobs = $env:CARGO_BUILD_JOBS
+try {
+    if ([string]::IsNullOrWhiteSpace($previousBuildJobs)) {
+        # Each plugin loads the shared UI/media dependency graph. Parallel rustc
+        # processes can exhaust Windows commit memory and report misleading E0463
+        # errors. Budget against available commit, not the logical CPU count.
+        $jobs = 1
+        try {
+            $availableBytes = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreeVirtualMemory * 1KB
+            $memoryJobs = [math]::Floor(($availableBytes - 2GB) / 4GB)
+            $jobs = [math]::Max(1, [math]::Min($memoryJobs, [math]::Min(4, [Environment]::ProcessorCount)))
+        } catch {
+            Write-Verbose "Could not query available memory; using one build job: $_"
+        }
+        $env:CARGO_BUILD_JOBS = [string]$jobs
+        Write-Host "Building plugins with $jobs concurrent job(s). Set CARGO_BUILD_JOBS to override."
+    }
+    & $builder @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed.' }
+} finally {
+    $env:CARGO_BUILD_JOBS = $previousBuildJobs
+}

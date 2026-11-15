@@ -3,7 +3,7 @@ resolver = "3"
 members = ["agent", "guide", "media", "meeting", "vocabulary", "vr-overlay", "osc", "avatar", "ocr", "chilloutvr-osc", "lyrics", "bigwalk", "auto-input"]
 
 [workspace.package]
-version = "0.4.6"
+version = "0.4.7"
 edition = "2024"
 license = "AGPL-3.0-only"
 

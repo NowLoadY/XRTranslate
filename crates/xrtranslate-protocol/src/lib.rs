@@ -734,10 +734,21 @@ pub enum VoiceClonePhase {
     Failed,
 }
 
-/// A recoverable backend error for the current session.
+/// Whether an error ends one operation or the whole session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorScope {
+    Request,
+    #[default]
+    Session,
+}
+
+/// A backend failure with an explicit lifetime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorEvent {
     pub message: String,
+    #[serde(default)]
+    pub scope: ErrorScope,
 }
 
 /// Notifies the client that the active language route was dynamically adapted or updated.

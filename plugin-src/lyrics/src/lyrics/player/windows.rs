@@ -1,3 +1,5 @@
+mod netease;
+
 use super::{Playback, Track};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use windows::{
@@ -12,6 +14,7 @@ use windows::{
 
 pub(in crate::lyrics) struct Player {
     manager: Manager,
+    netease: netease::ProgressReader,
     _apartment: Apartment,
 }
 
@@ -38,6 +41,7 @@ impl Player {
             .map_err(|error| error.to_string())?;
         Ok(Self {
             manager,
+            netease: netease::ProgressReader::default(),
             _apartment: apartment,
         })
     }
@@ -49,9 +53,9 @@ impl Player {
             && !playback.track.title.trim().is_empty()
         {
             if playback.playing {
-                return Ok(Some(playback));
+                return Ok(Some(self.with_progress(&session, playback)));
             }
-            paused = Some(playback);
+            paused = Some((session, playback));
         }
         let sessions = self
             .manager
@@ -62,14 +66,28 @@ impl Player {
                 && !playback.track.title.trim().is_empty()
             {
                 if playback.playing {
-                    return Ok(Some(playback));
+                    return Ok(Some(self.with_progress(&session, playback)));
                 }
                 if paused.is_none() {
-                    paused = Some(playback);
+                    paused = Some((session, playback));
                 }
             }
         }
-        Ok(paused)
+        if let Some((session, playback)) = paused {
+            Ok(Some(self.with_progress(&session, playback)))
+        } else {
+            self.netease.clear();
+            Ok(None)
+        }
+    }
+
+    fn with_progress(&mut self, session: &Session, mut playback: Playback) -> Playback {
+        let app = session
+            .SourceAppUserModelId()
+            .unwrap_or_default()
+            .to_string();
+        self.netease.enrich(&app, &mut playback);
+        playback
     }
 }
 

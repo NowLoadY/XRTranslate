@@ -37,10 +37,10 @@ use xrtranslate_engine::{RevisableTranscript, RouteEpoch};
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
 use xrtranslate_prompt::{AsrPromptContext, PromptExecutionTrace, PromptMode, PromptNodeGraph};
 use xrtranslate_protocol::{
-    ActionControl, AudioSource, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
-    InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained, PromptGraphSet,
-    RecognitionStreamEnded, RouteChanged, SegmentBoundary, SegmentTiming, ServerEvent,
-    SessionReady, VadActivity, VoiceClonePhase, VoiceCloneState,
+    ActionControl, AudioSource, ClientControl, DrainReason, ErrorEvent, ErrorScope, EventControl,
+    Feature, InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained,
+    PromptGraphSet, RecognitionStreamEnded, RouteChanged, SegmentBoundary, SegmentTiming,
+    ServerEvent, SessionReady, VadActivity, VoiceClonePhase, VoiceCloneState,
 };
 use xrtranslate_supervisor::{
     LlamaServerLauncher, LlamaServerProcess, LlamaServerProcessHandle, StdLlamaServerLauncher,
@@ -68,6 +68,7 @@ mod conversation_context;
 mod diagnostics;
 mod language;
 mod model_runtime;
+mod model_service;
 mod pipeline;
 mod prompt_context;
 mod scheduler;
@@ -303,6 +304,7 @@ enum InferenceEvent {
     Error {
         generation: PipelineGeneration,
         message: String,
+        scope: ErrorScope,
     },
 }
 
@@ -457,7 +459,7 @@ struct BackendState {
     contexts: ContextRegistry,
     project_root: PathBuf,
     onnx_runtime: Arc<tokio::sync::OnceCell<()>>,
-    audio_runtime: Arc<tokio::sync::OnceCell<Vec<LlamaServerProcess>>>,
+    audio_runtime: Arc<tokio::sync::OnceCell<Option<model_service::ModelService>>>,
     text_inference: Arc<tokio::sync::OnceCell<NativeInference>>,
     agent_runtime: Arc<tokio::sync::OnceCell<Option<capabilities::TextResources>>>,
     speech_runtime: Arc<tokio::sync::OnceCell<capabilities::SpeechResources>>,
@@ -523,20 +525,13 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         assign_managed_ports(&mut model_plan)?;
     }
     let model_plan = Arc::new(model_plan);
-    let _model_processes = if args.manage_llama_servers {
-        let mut processes = start_llama_servers(
-            &model_plan,
+    let _translation_service = if args.manage_llama_servers {
+        model_service::ModelService::start(
+            Arc::clone(&model_plan),
             xrtranslate_assets::ModelCapability::Translation,
-        )?;
-        wait_for_model_servers(
-            &model_plan,
             args.model_start_timeout_seconds,
-            &mut processes,
-            xrtranslate_assets::ModelCapability::Translation,
         )
-        .await?;
-        info!("managed llama.cpp model servers are ready");
-        Some(processes)
+        .await?
     } else {
         None
     };
@@ -1048,6 +1043,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                 &outbound_sender,
                                 generation,
                                 format!("TTS failed: {error}"),
+                                ErrorScope::Request,
                             )
                             .await
                             .is_err()
@@ -2084,6 +2080,7 @@ async fn run_inference_worker(
             let _ = events
                 .send(InferenceEvent::Error {
                     generation: current_generation,
+                    scope: ErrorScope::Session,
                     message: message.to_string(),
                 })
                 .await;
@@ -2176,20 +2173,30 @@ async fn run_inference_worker(
                     continue;
                 }
                 recognition_bias.clear();
-                if let Some((_, _, gate)) = &active_sentence_gate {
+                previous_transcript = None;
+                active_revisable_transcript = None;
+                sentence_assembler = sentence_assembly::SentenceAssembler::default();
+                if let Some((_, _, gate)) = active_sentence_gate.take() {
                     gate.finish();
                 }
-                let _ = wait_for_translations(&mut pending_translations, 0).await;
+                if !wait_for_translations(&mut pending_translations, 0).await {
+                    break;
+                }
                 if event_generation != *generation.borrow() {
                     continue;
                 }
-                let _ = events
+                if events
                     .send(InferenceEvent::Error {
                         generation: event_generation,
+                        scope: ErrorScope::Request,
                         message,
                     })
-                    .await;
-                break;
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
             }
             InferenceWork::AssemblyLimit(visible) => {
                 if visible.job.generation != *generation.borrow() {
@@ -2203,6 +2210,7 @@ async fn run_inference_worker(
                 let _ = wait_for_translations(&mut pending_translations, 0).await;
                 let _ = events.send(InferenceEvent::Error {
                     generation: visible.job.generation,
+                    scope: ErrorScope::Session,
                     message: format!(
                         "Recognition paused: an unfinished sentence exceeded {} characters. The source text is preserved; restart the session or choose a model that restores sentence punctuation.",
                         sentence_assembly::MAX_PENDING_CHARACTERS,
@@ -2228,6 +2236,7 @@ async fn run_inference_worker(
                             let _ = events
                                 .send(InferenceEvent::Error {
                                     generation: job.generation,
+                                    scope: ErrorScope::Request,
                                     message: error.to_string(),
                                 })
                                 .await;
@@ -2275,6 +2284,7 @@ async fn run_inference_worker(
                         let _ = events
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
+                                scope: ErrorScope::Request,
                                 message,
                             })
                             .await;
@@ -2304,6 +2314,7 @@ async fn run_inference_worker(
                         if events
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
+                                scope: ErrorScope::Request,
                                 message: message.to_string(),
                             })
                             .await
@@ -2369,6 +2380,7 @@ async fn run_inference_worker(
                         if events
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
+                                scope: ErrorScope::Request,
                                 message: message.to_string(),
                             })
                             .await
@@ -2428,6 +2440,7 @@ async fn run_inference_worker(
                         let _ = events
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
+                                scope: ErrorScope::Request,
                                 message,
                             })
                             .await;
@@ -2725,6 +2738,7 @@ async fn run_inference_worker(
                     let _ = events
                         .send(InferenceEvent::Error {
                             generation: job.generation,
+                            scope: ErrorScope::Request,
                             message: message.to_string(),
                         })
                         .await;
@@ -3297,6 +3311,7 @@ async fn run_inference_worker(
                 if events
                     .send(InferenceEvent::Error {
                         generation: job.generation,
+                        scope: ErrorScope::Request,
                         message: message.to_string(),
                     })
                     .await
@@ -3370,6 +3385,7 @@ async fn run_inference_worker(
                 let _ = events
                     .send(InferenceEvent::Error {
                         generation: job.generation,
+                        scope: ErrorScope::Request,
                         message,
                     })
                     .await;
@@ -3888,7 +3904,8 @@ async fn handle_inference_event(
             let output = match output {
                 Ok(output) => output,
                 Err(error) if generation.route_epoch == session.route_epoch() => {
-                    send_scoped_error(writer, generation, error.message).await?;
+                    send_scoped_error(writer, generation, error.message, ErrorScope::Request)
+                        .await?;
                     return Ok(false);
                 }
                 Err(_) => return Ok(false),
@@ -3924,6 +3941,7 @@ async fn handle_inference_event(
                         writer,
                         generation,
                         "No speech voice is ready. Select a voice in the speech settings.".into(),
+                        ErrorScope::Request,
                     )
                     .await?;
                     return Ok(false);
@@ -3933,7 +3951,7 @@ async fn handle_inference_event(
                     && let Some(tts_jobs) = tts_jobs
                 {
                     if !adapter.supports_language(&target_language) {
-                        send_scoped_error(writer, generation, format!("The selected TTS model does not support {target_language}. Choose another model on the Welcome Page.")).await?;
+                        send_scoped_error(writer, generation, format!("The selected TTS model does not support {target_language}. Choose another model on the Welcome Page."), ErrorScope::Request).await?;
                         return Ok(false);
                     }
                     let text_chunks = split_tts_text(&tts_text, max_input_chars);
@@ -3969,8 +3987,9 @@ async fn handle_inference_event(
         InferenceEvent::Error {
             generation,
             message,
+            scope,
         } if generation.route_epoch == session.route_epoch() => {
-            send_scoped_error(writer, generation, message).await?
+            send_scoped_error(writer, generation, message, scope).await?
         }
         InferenceEvent::Error { .. } => {}
     }
@@ -4140,19 +4159,28 @@ async fn send_error(
     message: String,
 ) -> Result<(), axum::Error> {
     warn!(%message, "session error");
-    send_event(writer, None, ServerEvent::Error(ErrorEvent { message })).await
+    send_event(
+        writer,
+        None,
+        ServerEvent::Error(ErrorEvent {
+            message,
+            scope: ErrorScope::Session,
+        }),
+    )
+    .await
 }
 
 async fn send_scoped_error(
     writer: &mpsc::Sender<OutboundMessage>,
     generation: PipelineGeneration,
     message: String,
+    scope: ErrorScope,
 ) -> Result<(), axum::Error> {
-    warn!(?generation, %message, "session error");
+    warn!(?generation, ?scope, %message, "inference error");
     send_event(
         writer,
         Some(generation),
-        ServerEvent::Error(ErrorEvent { message }),
+        ServerEvent::Error(ErrorEvent { message, scope }),
     )
     .await
 }

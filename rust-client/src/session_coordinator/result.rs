@@ -34,9 +34,11 @@ impl TranslationEventAdapter {
                 "Cancelled" => TranslationOutcome::Cancelled,
                 _ => TranslationOutcome::Failed("Translation connection was interrupted".into()),
             }),
-            SessionEvent::Error(message) | SessionEvent::BackendError { message } => {
-                Some(TranslationOutcome::Failed(message.clone()))
-            }
+            SessionEvent::Error(message)
+            | SessionEvent::BackendError {
+                message,
+                scope: xrtranslate_protocol::ErrorScope::Session,
+            } => Some(TranslationOutcome::Failed(message.clone())),
             _ => None,
         };
         if let Some(outcome) = outcome {

@@ -5,11 +5,10 @@ use super::{
 };
 use crate::LyricsText;
 use std::time::{Duration, Instant};
-use unicode_segmentation::UnicodeSegmentation;
+use xrtranslate_plugin::text::TextViewport;
 
 const MAX_LINE_CHARS: usize = 24;
 const MUSIC_PREFIX: &str = "🎵 ";
-const TITLE_HOLD_SECONDS: u64 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Status {
@@ -27,7 +26,7 @@ pub(crate) enum Status {
 impl Status {
     pub(crate) fn message_key(self) -> &'static str {
         match self {
-            Self::Idle => "Select Lyrics in an enabled header or footer to start.",
+            Self::Idle => "Select Lyrics in an enabled output to start.",
             Self::Waiting => "Waiting for a player. Enable system media controls in your player.",
             Self::Paused => "Playback paused.",
             Self::MediaTitle => "Showing media title.",
@@ -65,6 +64,7 @@ impl Renderer {
         lookup: Lookup,
         budget: usize,
         offset_ms: i32,
+        window_lines: usize,
         now: Instant,
     ) -> (LyricsText, Status) {
         let Some(playback) = playback else {
@@ -77,12 +77,21 @@ impl Renderer {
         }
         let budget = budget.min(MAX_LINE_CHARS);
         let content_budget = budget.saturating_sub(MUSIC_PREFIX.chars().count());
+        let position = playback
+            .position()
+            .and_then(|position| position.checked_add_signed(-i64::from(offset_ms)));
+        let window = (playback.is_music && lookup == Lookup::Ready)
+            .then(|| {
+                position.and_then(|position| {
+                    timeline::window(cues, position, playback.duration_ms, window_lines)
+                })
+            })
+            .flatten();
         let (lyric, status) = if !playback.is_music {
             (String::new(), Status::MediaTitle)
-        } else if let Some(position) = playback.position() {
+        } else if playback.position_ms.is_some() {
             // Adjust presentation time only; playback, cached cues and titles
             // retain their original timing. Positive offsets delay the lyric.
-            let position = position.checked_add_signed(-i64::from(offset_ms));
             match lookup {
                 Lookup::NotStarted | Lookup::Loading => (String::new(), Status::Loading),
                 Lookup::Failed => (String::new(), Status::LookupFailed),
@@ -122,6 +131,7 @@ impl Renderer {
         (
             LyricsText {
                 title: prefix(&title),
+                window,
                 // An unavailable lyric leaves the second region empty.
                 lyric: if lyric.is_empty() {
                     String::new()
@@ -143,44 +153,41 @@ fn title(track: &Track, budget: usize, elapsed: Duration) -> String {
         .join(" · ");
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = text.chars().filter(|c| !c.is_control()).collect::<String>();
-    if text.chars().count() <= budget {
-        return text;
-    }
-    if budget == 0 {
-        return String::new();
-    }
-    let graphemes = text.graphemes(true).collect::<Vec<_>>();
-    let mut tail_length = 0;
-    let mut last_start = graphemes.len();
-    for (index, grapheme) in graphemes.iter().enumerate().rev() {
-        let length = grapheme.chars().count();
-        if tail_length + length > budget {
-            break;
-        }
-        tail_length += length;
-        last_start = index;
-    }
-    // Advance one complete grapheme per second, holding both ends before looping.
-    let phase = elapsed.as_secs() % (last_start as u64 + 2 * TITLE_HOLD_SECONDS);
-    let start = phase
-        .saturating_sub(TITLE_HOLD_SECONDS)
-        .min(last_start as u64) as usize;
-    let mut output = String::new();
-    let mut used = 0;
-    for grapheme in graphemes.into_iter().skip(start) {
-        let length = grapheme.chars().count();
-        if used + length > budget {
-            break;
-        }
-        output.push_str(grapheme);
-        used += length;
-    }
-    output.trim().to_owned()
+    TextViewport::new(&text, budget)
+        .scroll(elapsed, None)
+        .to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiline_requests_share_offsets_and_clear_when_timing_is_unavailable() {
+        let now = Instant::now();
+        let mut playback = playback(now);
+        let cues = timeline::parse("[00:01]First\n[00:05]Second\n[00:09]Third");
+        let mut renderer = Renderer::default();
+        for (offset, expected) in [(100, "First"), (0, "Second"), (-100, "Second")] {
+            let (text, _) =
+                renderer.render(Some(&playback), &cues, Lookup::Ready, 24, offset, 9, now);
+            let window = text.window.unwrap();
+            assert_eq!(window.lines[window.current], expected);
+            assert!(text.lyric.contains(expected));
+        }
+        playback.position_ms = None;
+        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, 9, now);
+        assert_eq!(status, Status::NoTimeline);
+        assert!(text.window.is_none());
+        assert!(!text.title.is_empty());
+        playback.playing = false;
+        assert_eq!(
+            renderer
+                .render(Some(&playback), &cues, Lookup::Ready, 24, 0, 9, now)
+                .0,
+            LyricsText::default()
+        );
+    }
 
     fn playback(now: Instant) -> Playback {
         Playback {
@@ -205,31 +212,31 @@ mod tests {
         let mut playback = playback(now);
         let mut renderer = Renderer::default();
         let cues = timeline::parse("[00:01]当前歌词\n[00:10]...");
-        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, now);
+        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, 0, now);
         assert_eq!(status, Status::Synced);
         assert_eq!(text.title, "🎵 歌名 · 歌手");
         assert_eq!(text.lyric, "🎵 当前歌词");
 
         for lookup in [Lookup::Loading, Lookup::Failed, Lookup::Ready] {
-            let (text, _) = renderer.render(Some(&playback), &[], lookup, 24, 0, now);
+            let (text, _) = renderer.render(Some(&playback), &[], lookup, 24, 0, 0, now);
             assert_eq!(text.title, "🎵 歌名 · 歌手");
             assert!(text.lyric.is_empty());
         }
         for position in [Some(0), Some(12_000), None] {
             playback.position_ms = position;
-            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, now);
+            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, 0, now);
             assert_eq!(text.title, "🎵 歌名 · 歌手");
             assert!(text.lyric.is_empty());
         }
         playback.playing = false;
         assert_eq!(
             renderer
-                .render(Some(&playback), &cues, Lookup::Ready, 24, 0, now)
+                .render(Some(&playback), &cues, Lookup::Ready, 24, 0, 0, now)
                 .0,
             LyricsText::default()
         );
         assert_eq!(
-            renderer.render(None, &cues, Lookup::Ready, 24, 0, now).0,
+            renderer.render(None, &cues, Lookup::Ready, 24, 0, 0, now).0,
             LyricsText::default()
         );
     }
@@ -252,7 +259,8 @@ mod tests {
             (6_000, -1_000, ""),
         ] {
             playback.position_ms = Some(position);
-            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, offset, now);
+            let (text, _) =
+                renderer.render(Some(&playback), &cues, Lookup::Ready, 24, offset, 0, now);
             assert_eq!(text.title, "🎵 歌名 · 歌手");
             assert_eq!(text.lyric, expected, "position {position}, offset {offset}");
         }
@@ -265,12 +273,13 @@ mod tests {
         playback.track.title = "这是一个需要滚动才能显示完整名称的歌曲标题".into();
         let cues = timeline::parse("[00:01]当前歌词");
         let mut renderer = Renderer::default();
-        let (start, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 12, 0, now);
+        let (start, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 12, 0, 0, now);
         let (scrolled, _) = renderer.render(
             Some(&playback),
             &cues,
             Lookup::Ready,
             12,
+            0,
             0,
             now + Duration::from_secs(5),
         );
@@ -288,6 +297,7 @@ mod tests {
                     &cues,
                     Lookup::Ready,
                     12,
+                    0,
                     0,
                     now + Duration::from_secs(6)
                 )

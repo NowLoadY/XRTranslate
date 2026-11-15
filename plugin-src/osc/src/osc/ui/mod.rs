@@ -1,4 +1,6 @@
 pub mod canvas;
+mod definitions;
+mod pet;
 mod settings;
 pub mod toolbar;
 
@@ -97,13 +99,11 @@ fn render_page(
 
             ui.add_space(12.0);
 
-            let is_wide = (ui.available_width() > ui.available_height()
-                && ui.available_width() >= 540.0)
-                || ui.available_width() >= 800.0;
+            let is_wide = ui.available_width() >= 900.0;
 
             if is_wide {
                 let total_width = ui.available_width();
-                let left_width = (total_width * 0.46).clamp(300.0, 440.0);
+                let left_width = (total_width * 0.30).clamp(260.0, 340.0);
                 let right_width = total_width - left_width - ui.spacing().item_spacing.x;
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -124,7 +124,13 @@ fn render_page(
                         egui::vec2(right_width, ui.available_height()),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            canvas::render_canvas(plugin, ui, context.language);
+                            canvas::render_canvas(
+                                plugin,
+                                ui,
+                                context.language,
+                                context.lyrics_available,
+                                &mut actions,
+                            );
                         },
                     );
                 });
@@ -140,7 +146,13 @@ fn render_page(
 
                 ui.add_space(12.0);
 
-                canvas::render_canvas(plugin, ui, context.language);
+                canvas::render_canvas(
+                    plugin,
+                    ui,
+                    context.language,
+                    context.lyrics_available,
+                    &mut actions,
+                );
             }
         });
 

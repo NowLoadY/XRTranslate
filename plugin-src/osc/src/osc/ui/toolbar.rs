@@ -1,12 +1,7 @@
 use super::super::runtime::{
-    BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
-    default_lyric_offset_seconds,
+    MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator, default_lyric_offset_seconds,
 };
-use crate::text_output::render_banner_selector;
-use crate::ui::{
-    components::{self, card},
-    layout,
-};
+use crate::ui::components::{self, card};
 use eframe::egui;
 
 pub fn render_toolbar(
@@ -218,56 +213,7 @@ pub fn render_toolbar(
                         });
                         ui.add_space(8.0);
 
-                        let banner_width = banner_field_width(
-                            ui,
-                            crate::i18n::tr(language, "Header:"),
-                            &plugin.draft().header_config,
-                            language,
-                        ) + banner_field_width(
-                            ui,
-                            crate::i18n::tr(language, "Footer:"),
-                            &plugin.draft().footer_config,
-                            language,
-                        ) + ui.spacing().item_spacing.x;
-                        let stack_banners = banner_width > ui.available_width();
-                        ui.horizontal_wrapped(|ui| {
-                            for (label, id, header) in [
-                                ("Header:", "header_type_combo", true),
-                                ("Footer:", "footer_type_combo", false),
-                            ] {
-                                if !header && stack_banners {
-                                    ui.end_row();
-                                }
-                                let banner = if header {
-                                    &mut plugin.draft_mut().header_config
-                                } else {
-                                    &mut plugin.draft_mut().footer_config
-                                };
-                                let label = crate::i18n::tr(language, label);
-                                let width = banner_field_width(ui, label, banner, language);
-                                let mut banner_changed = false;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(width, ui.spacing().interact_size.y),
-                                    egui::Layout::top_down(egui::Align::LEFT),
-                                    |ui| {
-                                        banner_changed = render_banner_selector(
-                                            ui,
-                                            label,
-                                            id,
-                                            banner,
-                                            language,
-                                            lyrics_available,
-                                        );
-                                    },
-                                );
-                                changed |= banner_changed;
-                            }
-                        });
-
-                        if lyrics_available
-                            && [&plugin.draft().header_config, &plugin.draft().footer_config]
-                                .iter()
-                                .any(|banner| banner.content_type == BannerContentType::Lyrics)
+                        if lyrics_available && plugin.draft().lyric_budget().is_some()
                         {
                             ui.add_space(4.0);
                             let offset = plugin.draft().lyric_offset_seconds;
@@ -389,36 +335,4 @@ pub fn render_toolbar(
     if changed {
         actions.push(super::OscUiAction::ApplySettings);
     }
-}
-
-fn banner_field_width(
-    ui: &egui::Ui,
-    label: &str,
-    banner: &BannerConfig,
-    language: crate::i18n::UiLanguage,
-) -> f32 {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let label_width = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, crate::ui::theme::text_strong())
-        .size()
-        .x;
-    let combo = layout::control_width(ui, banner.content_type.label(language), None, 96.0, 240.0);
-    let extra = match banner.content_type {
-        BannerContentType::CustomText => 150.0 + ui.spacing().item_spacing.x,
-        BannerContentType::CpuStatus | BannerContentType::GpuStatus => {
-            ui.painter()
-                .layout_no_wrap(
-                    crate::i18n::tr(language, "Full Name").to_owned(),
-                    egui::TextStyle::Body.resolve(ui.style()),
-                    crate::ui::theme::text_strong(),
-                )
-                .size()
-                .x
-                + ui.spacing().icon_width
-                + 2.0 * ui.spacing().item_spacing.x
-        }
-        _ => 0.0,
-    };
-    (label_width + combo + extra + ui.spacing().item_spacing.x + 4.0).min(ui.max_rect().width())
 }

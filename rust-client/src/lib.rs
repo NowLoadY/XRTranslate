@@ -1700,7 +1700,7 @@ impl Default for XRTranslateApp {
                             }
                             CaptureSource::SystemAudio | CaptureSource::Both => {}
                         },
-                        SessionEvent::BackendError { message } => {
+                        SessionEvent::BackendError { message, .. } => {
                             if !scope.publish_to_host_outputs {
                                 continue;
                             }

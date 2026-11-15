@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: tuberry
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use unicode_segmentation::UnicodeSegmentation;
+use xrtranslate_plugin::text::TextViewport;
 
 #[derive(Debug)]
 pub(super) struct Cue {
@@ -79,12 +79,52 @@ fn timestamp(tag: &str) -> Option<i64> {
 }
 
 pub(super) fn viewport(cues: &[Cue], position_ms: u64, duration_ms: u64, budget: usize) -> String {
-    let Some(index) = cues
-        .partition_point(|cue| cue.start_ms <= position_ms)
-        .checked_sub(1)
-    else {
+    let Some((index, end)) = active(cues, position_ms, duration_ms) else {
         return String::new();
     };
+    let cue = &cues[index];
+    let progress = (position_ms - cue.start_ms) as f64 / (end - cue.start_ms).max(1) as f64;
+    TextViewport::new(&cue.text, budget)
+        .at_progress(progress)
+        .to_owned()
+}
+
+pub(super) fn window(
+    cues: &[Cue],
+    position_ms: u64,
+    duration_ms: u64,
+    lines: usize,
+) -> Option<xrtranslate_plugin::lyrics::LyricWindow> {
+    if lines == 0 {
+        return None;
+    }
+    let lines = lines.min(32);
+    let (index, end) = active(cues, position_ms, duration_ms)?;
+    let start = index.saturating_sub(lines - 1);
+    let stop = (index + lines).min(cues.len());
+    let progress = u128::from(position_ms - cues[index].start_ms) * 1000
+        / u128::from((end - cues[index].start_ms).max(1));
+    Some(xrtranslate_plugin::lyrics::LyricWindow {
+        lines: cues[start..stop]
+            .iter()
+            .enumerate()
+            .map(|(offset, cue)| {
+                if start + offset == index {
+                    cue.text.clone()
+                } else {
+                    TextViewport::new(&cue.text, 128).start().to_owned()
+                }
+            })
+            .collect(),
+        current: index - start,
+        progress: progress.min(1000) as u16,
+    })
+}
+
+fn active(cues: &[Cue], position_ms: u64, duration_ms: u64) -> Option<(usize, u64)> {
+    let index = cues
+        .partition_point(|cue| cue.start_ms <= position_ms)
+        .checked_sub(1)?;
     let cue = &cues[index];
     let end = cues
         .get(index + 1)
@@ -96,36 +136,35 @@ pub(super) fn viewport(cues: &[Cue], position_ms: u64, duration_ms: u64, budget:
                 cue.start_ms + 8000
             }
         });
-    if budget == 0 || position_ms >= end || cue.text.is_empty() {
-        return String::new();
+    (position_ms < end && !cue.text.is_empty()).then_some((index, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiline_window_tracks_current_cue_seeks_gaps_and_end_of_song() {
+        let cues = parse("[00:01]First\n[00:03]Second\n[00:05]Third\n[00:07]...\n[00:09]Last");
+        assert!(window(&cues, 0, 12_000, 9).is_none());
+        assert!(window(&cues, 4_000, 12_000, 0).is_none());
+        let middle = window(&cues, 4_000, 12_000, 2).unwrap();
+        assert_eq!(middle.lines, ["First", "Second", "Third"]);
+        assert_eq!(middle.current, 1);
+        assert_eq!(middle.progress, 500);
+        let seek = window(&cues, 9_000, 12_000, 9).unwrap();
+        assert_eq!(seek.lines[seek.current], "Last");
+        assert_eq!(seek.progress, 0);
+        assert!(window(&cues, 8_000, 12_000, 9).is_none());
+        assert!(window(&cues, 12_000, 12_000, 9).is_none());
     }
-    let graphemes = cue.text.graphemes(true).collect::<Vec<_>>();
-    let lengths = graphemes
-        .iter()
-        .map(|text| text.chars().count())
-        .collect::<Vec<_>>();
-    let total: usize = lengths.iter().sum();
-    if total <= budget {
-        return cue.text.clone();
+
+    #[test]
+    fn shared_viewport_preserves_singing_progress_and_cue_gaps() {
+        let cues = parse("[00:01]ABCDEFGHIJKLMNOPQRST\n[00:05]...");
+        assert_eq!(viewport(&cues, 1_000, 10_000, 6), "ABCDEF");
+        assert_eq!(viewport(&cues, 3_000, 10_000, 6), "HIJKLM");
+        assert_eq!(viewport(&cues, 4_999, 10_000, 6), "OPQRST");
+        assert_eq!(viewport(&cues, 5_000, 10_000, 6), "");
     }
-    let progress = (position_ms - cue.start_ms) as f64 / (end - cue.start_ms).max(1) as f64;
-    // As in desktop-lyric, keep the estimated singing position near the center,
-    // holding the start and end still. OSC limits are Unicode characters.
-    let offset =
-        ((total as f64 * progress - budget as f64 / 2.0).max(0.0) as usize).min(total - budget);
-    let mut skipped = 0;
-    let mut used = 0;
-    let mut output = String::new();
-    for (text, length) in graphemes.into_iter().zip(lengths) {
-        if skipped < offset {
-            skipped += length;
-            continue;
-        }
-        if used + length > budget {
-            break;
-        }
-        output.push_str(text);
-        used += length;
-    }
-    output.trim().to_owned()
 }

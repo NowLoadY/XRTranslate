@@ -3,26 +3,7 @@ use crate::ui::{components, layout};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-/// Bounded song metadata and the current lyric, supplied together by the host.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LyricsText {
-    pub title: String,
-    pub lyric: String,
-}
-
-impl LyricsText {
-    pub fn preferred(&self) -> &str {
-        if self.lyric.is_empty() {
-            &self.title
-        } else {
-            &self.lyric
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.title.is_empty() && self.lyric.is_empty()
-    }
-}
+pub use xrtranslate_plugin::lyrics::LyricsText;
 
 pub use xrtranslate_plugin::translation::{MessageFormat, message_parts};
 

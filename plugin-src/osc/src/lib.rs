@@ -273,7 +273,12 @@ impl Plugin for App {
         let state = json!({
             "osc_receiver": (self.game == OscGame::VRChat).then(|| xrtranslate_client_core::osc::ReceiveOptions {enabled:settings.enabled, ip:settings.ip.clone(), send_port:settings.send_port, listen_port:settings.listen_port}),
             "voice_output": (self.game == OscGame::VRChat && settings.enabled).then_some("osc.voice"),
-            "lyrics": settings.lyric_budget().map(|budget| json!({"output":id,"budget":budget,"offset_ms":settings.lyric_offset_ms()})),
+            "voice_output_config": {
+                "suffix": settings.microphone_suffix_enabled.then_some(&settings.microphone_suffix),
+                "text_limit": settings.text_limit(),
+                "line_limit": settings.line_limit(),
+            },
+            "lyrics": settings.lyric_budget().map(|budget| json!({"output":id,"budget":budget,"offset_ms":settings.lyric_offset_ms(),"window_lines":settings.lyric_window_lines()})),
         });
         if state != self.state {
             self.state = state.clone();

@@ -15,7 +15,7 @@ use tokio_tungstenite::{
 use xrtranslate_engine::audio::f32_to_pcm16le;
 use xrtranslate_prompt::{PromptExecutionTrace, TaskContext};
 use xrtranslate_protocol::{
-    CorpusTermMatch, DrainReason, InferenceWorkload, PromptGraphSet, SegmentBoundary,
+    CorpusTermMatch, DrainReason, ErrorScope, InferenceWorkload, PromptGraphSet, SegmentBoundary,
     SegmentTiming, ServerEvent as ProtocolServerEvent,
 };
 
@@ -148,6 +148,7 @@ pub enum SessionEvent {
     },
     BackendError {
         message: String,
+        scope: ErrorScope,
     },
     Error(String),
 }
@@ -776,6 +777,7 @@ async fn run_session(
                                     log::error!("TTS playback failed: {error}");
                                     let _ = event_tx.send(SessionEvent::BackendError {
                                         message: format!("TTS playback failed: {error}"),
+                                        scope: ErrorScope::Request,
                                     });
                                     playback_error = Some(error);
                                 }
@@ -1051,6 +1053,60 @@ fn audio_source_name(source: CaptureSource) -> &'static str {
 mod tests {
     use super::*;
     use xrtranslate_protocol::{ActionControl, ClientControl};
+
+    #[test]
+    fn request_failure_keeps_audio_session_open_for_the_next_translation() {
+        use crate::{
+            session_coordinator::{TranslationEvent, TranslationSessionOwner},
+            translation_service::ChannelScope,
+        };
+        for error_scope in [ErrorScope::Request, ErrorScope::Session] {
+            let scope = ChannelScope::new(TranslationSessionOwner::Host {
+                capture_source: CaptureSource::Microphone,
+            });
+            scope.stream_id.store(1, Ordering::Release);
+            let (sender, receiver) = crossbeam_channel::bounded(2);
+            let error = ProtocolServerEvent::Error(xrtranslate_protocol::ErrorEvent {
+                message: "inference request timed out".into(),
+                scope: error_scope,
+            });
+            forward_server_event(
+                &sender,
+                &serde_json::to_string(&error).unwrap(),
+                1,
+                true,
+                true,
+                CaptureSource::Microphone,
+            );
+            let result = scope.publish(&receiver.try_recv().unwrap(), &[]);
+            assert_eq!(scope.accepts_events(), error_scope == ErrorScope::Request);
+            assert_eq!(result.is_empty(), error_scope == ErrorScope::Request);
+
+            let next = json!({"action":"translation_ready", "data":{
+                "source_text":"Next sentence.", "translated_text":"下一句。",
+                "turn_id":"next", "segment_index":1, "segment_count":1,
+                "revisable":false, "overlap_ratio":0.0
+            }});
+            forward_server_event(
+                &sender,
+                &next.to_string(),
+                1,
+                true,
+                true,
+                CaptureSource::Microphone,
+            );
+            let result = scope.publish(&receiver.try_recv().unwrap(), &[]);
+            if error_scope == ErrorScope::Request {
+                assert!(
+                    matches!(result.as_slice(), [TranslationEvent::Segment(segment)] if segment.translated.as_deref() == Some("下一句。"))
+                );
+                assert!(!scope.failed.load(Ordering::Acquire));
+            } else {
+                assert!(result.is_empty());
+                assert!(scope.failed.load(Ordering::Acquire));
+            }
+        }
+    }
 
     #[test]
     fn legacy_audio_controls_keep_mono_and_configured_preprocessing() {
@@ -1485,6 +1541,7 @@ fn forward_server_event(
             log::error!("Translation session {stream_id}: {message}");
             let _ = event_tx.send(SessionEvent::BackendError {
                 message: message.into(),
+                scope: event_metadata(data, "scope"),
             });
         }
         _ => {}

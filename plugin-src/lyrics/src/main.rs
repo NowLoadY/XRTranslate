@@ -1,15 +1,10 @@
 mod lyrics;
 mod strings;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{sync::mpsc, time::Duration};
 use xrtranslate_plugin::{Context, Environment, Plugin, Result, Widget};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct LyricsText {
-    title: String,
-    lyric: String,
-}
+use xrtranslate_plugin::lyrics::LyricsText;
 #[derive(Default)]
 struct Lyrics {
     engine: Option<lyrics::LyricsPlugin>,

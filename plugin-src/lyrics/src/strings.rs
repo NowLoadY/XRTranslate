@@ -13,11 +13,11 @@ pub fn text(key: &str) -> Text {
 }
 const STRINGS: &[(&str, &str, &str, &str, &str)] = &[
     (
-        "Select Lyrics in an enabled header or footer to start.",
-        "在已启用的页眉或页脚中选择“歌词”即可运行。",
-        "有効なヘッダーまたはフッターで「歌詞」を選ぶと開始します。",
-        "활성화된 머리글이나 바닥글에서 가사를 선택하면 시작됩니다.",
-        "Для запуска выберите «Текст песни» во включённом заголовке или подвале.",
+        "Select Lyrics in an enabled output to start.",
+        "在已启用的输出区域中选择“歌词”即可运行。",
+        "有効な出力領域で「歌詞」を選ぶと開始します。",
+        "활성화된 출력 영역에서 가사를 선택하면 시작됩니다.",
+        "Для запуска выберите «Текст песни» в активной области вывода.",
     ),
     (
         "Waiting for a player. Enable system media controls in your player.",

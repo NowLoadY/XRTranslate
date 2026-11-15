@@ -1,13 +1,32 @@
 use crate::text_output::{LyricsText, SystemMetrics, message_parts};
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Instant,
+};
+use xrtranslate_plugin::text::TextViewport;
 
+use super::{
+    banners::{self, Banners},
+    pet::{Activity, theater::Theater},
+};
 use crate::compact_speaker_label;
 
 use super::runtime::{
-    BannerContentType, OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings,
+    BannerContentType, ChatboxRegions, OscFormatMode, OscInputSource, OscMessageSeparator,
+    OscSettings,
 };
 
 const MAX_ENTRIES: usize = 9;
+
+#[cfg(test)]
+#[path = "pet/chatbox_tests.rs"]
+mod pet_tests;
+
+#[path = "chatbox_lyrics.rs"]
+mod idle_lyrics;
+
+#[path = "pet/theater/layout.rs"]
+mod idle_theater;
 
 #[derive(Clone)]
 pub(super) struct HistoryMessage {
@@ -28,13 +47,187 @@ pub(super) struct ManualMessage {
     pub(super) expires_at: Instant,
 }
 
-pub(super) fn build_chatbox_text(
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Block {
+    Header,
+    Footer,
+    Manual(Instant),
+    Caption(u64, Instant, usize),
+}
+
+struct ScrollState {
+    text: String,
+    budget: usize,
+    started: Instant,
+    visible: bool,
+}
+
+#[derive(Default)]
+pub(super) struct ChatboxRenderer {
+    blocks: BTreeMap<Block, ScrollState>,
+    banners: Banners,
+    theater: Theater,
+    pub(super) regions: ChatboxRegions,
+}
+
+impl ChatboxRenderer {
+    pub(super) fn render(
+        &mut self,
+        history: &[HistoryMessage],
+        live: &[HistoryMessage],
+        manual_message: Option<&ManualMessage>,
+        settings: &OscSettings,
+        metrics: &SystemMetrics,
+        lyrics: &LyricsText,
+        now: Instant,
+    ) -> String {
+        self.regions = ChatboxRegions::default();
+        self.theater
+            .begin_frame(
+                [&settings.header_config, &settings.footer_config].map(|banner| {
+                    (banner.content_type == BannerContentType::TextPet).then_some(banner.pet)
+                }),
+            );
+        for state in self.blocks.values_mut() {
+            state.visible = false;
+        }
+        let text = compose_frame(
+            history,
+            live,
+            manual_message,
+            settings,
+            metrics,
+            lyrics,
+            &mut Frame {
+                renderer: self,
+                now,
+            },
+        );
+        // Evicted, expired and no-longer-overflowing blocks own no animation.
+        self.blocks.retain(|_, state| state.visible);
+        self.theater.end_frame();
+        text
+    }
+
+    pub(super) fn needs_refresh(&self) -> bool {
+        !self.blocks.is_empty()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.blocks.clear();
+        self.banners = Banners::default();
+        self.theater = Theater::default();
+        self.regions = ChatboxRegions::default();
+    }
+
+    pub(super) fn pause_ambient(&mut self) {
+        self.theater.pause();
+    }
+}
+
+struct Frame<'a> {
+    renderer: &'a mut ChatboxRenderer,
+    now: Instant,
+}
+
+impl Frame<'_> {
+    fn banner(
+        &mut self,
+        block: Block,
+        text: &str,
+        budget: usize,
+        kind: BannerContentType,
+    ) -> String {
+        if kind == BannerContentType::TextPet {
+            if budget >= text.chars().count() {
+                return text.to_owned();
+            }
+            self.renderer.banners.fit_pet(
+                usize::from(block == Block::Footer),
+                budget.min(super::pet::MAX_WIDTH),
+            )
+        } else if kind == BannerContentType::Lyrics {
+            TextViewport::new(text, budget).start().to_owned()
+        } else {
+            self.text(block, text, budget, None)
+        }
+    }
+
+    fn compose(&mut self, header: &str, body: &str, footer: &str, lines: usize) -> String {
+        if lines == 0 {
+            return String::new();
+        }
+        let mut regions = ChatboxRegions {
+            header: header.into(),
+            body: body.into(),
+            footer: footer.into(),
+            unified_lyrics: false,
+            pet_stage: false,
+        };
+        let mut text = compose_chatbox(header, body, footer);
+        if text.lines().count() > lines {
+            // Compact each region before composing so preview boundaries still
+            // describe the text sent to the game after enforcing the line limit.
+            for region in [&mut regions.header, &mut regions.body, &mut regions.footer] {
+                *region = region.split_whitespace().collect::<Vec<_>>().join(" ");
+            }
+            text = compose_chatbox(&regions.header, &regions.body, &regions.footer);
+            if text.lines().count() > lines {
+                text = fit_lines(text, lines);
+                regions = ChatboxRegions {
+                    body: text.clone(),
+                    ..Default::default()
+                };
+            }
+        }
+        self.renderer.regions = regions;
+        text
+    }
+
+    fn text(
+        &mut self,
+        block: Block,
+        text: &str,
+        budget: usize,
+        expires_at: Option<Instant>,
+    ) -> String {
+        let viewport = TextViewport::new(text, budget);
+        if budget == 0 || !viewport.overflows() {
+            return viewport.start().to_owned();
+        }
+        let state = self
+            .renderer
+            .blocks
+            .entry(block)
+            .or_insert_with(|| ScrollState {
+                text: text.to_owned(),
+                budget,
+                started: self.now,
+                visible: true,
+            });
+        if state.text != text || state.budget != budget {
+            state.text = text.to_owned();
+            state.budget = budget;
+            state.started = self.now;
+        }
+        state.visible = true;
+        viewport
+            .scroll(
+                self.now.saturating_duration_since(state.started),
+                expires_at.map(|end| end.saturating_duration_since(state.started)),
+            )
+            .to_owned()
+    }
+}
+
+fn compose_frame(
     history: &[HistoryMessage],
     live: &[HistoryMessage],
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
     metrics: &SystemMetrics,
     lyrics: &LyricsText,
+    frame: &mut Frame<'_>,
 ) -> String {
     let mut entries = history
         .iter()
@@ -52,29 +245,52 @@ pub(super) fn build_chatbox_text(
 
     let split_lyrics = settings.header_config.content_type == BannerContentType::Lyrics
         && settings.footer_config.content_type == BannerContentType::Lyrics;
-    let (header_lyric, footer_lyric) = if split_lyrics {
+    let idle_music = entries.is_empty()
+        && manual_message.is_none_or(|manual| manual.text.trim().is_empty())
+        && settings.idle_content == super::runtime::IdleContent::Lyrics;
+    let (header_lyric, footer_lyric) = if idle_music {
+        (lyrics.title.as_str(), lyrics.title.as_str())
+    } else if split_lyrics {
         (lyrics.title.as_str(), lyrics.lyric.as_str())
     } else {
         (lyrics.preferred(), lyrics.preferred())
     };
     let bounded = |text: &str| {
-        text.chars()
-            .take(settings.lyric_budget().unwrap_or(0))
-            .collect::<String>()
+        TextViewport::new(text, settings.lyric_budget().unwrap_or(0))
+            .start()
+            .to_owned()
     };
-    let prefix = settings
-        .header_config
-        .render_text(metrics, &bounded(header_lyric));
-    let suffix = settings
-        .footer_config
-        .render_text(metrics, &bounded(footer_lyric));
+    let activity = Activity {
+        speaking: live.iter().any(|entry| {
+            entry.source_kind == OscInputSource::Microphone
+                && (!entry.source.is_empty() || !entry.translated.is_empty())
+                && frame.now.saturating_duration_since(entry.updated_at)
+                    < std::time::Duration::from_secs(3)
+        }),
+        latest_message: history
+            .iter()
+            .filter(|entry| {
+                entry.source_kind == OscInputSource::Microphone && !entry.translated.is_empty()
+            })
+            .map(|entry| entry.updated_at)
+            .max(),
+        music: !lyrics.is_empty(),
+    };
+    let [prefix, suffix] = frame.renderer.banners.render(
+        [&settings.header_config, &settings.footer_config],
+        settings.text_limit(),
+        metrics,
+        [&bounded(header_lyric), &bounded(footer_lyric)],
+        activity,
+        frame.now,
+    );
 
     if let Some(manual) = manual_message.filter(|manual| !manual.text.trim().is_empty()) {
         // Manual text and translations share the same space below/above lyrics.
         // Keep their established priority; decorations may not consume the body.
         let mut prefix = prefix.as_str();
         let mut suffix = suffix.as_str();
-        while decoration_length(prefix, suffix) >= settings.text_limit() {
+        while decoration_length(prefix, suffix, settings) >= settings.text_limit() {
             if !suffix.is_empty() {
                 suffix = "";
             } else if !prefix.is_empty() {
@@ -85,59 +301,62 @@ pub(super) fn build_chatbox_text(
         }
         let limit = settings
             .text_limit()
-            .saturating_sub(decoration_length(prefix, suffix));
+            .saturating_sub(decoration_length(prefix, suffix, settings));
         let lines = settings
             .line_limit()
             .saturating_sub(prefix.lines().count() + suffix.lines().count());
-        let body = fit_manual_entries(&mut entries, manual, settings, limit, lines);
-        return fit_lines(
-            compose_chatbox(prefix, &body, suffix),
-            settings.line_limit(),
-        );
+        let body = fit_manual_entries(&mut entries, manual, settings, limit, lines, frame);
+        return frame.compose(prefix, &body, suffix, settings.line_limit());
     }
 
     // In persistent mode the decorations remain visible after message TTLs
     // expire; ordinary messages still disappear from `history`/`live`.
     if entries.is_empty() {
-        return if settings.persistent_banners {
-            fit_decorations(
-                &prefix,
-                &suffix,
-                settings.text_limit(),
-                settings.line_limit(),
-            )
+        let header = if settings.persistent_banners || settings.header_config.content_type.is_live()
+        {
+            prefix.as_str()
         } else {
-            // A selected lyric is a live output, independent of caption TTLs.
-            let header = if settings.header_config.content_type == BannerContentType::Lyrics {
-                prefix.as_str()
-            } else {
-                ""
-            };
-            let footer = if settings.footer_config.content_type == BannerContentType::Lyrics {
-                suffix.as_str()
-            } else {
-                ""
-            };
-            fit_decorations(header, footer, settings.text_limit(), settings.line_limit())
+            ""
         };
+        let footer = if settings.persistent_banners || settings.footer_config.content_type.is_live()
+        {
+            suffix.as_str()
+        } else {
+            ""
+        };
+        if idle_music && !lyrics.is_empty() {
+            let text = idle_lyrics::render(header, footer, lyrics, settings, frame);
+            if !frame.renderer.regions.body.is_empty()
+                || ![&settings.header_config, &settings.footer_config]
+                    .iter()
+                    .any(|config| config.content_type == BannerContentType::TextPet)
+            {
+                return text;
+            }
+        }
+        if live.is_empty()
+            && let Some(text) =
+                idle_theater::render(header, footer, settings, activity.music, frame)
+        {
+            return text;
+        }
+        return fit_decorations(header, footer, settings, frame);
     }
 
     while let Some(first) = entries.front() {
-        let combined = compose_chatbox(
-            &prefix,
-            &render_entries(entries.iter().copied(), settings),
-            &suffix,
-        );
+        let body = render_entries(entries.iter().copied(), settings);
+        let combined = compose_chatbox(&prefix, &body, &suffix);
 
-        if combined.chars().count() <= settings.text_limit()
+        if body.chars().count() + decoration_length(&prefix, &suffix, settings)
+            <= settings.text_limit()
             && combined.lines().count() <= settings.line_limit()
         {
-            return combined;
+            return frame.compose(&prefix, &body, &suffix, settings.line_limit());
         }
         if entries.len() > 1 {
             entries.pop_front();
         } else {
-            return fit_single_entry(first, &prefix, &suffix, settings);
+            return fit_single_entry(first, &prefix, &suffix, settings, frame);
         }
     }
 
@@ -150,6 +369,7 @@ fn fit_manual_entries(
     settings: &OscSettings,
     limit: usize,
     lines: usize,
+    frame: &mut Frame<'_>,
 ) -> String {
     let (manual_limit, manual_lines) = entries.back().map_or((limit, lines), |latest| {
         if latest.updated_at > manual.updated_at {
@@ -162,26 +382,42 @@ fn fit_manual_entries(
             (limit, lines)
         }
     });
+    if manual_lines == 0 || manual_limit == 0 {
+        return fit_asr_entries(entries, limit, lines, settings, frame);
+    }
     let manual_text = fit_lines(
         fit_prefixed_text(
             settings.prefix_for(OscInputSource::Typing),
-            &manual.text,
+            &sanitize_chatbox_segment(&manual.text),
             manual_limit,
+            Block::Manual(manual.updated_at),
+            Some(manual.expires_at),
+            frame,
         ),
         manual_lines,
     );
     if manual_text.is_empty() {
-        return fit_asr_entries(entries, limit, lines, settings);
+        return fit_asr_entries(entries, limit, lines, settings, frame);
     }
-    let available = limit.saturating_sub(manual_text.chars().count() + 1);
+    // Allocate from full content, not the current window (which may trim spaces).
+    // Otherwise one scrolling block would resize and restart its neighbours.
+    let manual_full = format!(
+        "{}{}",
+        prefixed_label(settings.prefix_for(OscInputSource::Typing)),
+        sanitize_chatbox_segment(&manual.text)
+    );
+    let manual_budget = manual_full.chars().count().min(manual_limit);
+    let manual_lines = fit_lines(manual_full, manual_lines).lines().count();
+    let available = limit.saturating_sub(manual_budget + 1);
     if entries.is_empty() || available == 0 {
         return manual_text;
     }
     let captions = fit_asr_entries(
         entries,
         available,
-        lines.saturating_sub(manual_text.lines().count()),
+        lines.saturating_sub(manual_lines),
         settings,
+        frame,
     );
     if captions.is_empty() {
         manual_text
@@ -195,6 +431,7 @@ fn fit_asr_entries(
     limit: usize,
     line_limit: usize,
     settings: &OscSettings,
+    frame: &mut Frame<'_>,
 ) -> String {
     if line_limit == 0 {
         return String::new();
@@ -207,17 +444,8 @@ fn fit_asr_entries(
         if entries.len() > 1 {
             entries.pop_front();
         } else {
-            if !first.additional_translations.is_empty() {
-                return fit_lines(fit_multilingual_entry(first, settings, limit), line_limit);
-            }
-            let rendered = render_entry(first, settings);
-            let label = entry_prefix(first, settings);
             return fit_lines(
-                if !label.is_empty() && rendered.starts_with(&label) {
-                    fit_prefixed_text(&label, &rendered[label.len()..], limit)
-                } else {
-                    trim_text(&rendered, limit)
-                },
+                fit_multilingual_entry(first, settings, limit, frame),
                 line_limit,
             );
         }
@@ -243,6 +471,8 @@ fn render_entries<'a>(
     for entry in entries {
         let source = sanitize_chatbox_segment(&entry.source);
         let target = sanitize_chatbox_segment(&entry.translated);
+        let mut decorated_target = target.clone();
+        settings.append_microphone_suffix(&mut decorated_target, entry.source_kind);
         let speaker = settings
             .show_speaker_number
             .then(|| compact_speaker_label(&entry.speaker_id))
@@ -251,7 +481,7 @@ fn render_entries<'a>(
         if settings.format_mode == OscFormatMode::TargetOnly {
             if !target.is_empty() {
                 targets.push(with_speaker(
-                    &with_source_prefix(&target, entry.source_kind, settings),
+                    &with_source_prefix(&decorated_target, entry.source_kind, settings),
                     speaker.as_deref(),
                 ));
             }
@@ -260,9 +490,9 @@ fn render_entries<'a>(
                 &with_source_prefix(&source, entry.source_kind, settings),
                 speaker.as_deref(),
             ));
-            targets.push(target);
+            targets.push(decorated_target);
         } else if let Some(text) = (!target.is_empty())
-            .then_some(target)
+            .then_some(decorated_target)
             .or_else(|| (!source.is_empty()).then_some(source))
         {
             match settings.format_mode {
@@ -282,10 +512,11 @@ fn render_entries<'a>(
             }
         }
         for (language, text) in &entry.additional_translations {
-            let text = sanitize_chatbox_segment(text);
+            let mut text = sanitize_chatbox_segment(text);
             if text.is_empty() {
                 continue;
             }
+            settings.append_microphone_suffix(&mut text, entry.source_kind);
             if let Some((_, texts)) = additional.iter_mut().find(|(key, _)| key == language) {
                 texts.push(text);
             } else {
@@ -334,22 +565,36 @@ fn compose_chatbox(prefix: &str, content: &str, suffix: &str) -> String {
         .join("\n")
 }
 
-fn fit_decorations(prefix: &str, suffix: &str, limit: usize, lines: usize) -> String {
-    if limit == 0 {
+fn fit_decorations(
+    prefix: &str,
+    suffix: &str,
+    settings: &OscSettings,
+    frame: &mut Frame<'_>,
+) -> String {
+    let limit = settings.text_limit();
+    let lines = settings.line_limit();
+    if limit == 0 || lines == 0 {
         return String::new();
     }
-    let mut prefix = prefix.to_string();
-    let mut suffix = suffix.to_string();
-    while decoration_length(&prefix, &suffix) > limit {
-        if !suffix.is_empty() {
-            suffix = trim_text(&suffix, suffix.chars().count().saturating_sub(1));
-        } else if !prefix.is_empty() {
-            prefix = trim_text(&prefix, prefix.chars().count().saturating_sub(1));
-        } else {
-            break;
-        }
-    }
-    fit_lines(compose_chatbox(&prefix, &suffix, ""), lines)
+    let pet_budget = banners::pet_budget([&settings.header_config, &settings.footer_config], limit);
+    let prefix_budget = settings
+        .header_config
+        .reserved_chars(prefix, pet_budget)
+        .min(limit);
+    let suffix_budget = limit.saturating_sub(prefix_budget + usize::from(prefix_budget > 0));
+    let prefix = frame.banner(
+        Block::Header,
+        prefix,
+        prefix_budget,
+        settings.header_config.content_type,
+    );
+    let suffix = frame.banner(
+        Block::Footer,
+        suffix,
+        suffix_budget,
+        settings.footer_config.content_type,
+    );
+    frame.compose(&prefix, "", &suffix, lines)
 }
 
 pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> String {
@@ -367,7 +612,7 @@ fn entry_parts(
 ) -> (Vec<(String, String)>, &'static str) {
     let source = sanitize_chatbox_segment(&entry.source);
     let target = sanitize_chatbox_segment(&entry.translated);
-    let (texts, separator) = message_parts(
+    let (mut texts, separator) = message_parts(
         &source,
         &target,
         entry
@@ -376,6 +621,30 @@ fn entry_parts(
             .map(|(_, text)| sanitize_chatbox_segment(text)),
         settings.format_mode,
     );
+    // Classify the original before decoration, so a same-language translation
+    // does not suddenly become a second bilingual line just because of a suffix.
+    let original = if !source.is_empty() && settings.format_mode != OscFormatMode::TargetOnly {
+        if target.is_empty() {
+            Some(0)
+        } else if source != target {
+            Some(
+                if settings.format_mode == OscFormatMode::BilingualTargetFirst {
+                    texts.len() - 1
+                } else {
+                    0
+                },
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    for (index, text) in texts.iter_mut().enumerate() {
+        if Some(index) != original {
+            settings.append_microphone_suffix(text, entry.source_kind);
+        }
+    }
     let mut parts = texts
         .into_iter()
         .map(|text| (String::new(), text))
@@ -386,7 +655,12 @@ fn entry_parts(
     (parts, separator)
 }
 
-fn fit_multilingual_entry(entry: &HistoryMessage, settings: &OscSettings, limit: usize) -> String {
+fn fit_multilingual_entry(
+    entry: &HistoryMessage,
+    settings: &OscSettings,
+    limit: usize,
+    frame: &mut Frame<'_>,
+) -> String {
     let (parts, separator) = entry_parts(entry, settings);
     let overhead = parts
         .iter()
@@ -394,7 +668,16 @@ fn fit_multilingual_entry(entry: &HistoryMessage, settings: &OscSettings, limit:
         .sum::<usize>()
         + parts.len().saturating_sub(1) * separator.chars().count();
     if overhead >= limit || parts.is_empty() {
-        return render_entry(entry, settings).chars().take(limit).collect();
+        let rendered = render_entry(entry, settings);
+        let label = entry_prefix(entry, settings);
+        return fit_prefixed_text(
+            &label,
+            rendered.strip_prefix(&label).unwrap_or(&rendered),
+            limit,
+            Block::Caption(entry.stream_id, entry.updated_at, 0),
+            Some(entry.expires_at),
+            frame,
+        );
     }
     // Divide the remaining Unicode character budget among languages, giving
     // unused space from short lines back to the others. Extra targets cannot
@@ -421,7 +704,18 @@ fn fit_multilingual_entry(entry: &HistoryMessage, settings: &OscSettings, limit:
     parts
         .into_iter()
         .zip(lengths)
-        .map(|((label, text), length)| format!("{label}{}", trim_text(&text, length)))
+        .enumerate()
+        .map(|(index, ((label, text), length))| {
+            format!(
+                "{label}{}",
+                frame.text(
+                    Block::Caption(entry.stream_id, entry.updated_at, index),
+                    &text,
+                    length,
+                    Some(entry.expires_at)
+                )
+            )
+        })
         .collect::<Vec<_>>()
         .join(separator)
 }
@@ -489,14 +783,14 @@ fn fit_single_entry(
     prefix: &str,
     suffix: &str,
     settings: &OscSettings,
+    frame: &mut Frame<'_>,
 ) -> String {
-    let rendered = render_entry(entry, settings);
     let limit = settings.text_limit();
     let mut prefix = prefix;
     let mut suffix = suffix;
 
     // Preserve speech before decorations when space is limited.
-    while decoration_length(prefix, suffix) >= limit {
+    while decoration_length(prefix, suffix, settings) >= limit {
         if !suffix.is_empty() {
             suffix = "";
         } else if !prefix.is_empty() {
@@ -505,19 +799,9 @@ fn fit_single_entry(
             break;
         }
     }
-    let content_limit = limit.saturating_sub(decoration_length(prefix, suffix));
-    let entry_label = entry_prefix(entry, settings);
-    let content = if !entry.additional_translations.is_empty() {
-        fit_multilingual_entry(entry, settings, content_limit)
-    } else if !entry_label.is_empty() && rendered.starts_with(&entry_label) {
-        fit_prefixed_text(&entry_label, &rendered[entry_label.len()..], content_limit)
-    } else {
-        trim_text(&rendered, content_limit)
-    };
-    fit_lines(
-        compose_chatbox(prefix, &content, suffix),
-        settings.line_limit(),
-    )
+    let content_limit = limit.saturating_sub(decoration_length(prefix, suffix, settings));
+    let content = fit_multilingual_entry(entry, settings, content_limit, frame);
+    frame.compose(prefix, &content, suffix, settings.line_limit())
 }
 
 fn fit_lines(text: String, limit: usize) -> String {
@@ -543,37 +827,19 @@ fn entry_prefix(entry: &HistoryMessage, settings: &OscSettings) -> String {
     )
 }
 
-fn decoration_length(prefix: &str, suffix: &str) -> usize {
-    let text = prefix.chars().count() + suffix.chars().count();
+fn decoration_length(prefix: &str, suffix: &str, settings: &OscSettings) -> usize {
+    let budget = banners::pet_budget(
+        [&settings.header_config, &settings.footer_config],
+        settings.text_limit(),
+    );
+    let text = settings.header_config.reserved_chars(prefix, budget)
+        + settings.footer_config.reserved_chars(suffix, budget);
     let separators = usize::from(!prefix.is_empty()) + usize::from(!suffix.is_empty());
     text + separators
 }
 
-fn trim_text(text: &str, limit: usize) -> String {
-    let value = text.trim();
-    if limit == 0 {
-        return String::new();
-    }
-    let chars = value.chars().collect::<Vec<_>>();
-    if chars.len() <= limit {
-        return value.into();
-    }
-    let tail = chars[chars.len() - limit..].iter().collect::<String>();
-    for marker in [
-        "。", "！", "？", ".", "!", "?", ";", ":", "；", "，", ",", " ",
-    ] {
-        if let Some(index) = tail.find(marker) {
-            let next = index + marker.len();
-            if next < tail.len() {
-                return tail[next..].trim_start().into();
-            }
-        }
-    }
-    tail.trim_start().into()
-}
-
 fn sanitize_prefix(text: &str) -> String {
-    let mut value = text
+    let value = text
         .trim()
         .chars()
         .map(|c| {
@@ -584,26 +850,28 @@ fn sanitize_prefix(text: &str) -> String {
             }
         })
         .collect::<String>();
-    value.truncate(
-        value
-            .char_indices()
-            .nth(super::runtime::MAX_PREFIX_LENGTH)
-            .map_or(value.len(), |(i, _)| i),
-    );
-    value
+    TextViewport::new(&value, super::runtime::MAX_PREFIX_LENGTH)
+        .start()
+        .to_owned()
 }
 
-fn fit_prefixed_text(prefix: &str, text: &str, limit: usize) -> String {
+fn fit_prefixed_text(
+    prefix: &str,
+    text: &str,
+    limit: usize,
+    block: Block,
+    expires_at: Option<Instant>,
+    frame: &mut Frame<'_>,
+) -> String {
     let prefix = prefixed_label(prefix);
-    let text = sanitize_chatbox_segment(text);
     if prefix.is_empty() {
-        return trim_text(&text, limit);
+        return frame.text(block, text, limit, expires_at);
     }
     if limit <= prefix.chars().count() {
-        return trim_text(&prefix, limit);
+        return TextViewport::new(&prefix, limit).start().to_owned();
     }
     let content_limit = limit - prefix.chars().count();
-    let content = trim_text(&text, content_limit);
+    let content = frame.text(block, text, content_limit, expires_at);
     format!("{prefix}{content}")
 }
 
@@ -620,6 +888,506 @@ fn prefixed_label(text: &str) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn build_chatbox_text(
+        history: &[HistoryMessage],
+        live: &[HistoryMessage],
+        manual: Option<&ManualMessage>,
+        settings: &OscSettings,
+        metrics: &SystemMetrics,
+        lyrics: &LyricsText,
+    ) -> String {
+        ChatboxRenderer::default().render(
+            history,
+            live,
+            manual,
+            settings,
+            metrics,
+            lyrics,
+            Instant::now(),
+        )
+    }
+
+    fn caption(now: Instant, text: &str) -> HistoryMessage {
+        HistoryMessage {
+            stream_id: 1,
+            source_kind: OscInputSource::Microphone,
+            source: String::new(),
+            translated: text.into(),
+            additional_translations: Vec::new(),
+            speaker_id: String::new(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        }
+    }
+
+    #[test]
+    fn microphone_suffix_is_literal_and_only_decorates_translations_in_all_layouts() {
+        let now = Instant::now();
+        let mut message = caption(now, "Hello.");
+        message.source = "你好".into();
+        message.additional_translations = vec![("ja".into(), "こんにちは".into())];
+        for separator in [OscMessageSeparator::NewLine, OscMessageSeparator::Space] {
+            for mode in [
+                OscFormatMode::TargetOnly,
+                OscFormatMode::Inline,
+                OscFormatMode::BilingualSourceFirst,
+                OscFormatMode::BilingualTargetFirst,
+            ] {
+                for source in [
+                    OscInputSource::Microphone,
+                    OscInputSource::SystemAudio,
+                    OscInputSource::Typing,
+                    OscInputSource::Unknown,
+                ] {
+                    message.source_kind = source;
+                    let mut settings = OscSettings {
+                        microphone_suffix_enabled: true,
+                        microphone_suffix: " 喵。".into(),
+                        message_separator: separator,
+                        format_mode: mode,
+                        ..Default::default()
+                    };
+                    for _ in 0..2 {
+                        let text = build_chatbox_text(
+                            std::slice::from_ref(&message),
+                            &[],
+                            None,
+                            &settings,
+                            &SystemMetrics::default(),
+                            &LyricsText::default(),
+                        );
+                        if source == OscInputSource::Microphone {
+                            assert!(
+                                text.contains("Hello 喵。"),
+                                "{mode:?} / {separator:?}: {text}"
+                            );
+                            assert!(text.contains("こんにちは 喵。"));
+                            assert_eq!(text.matches(" 喵。").count(), 2);
+                            assert!(!text.contains("你好 喵。"));
+                        } else {
+                            assert!(!text.contains("喵"));
+                        }
+                    }
+                    settings.microphone_suffix_enabled = false;
+                    assert!(
+                        !build_chatbox_text(
+                            std::slice::from_ref(&message),
+                            &[],
+                            None,
+                            &settings,
+                            &SystemMetrics::default(),
+                            &LyricsText::default()
+                        )
+                        .contains("喵")
+                    );
+                }
+            }
+        }
+        assert_eq!(message.translated, "Hello.");
+    }
+
+    #[test]
+    fn suffix_does_not_create_empty_messages_or_duplicate_same_language_originals() {
+        let now = Instant::now();
+        let settings = OscSettings {
+            microphone_suffix_enabled: true,
+            microphone_suffix: "喵".into(),
+            ..Default::default()
+        };
+        let mut message = caption(now, "你好");
+        message.source = "你好".into();
+        for separator in [OscMessageSeparator::NewLine, OscMessageSeparator::Space] {
+            let settings = OscSettings {
+                message_separator: separator,
+                ..settings.clone()
+            };
+            assert_eq!(
+                build_chatbox_text(
+                    std::slice::from_ref(&message),
+                    &[],
+                    None,
+                    &settings,
+                    &SystemMetrics::default(),
+                    &LyricsText::default()
+                ),
+                "🎤 你好喵"
+            );
+            let pending = HistoryMessage {
+                translated: String::new(),
+                ..message.clone()
+            };
+            assert_eq!(
+                build_chatbox_text(
+                    &[pending],
+                    &[],
+                    None,
+                    &settings,
+                    &SystemMetrics::default(),
+                    &LyricsText::default()
+                ),
+                "🎤 你好"
+            );
+            assert!(
+                build_chatbox_text(
+                    &[caption(now, "")],
+                    &[],
+                    None,
+                    &settings,
+                    &SystemMetrics::default(),
+                    &LyricsText::default()
+                )
+                .is_empty()
+            );
+        }
+        let manual = ManualMessage {
+            text: "Hello".into(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        assert_eq!(
+            build_chatbox_text(
+                &[],
+                &[],
+                Some(&manual),
+                &settings,
+                &SystemMetrics::default(),
+                &LyricsText::default()
+            ),
+            "💬 Hello"
+        );
+    }
+
+    #[test]
+    fn suffix_uses_message_budget_and_scrolls_away_with_its_owner() {
+        let now = Instant::now();
+        let message = caption(now, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText::default();
+        for limit in [0, 1, 2, 3, 5, 10, 24, 144] {
+            let settings = OscSettings {
+                microphone_suffix_enabled: true,
+                microphone_suffix: "喵。".into(),
+                max_text_length: limit,
+                ..Default::default()
+            };
+            let mut renderer = ChatboxRenderer::default();
+            for seconds in [0, 5, 13] {
+                let text = renderer.render(
+                    std::slice::from_ref(&message),
+                    &[],
+                    None,
+                    &settings,
+                    &metrics,
+                    &lyrics,
+                    now + Duration::from_secs(seconds),
+                );
+                assert!(text.chars().count() <= limit);
+                if seconds == 13 && limit >= 5 {
+                    assert!(text.ends_with("喵。"), "{text}");
+                }
+            }
+            assert!(
+                renderer
+                    .render(
+                        &[],
+                        &[],
+                        None,
+                        &settings,
+                        &metrics,
+                        &lyrics,
+                        now + Duration::from_secs(15)
+                    )
+                    .is_empty()
+            );
+            assert!(renderer.regions.body.is_empty());
+            assert!(!renderer.needs_refresh());
+        }
+    }
+
+    #[test]
+    fn selected_languages_scroll_independently_without_moving_banners_or_labels() {
+        let now = Instant::now();
+        let mut settings = OscSettings {
+            max_text_length: 40,
+            ..Default::default()
+        };
+        settings.header_config.content_type = BannerContentType::CustomText;
+        settings.header_config.custom_text = "HEADER".into();
+        settings.footer_config.content_type = BannerContentType::CustomText;
+        settings.footer_config.custom_text = "FOOTER".into();
+        let mut message = caption(now, "abcdefghijklmnopqrstuvwxyz");
+        message.source = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".into();
+        message.additional_translations = vec![(
+            "ja".into(),
+            "あいうえおかきくけこさしすせそたちつてとなにぬねの".into(),
+        )];
+        let old = caption(now - Duration::from_secs(1), "EVICTED");
+        let messages = [old, message.clone()];
+        let mut renderer = ChatboxRenderer::default();
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText::default();
+        let first = renderer.render(&messages, &[], None, &settings, &metrics, &lyrics, now);
+        assert!(first.contains("🎤 ABC"));
+        assert!(first.contains("\nabc"));
+        assert!(first.contains("\nあいう"));
+        for step in 0..=23 {
+            let text = renderer.render(
+                &messages,
+                &[],
+                None,
+                &settings,
+                &metrics,
+                &lyrics,
+                now + Duration::from_millis(step * 600),
+            );
+            assert!(text.starts_with("HEADER\n🎤 "));
+            assert!(text.ends_with("\nFOOTER"));
+            assert!(!text.contains("EVICTED"));
+            assert!(text.chars().count() <= settings.text_limit());
+            assert_eq!(text.lines().count(), 5);
+        }
+        let tail = renderer.render(
+            &messages,
+            &[],
+            None,
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(14),
+        );
+        assert!(tail.contains("XYZ\n"));
+        assert!(tail.contains("xyz\n"));
+        assert!(tail.contains("ぬねの\n"));
+        assert_ne!(first, tail);
+    }
+
+    #[test]
+    fn manual_scroll_keeps_newer_caption_space_and_resets_on_content_or_budget_changes() {
+        let now = Instant::now();
+        let mut settings = OscSettings {
+            max_text_length: 22,
+            ..Default::default()
+        };
+        let mut manual = ManualMessage {
+            text: "AA BB CC DD EE FF GG HH II JJ KK LL MM NN OO PP".into(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        let speech = [caption(now + Duration::from_millis(1), "固定译文")];
+        let mut renderer = ChatboxRenderer::default();
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText::default();
+        let first = renderer.render(
+            &speech,
+            &[],
+            Some(&manual),
+            &settings,
+            &metrics,
+            &lyrics,
+            now,
+        );
+        for second in 1..=13 {
+            let text = renderer.render(
+                &speech,
+                &[],
+                Some(&manual),
+                &settings,
+                &metrics,
+                &lyrics,
+                now + Duration::from_secs(second),
+            );
+            assert!(text.starts_with("🎤 固定译文\n💬 "));
+            assert!(text.chars().count() <= 22);
+        }
+        let tail = renderer.render(
+            &speech,
+            &[],
+            Some(&manual),
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(13),
+        );
+        assert!(tail.ends_with("OO PP"));
+        assert_ne!(first, tail);
+
+        settings.max_text_length = 24;
+        let resized = renderer.render(
+            &speech,
+            &[],
+            Some(&manual),
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(13),
+        );
+        assert!(resized.contains("💬 AA BB"));
+        manual.text = "新内容需要重新从开头展示而不是继承旧内容的滚动位置".into();
+        let replaced = renderer.render(
+            &speech,
+            &[],
+            Some(&manual),
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(14),
+        );
+        assert!(replaced.contains("💬 新内容"));
+        assert!(renderer.needs_refresh());
+        assert!(
+            renderer
+                .render(
+                    &[],
+                    &[],
+                    None,
+                    &settings,
+                    &metrics,
+                    &lyrics,
+                    now + Duration::from_secs(15)
+                )
+                .is_empty()
+        );
+        assert!(!renderer.needs_refresh());
+    }
+
+    #[test]
+    fn persistent_banner_scrolls_only_inside_its_remaining_budget() {
+        let now = Instant::now();
+        let mut settings = OscSettings {
+            max_text_length: 12,
+            persistent_banners: true,
+            ..Default::default()
+        };
+        settings.header_config.content_type = BannerContentType::CustomText;
+        settings.header_config.custom_text = "固定".into();
+        settings.footer_config.content_type = BannerContentType::CustomText;
+        settings.footer_config.custom_text = "ABCDEFGHIJKLMNOPQRST".into();
+        let mut renderer = ChatboxRenderer::default();
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText::default();
+        let first = renderer.render(&[], &[], None, &settings, &metrics, &lyrics, now);
+        let later = renderer.render(
+            &[],
+            &[],
+            None,
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(first, "固定\nABCDEFGHI");
+        assert_eq!(later, "固定\nEFGHIJKLM");
+        renderer.clear();
+        assert!(!renderer.needs_refresh());
+        assert_eq!(
+            renderer.render(
+                &[],
+                &[],
+                None,
+                &settings,
+                &metrics,
+                &lyrics,
+                now + Duration::from_secs(7)
+            ),
+            first
+        );
+    }
+
+    #[test]
+    fn already_windowed_lyrics_are_not_scrolled_again_beside_a_custom_banner() {
+        let now = Instant::now();
+        let mut settings = OscSettings {
+            max_text_length: 144,
+            persistent_banners: true,
+            ..Default::default()
+        };
+        settings.header_config.content_type = BannerContentType::CustomText;
+        settings.header_config.custom_text = "H".repeat(130);
+        settings.footer_config.content_type = BannerContentType::Lyrics;
+        let lyrics = LyricsText {
+            title: String::new(),
+            lyric: "🎵 ABCDEFGHIJKLMNOPQRST".into(),
+            ..Default::default()
+        };
+        let metrics = SystemMetrics::default();
+        let mut renderer = ChatboxRenderer::default();
+        let first = renderer.render(&[], &[], None, &settings, &metrics, &lyrics, now);
+        let later = renderer.render(
+            &[],
+            &[],
+            None,
+            &settings,
+            &metrics,
+            &lyrics,
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(first, later);
+        assert!(first.ends_with("\n🎵 ABCDEFGHIJK"));
+        assert_eq!(first.chars().count(), 144);
+        assert!(!renderer.needs_refresh());
+    }
+
+    #[test]
+    fn every_scroll_frame_respects_small_budgets_and_line_limits() {
+        let now = Instant::now();
+        let mut message = caption(now, &"译文👩‍💻e\u{301} ".repeat(30));
+        message.source = "原文🇨🇳\n".repeat(30);
+        message.additional_translations = (0..10)
+            .map(|i| (i.to_string(), "extra translation ".repeat(20)))
+            .collect();
+        let manual = ManualMessage {
+            text: "手动👩‍💻消息\n".repeat(30),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText {
+            title: "🎵 歌名".into(),
+            lyric: "🎵 歌词".into(),
+            ..Default::default()
+        };
+        for limit in [0, 1, 2, 3, 4, 8, 12, 24, 48, 144] {
+            for format_mode in [
+                OscFormatMode::TargetOnly,
+                OscFormatMode::BilingualSourceFirst,
+                OscFormatMode::BilingualTargetFirst,
+                OscFormatMode::Inline,
+            ] {
+                let mut settings = OscSettings {
+                    max_text_length: limit,
+                    format_mode,
+                    ..Default::default()
+                };
+                settings.header_config.content_type = BannerContentType::Lyrics;
+                settings.footer_config.content_type = BannerContentType::Lyrics;
+                for manual in [None, Some(&manual)] {
+                    let mut renderer = ChatboxRenderer::default();
+                    for second in [0, 3, 7, 13] {
+                        let text = renderer.render(
+                            std::slice::from_ref(&message),
+                            &[],
+                            manual,
+                            &settings,
+                            &metrics,
+                            &lyrics,
+                            now + Duration::from_secs(second),
+                        );
+                        assert!(text.chars().count() <= limit, "limit {limit}: {text:?}");
+                        assert!(text.lines().count() <= settings.line_limit());
+                        assert_eq!(
+                            text,
+                            compose_chatbox(
+                                &renderer.regions.header,
+                                &renderer.regions.body,
+                                &renderer.regions.footer,
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn lyrics_split_between_banners_with_a_single_region_fallback() {
@@ -646,6 +1414,7 @@ mod tests {
                 let lyrics = LyricsText {
                     title: "🎵 歌名 · 歌手".into(),
                     lyric: lyric.into(),
+                    ..Default::default()
                 };
                 assert_eq!(
                     build_chatbox_text(&[], &[], None, &settings, &metrics, &lyrics),
@@ -669,6 +1438,7 @@ mod tests {
         let lyrics = LyricsText {
             title: "🎵 歌名 · 歌手".into(),
             lyric: "🎵 当前歌词".into(),
+            ..Default::default()
         };
         let speech = HistoryMessage {
             stream_id: 1,
@@ -704,6 +1474,7 @@ mod tests {
         let lyrics = LyricsText {
             title: format!("🎵 {}", "歌名".repeat(50)),
             lyric: format!("🎵 {}", "歌词".repeat(50)),
+            ..Default::default()
         };
         for limit in [0, 1, 6, 24, 48, 144] {
             settings.max_text_length = limit;

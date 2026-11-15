@@ -1,8 +1,7 @@
 //! Shared resources are prepared by the first consumer that needs them.
 use crate::{
     BackendState, OnnxRuntimeDiagnostic, RuntimeLayout, TtsAdapter, VoiceLibrary,
-    initialize_managed_onnx_runtime, runtime_diagnostic, start_llama_servers,
-    wait_for_model_servers,
+    initialize_managed_onnx_runtime, model_service::ModelService, runtime_diagnostic,
 };
 use std::sync::Arc;
 use xrtranslate_assets::ModelCapability;
@@ -10,7 +9,7 @@ use xrtranslate_assets::ModelCapability;
 pub(crate) struct TextResources {
     plan: crate::NativeProviderPlan,
     inference: tokio::sync::OnceCell<crate::NativeInference>,
-    _processes: Vec<crate::LlamaServerProcess>,
+    _service: Option<ModelService>,
 }
 
 pub(crate) struct SpeechResources {
@@ -35,22 +34,21 @@ impl BackendState {
                     };
                     let mut plan = crate::NativeProviderPlan::resolve(&config, &self.project_root)?;
                     plan.check_capability_assets(ModelCapability::Translation)?;
-                    let mut processes = Vec::new();
-                    if self.manage_models {
+                    let service = if self.manage_models {
                         crate::assign_managed_ports(&mut plan)?;
-                        processes = start_llama_servers(&plan, ModelCapability::Translation)?;
-                        wait_for_model_servers(
-                            &plan,
-                            self.model_start_timeout,
-                            &mut processes,
+                        ModelService::start(
+                            Arc::new(plan.clone()),
                             ModelCapability::Translation,
+                            self.model_start_timeout,
                         )
-                        .await?;
-                    }
+                        .await?
+                    } else {
+                        None
+                    };
                     Ok::<_, String>(Some(TextResources {
                         plan,
                         inference: Default::default(),
-                        _processes: processes,
+                        _service: service,
                     }))
                 })
                 .await?
@@ -90,21 +88,16 @@ impl BackendState {
                 self.model_plan
                     .check_capability_assets(ModelCapability::Asr)?;
                 self.prepare_onnx().await?;
-                let mut processes = if self.manage_models {
-                    start_llama_servers(&self.model_plan, ModelCapability::Asr)?
-                } else {
-                    Vec::new()
-                };
                 if self.manage_models {
-                    wait_for_model_servers(
-                        &self.model_plan,
-                        self.model_start_timeout,
-                        &mut processes,
+                    ModelService::start(
+                        Arc::clone(&self.model_plan),
                         ModelCapability::Asr,
+                        self.model_start_timeout,
                     )
-                    .await?;
+                    .await
+                } else {
+                    Ok(None)
                 }
-                Ok::<_, String>(processes)
             })
             .await
             .map(|_| ())

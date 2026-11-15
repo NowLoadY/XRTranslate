@@ -1,9 +1,10 @@
+pub use super::banners::{BannerConfig, BannerContentType};
 use super::chatbox::{
-    HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
+    ChatboxRenderer, HistoryMessage, ManualMessage, render_entry, sanitize_chatbox_segment,
 };
 use crate::client_settings::CaptureSource;
 use crate::session_coordinator::AudioSourceFilter;
-pub use crate::text_output::{BannerConfig, BannerContentType, MessageFormat as OscFormatMode};
+pub use crate::text_output::MessageFormat as OscFormatMode;
 use crate::text_output::{LyricsText, TextOutputHandle};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
@@ -95,6 +96,8 @@ pub struct OscSettings {
     pub history_ttl_seconds: f64,
     pub header_config: BannerConfig,
     pub footer_config: BannerConfig,
+    #[serde(default)]
+    pub idle_content: IdleContent,
     /// Positive values delay lyrics; negative values advance them.
     #[serde(default = "default_lyric_offset_seconds")]
     pub lyric_offset_seconds: f64,
@@ -107,6 +110,10 @@ pub struct OscSettings {
     pub show_speaker_number: bool,
     #[serde(default = "default_microphone_prefix")]
     pub microphone_prefix: String,
+    #[serde(default)]
+    pub microphone_suffix_enabled: bool,
+    #[serde(default)]
+    pub microphone_suffix: String,
     #[serde(default = "default_system_audio_prefix")]
     pub system_audio_prefix: String,
     #[serde(default = "default_typing_prefix")]
@@ -115,6 +122,25 @@ pub struct OscSettings {
 
 fn default_microphone_prefix() -> String {
     "🎤".into()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdleContent {
+    #[default]
+    None,
+    Lyrics,
+}
+
+impl IdleContent {
+    pub fn label(self, language: crate::i18n::UiLanguage) -> &'static str {
+        crate::i18n::tr(
+            language,
+            match self {
+                Self::None => "None",
+                Self::Lyrics => "Lyrics",
+            },
+        )
+    }
 }
 fn default_system_audio_prefix() -> String {
     "🔊".into()
@@ -141,12 +167,15 @@ impl Default for OscSettings {
             history_ttl_seconds: 15.0,
             header_config: BannerConfig::default(),
             footer_config: BannerConfig::default(),
+            idle_content: IdleContent::None,
             lyric_offset_seconds: default_lyric_offset_seconds(),
             persistent_banners: false,
             format_mode: OscFormatMode::BilingualSourceFirst,
             message_separator: OscMessageSeparator::default(),
             show_speaker_number: false,
             microphone_prefix: default_microphone_prefix(),
+            microphone_suffix_enabled: false,
+            microphone_suffix: String::new(),
             system_audio_prefix: default_system_audio_prefix(),
             typing_prefix: default_typing_prefix(),
         }
@@ -192,7 +221,8 @@ impl OscSettings {
     }
 
     pub(crate) fn prepare_voice_text(&self, text: &str) -> Result<String, String> {
-        let text = sanitize_chatbox_segment(text);
+        let mut text = sanitize_chatbox_segment(text);
+        self.append_microphone_suffix(&mut text, OscInputSource::Microphone);
         self.validate_voice_text(&text)?;
         Ok(text)
     }
@@ -220,14 +250,34 @@ impl OscSettings {
         Ok(())
     }
 
-    /// Reserve at most one third of the chatbox for lyrics, capped at 48
-    /// characters. The remaining space belongs to speech and other banners.
+    /// Single-line banner budget. Idle multi-line lyrics request cue context
+    /// separately and use the space left by the rendered banners.
     pub(crate) fn lyric_budget(&self) -> Option<usize> {
         let slots = [&self.header_config, &self.footer_config]
             .into_iter()
             .filter(|banner| banner.content_type == BannerContentType::Lyrics)
             .count();
-        (self.enabled && slots > 0).then(|| (self.text_limit() / 3).min(48) / slots)
+        if !self.enabled {
+            return None;
+        }
+        let banner_budget = (self.text_limit() / 3).min(48) / slots.max(1);
+        if self.idle_content == IdleContent::Lyrics {
+            Some(if slots == 0 {
+                self.text_limit().min(24)
+            } else {
+                banner_budget.max(1)
+            })
+        } else {
+            (slots > 0).then_some(banner_budget)
+        }
+    }
+
+    pub(crate) fn lyric_window_lines(&self) -> usize {
+        if self.enabled && self.idle_content == IdleContent::Lyrics {
+            self.line_limit().min(self.text_limit()).min(32)
+        } else {
+            0
+        }
     }
 
     pub(crate) fn lyric_offset_ms(&self) -> i32 {
@@ -304,6 +354,15 @@ impl OscSettings {
         }
     }
 
+    pub(super) fn append_microphone_suffix(&self, text: &mut String, source: OscInputSource) {
+        if source == OscInputSource::Microphone
+            && self.microphone_suffix_enabled
+            && !text.is_empty()
+        {
+            text.push_str(&self.microphone_suffix);
+        }
+    }
+
     fn accepts_source(&self, source: OscInputSource) -> bool {
         match source {
             OscInputSource::Microphone => self
@@ -339,6 +398,7 @@ fn project_config_candidates() -> Vec<PathBuf> {
 
 struct QueuedMessage {
     text: String,
+    regions: ChatboxRegions,
     typing: bool,
     notify: bool,
     expires_at: Option<Instant>,
@@ -562,13 +622,24 @@ impl OscHandle {
 pub(super) struct RuntimeStatus {
     pub(super) last_error: Option<String>,
     chatbox_text: String,
+    chatbox_regions: ChatboxRegions,
     chatbox_typing: bool,
     next_message_expires_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct ChatboxRegions {
+    pub header: String,
+    pub body: String,
+    pub footer: String,
+    pub unified_lyrics: bool,
+    pub pet_stage: bool,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct ChatboxPreview {
     pub text: String,
+    pub regions: ChatboxRegions,
     pub typing: bool,
     pub next_message_expires_in: Option<Duration>,
 }
@@ -626,6 +697,7 @@ impl OscManager {
         let status = self.status.lock();
         ChatboxPreview {
             text: status.chatbox_text.clone(),
+            regions: status.chatbox_regions.clone(),
             typing: status.chatbox_typing,
             next_message_expires_in: status
                 .next_message_expires_at
@@ -683,6 +755,8 @@ fn dispatch_loop(
     let mut published_voice: Option<PublishedVoice> = None;
     let mut last_voice_operation: Option<u64> = None;
     let mut lyrics = LyricsText::default();
+    let mut renderer = ChatboxRenderer::default();
+    let mut next_scroll_refresh = None;
     // Keep only the latest snapshot, while preserving a final notification.
     let mut pending: Option<bool> = None;
     let mut clear_pending = false;
@@ -699,7 +773,10 @@ fn dispatch_loop(
                 .chain(previews.iter().map(|entry| entry.expires_at))
                 .chain(published_voice.iter().map(|entry| entry.expires_at))
                 .min(),
-            next_banner_refresh,
+            next_banner_refresh
+                .into_iter()
+                .chain(next_scroll_refresh)
+                .min(),
         );
         let command = rx.recv_timeout(wait);
         let now = Instant::now();
@@ -892,6 +969,8 @@ fn dispatch_loop(
             }
             Ok(Command::MicrophoneReviewChanged) => {}
             Ok(Command::Clear) => {
+                renderer.clear();
+                next_scroll_refresh = None;
                 cancel_voice_publication(&mut pending_voice, "Chatbox output was cleared");
                 published_voice = None;
                 previews.clear();
@@ -908,6 +987,8 @@ fn dispatch_loop(
                     || settings.enabled != updated.enabled;
                 force_send |= destination_changed;
                 if settings.enabled && !updated.enabled {
+                    renderer.clear();
+                    next_scroll_refresh = None;
                     cancel_voice_publication(&mut pending_voice, "OSC Chatbox output was disabled");
                     published_voice = None;
                     let _ =
@@ -974,6 +1055,11 @@ fn dispatch_loop(
             force_send = true;
             changed = true;
         }
+        if next_scroll_refresh.is_some_and(|deadline| now >= deadline) {
+            next_scroll_refresh = None;
+            // Animation is a silent revision, coalesced with ordinary updates.
+            changed = true;
+        }
         if changed {
             if settings.enabled {
                 pending = Some(pending.unwrap_or(false) || notify);
@@ -987,6 +1073,10 @@ fn dispatch_loop(
             let publication = pending_voice.take().unwrap();
             let expires_at = Instant::now() + Duration::from_secs_f64(settings.history_ttl_seconds);
             let message = QueuedMessage {
+                regions: ChatboxRegions {
+                    body: publication.text.clone(),
+                    ..Default::default()
+                },
                 text: publication.text,
                 typing: false,
                 notify: true,
@@ -999,6 +1089,8 @@ fn dispatch_loop(
                 .and_then(|()| send_message(&settings, &message, &status, &client, destination));
             last_send = Instant::now();
             if result.is_ok() {
+                renderer.clear();
+                next_scroll_refresh = None;
                 last_voice_operation = Some(publication.operation);
                 published_voice = Some(PublishedVoice {
                     text: message.text,
@@ -1010,19 +1102,25 @@ fn dispatch_loop(
         }
         if pending.is_some() && (last_send.elapsed() >= COOLDOWN || shutdown) {
             let notify = pending.take().unwrap_or(false);
+            next_scroll_refresh = None;
             let message = if std::mem::take(&mut clear_pending) {
                 clear_message()
             } else if let Some(voice) = &published_voice {
+                renderer.pause_ambient();
                 // Automatic sources keep updating in the background. The
                 // accepted voice body owns the visible Chatbox until its TTL.
                 QueuedMessage {
                     text: voice.text.clone(),
+                    regions: ChatboxRegions {
+                        body: voice.text.clone(),
+                        ..Default::default()
+                    },
                     typing: false,
                     notify: false,
                     expires_at: Some(voice.expires_at),
                 }
             } else {
-                build_queued_message(
+                let message = build_queued_message(
                     &history,
                     &live.iter().chain(&previews).cloned().collect::<Vec<_>>(),
                     manual_message.as_ref(),
@@ -1031,11 +1129,18 @@ fn dispatch_loop(
                     &lyrics,
                     !live.is_empty() || !previews.is_empty(),
                     notify,
-                )
+                    &mut renderer,
+                    now,
+                );
+                next_scroll_refresh = renderer.needs_refresh().then_some(now + COOLDOWN);
+                message
             };
             let unchanged = {
                 let mut runtime = status.lock();
                 runtime.next_message_expires_at = message.expires_at;
+                if runtime.chatbox_text == message.text {
+                    runtime.chatbox_regions = message.regions.clone();
+                }
                 runtime.chatbox_text == message.text && runtime.chatbox_typing == message.typing
             };
             if !unchanged || message.notify || (force_send && published_voice.is_none()) {
@@ -1060,6 +1165,7 @@ fn cancel_voice_publication(pending: &mut Option<VoicePublication>, reason: &str
 fn clear_message() -> QueuedMessage {
     QueuedMessage {
         text: String::new(),
+        regions: ChatboxRegions::default(),
         typing: false,
         notify: false,
         expires_at: None,
@@ -1078,6 +1184,7 @@ fn send_message(
     match &result {
         Ok(()) => {
             runtime.chatbox_text.clone_from(&message.text);
+            runtime.chatbox_regions = message.regions.clone();
             runtime.chatbox_typing = message.typing;
             runtime.next_message_expires_at = message.expires_at;
         }
@@ -1147,9 +1254,21 @@ fn build_queued_message(
     lyrics: &LyricsText,
     typing: bool,
     notify: bool,
+    renderer: &mut ChatboxRenderer,
+    now: Instant,
 ) -> QueuedMessage {
+    let text = renderer.render(
+        history,
+        live,
+        manual_message,
+        settings,
+        metrics,
+        lyrics,
+        now,
+    );
     QueuedMessage {
-        text: build_chatbox_text(history, live, manual_message, settings, metrics, lyrics),
+        text,
+        regions: renderer.regions.clone(),
         typing,
         notify,
         expires_at: next_content_expiry(history, live, manual_message),
@@ -1181,13 +1300,22 @@ fn banner_refresh_deadline(
     if !settings.enabled {
         return None;
     }
+    if super::banners::pet_budget(
+        [&settings.header_config, &settings.footer_config],
+        settings.text_limit(),
+    ) >= 3
+    {
+        return Some(now + super::pet::REFRESH_INTERVAL);
+    }
     let persistent = settings.persistent_banners
         && [&settings.header_config, &settings.footer_config]
             .into_iter()
             .any(|banner| {
                 !matches!(
                     banner.content_type,
-                    BannerContentType::None | BannerContentType::Lyrics
+                    BannerContentType::None
+                        | BannerContentType::Lyrics
+                        | BannerContentType::TextPet
                 )
             });
     if persistent {
@@ -1271,13 +1399,130 @@ fn expire_chatbox_entries(
 fn clear_runtime_preview(status: &Mutex<RuntimeStatus>) {
     let mut runtime = status.lock();
     runtime.chatbox_text.clear();
+    runtime.chatbox_regions = ChatboxRegions::default();
     runtime.chatbox_typing = false;
     runtime.next_message_expires_at = None;
 }
 
 #[cfg(test)]
-mod settings_tests {
+#[path = "pet/runtime_tests.rs"]
+mod pet_tests;
+
+#[cfg(test)]
+mod tests {
     use super::*;
+
+    #[test]
+    fn reviewed_voice_includes_literal_suffix_in_its_preview_and_budget() {
+        let mut settings = OscSettings {
+            enabled: true,
+            microphone_suffix_enabled: true,
+            microphone_suffix: " 喵。".into(),
+            max_text_length: 8,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert_eq!(settings.prepare_voice_text("Hello.").unwrap(), "Hello 喵。");
+        }
+        assert!(settings.prepare_voice_text("").is_err());
+        settings.max_text_length = 7;
+        assert!(settings.prepare_voice_text("Hello.").is_err());
+        settings.microphone_suffix_enabled = false;
+        assert_eq!(settings.prepare_voice_text("Hello.").unwrap(), "Hello");
+    }
+
+    #[test]
+    fn suffix_preferences_default_off_and_preserve_literal_text_when_disabled() {
+        let mut legacy = serde_json::to_value(OscSettings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("microphone_suffix");
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("microphone_suffix_enabled");
+        let mut settings: OscSettings = serde_json::from_value(legacy).unwrap();
+        assert!(!settings.microphone_suffix_enabled);
+        assert!(settings.microphone_suffix.is_empty());
+        settings.microphone_suffix = " 喵。".into();
+        for enabled in [true, false] {
+            settings.microphone_suffix_enabled = enabled;
+            let restored: OscSettings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.microphone_suffix, " 喵。");
+            assert_eq!(restored.microphone_suffix_enabled, enabled);
+        }
+    }
+
+    #[test]
+    fn scrolling_revisions_are_silent_and_expire_with_the_original_message() {
+        let now = Instant::now();
+        let settings = OscSettings {
+            max_text_length: 10,
+            history_ttl_seconds: 15.0,
+            ..Default::default()
+        };
+        let mut manual = Some(ManualMessage {
+            text: "ABCDEFGHIJKLMNOPQRSTUVWXYZ".into(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        });
+        let mut renderer = ChatboxRenderer::default();
+        let metrics = crate::text_output::SystemMetrics::default();
+        let lyrics = LyricsText::default();
+        let first = build_queued_message(
+            &[],
+            &[],
+            manual.as_ref(),
+            &settings,
+            &metrics,
+            &lyrics,
+            false,
+            true,
+            &mut renderer,
+            now,
+        );
+        assert!(renderer.needs_refresh());
+        // No incoming message or persistent banner is needed to wake the worker.
+        let wait = dispatch_wait(false, now, first.expires_at, Some(now + COOLDOWN));
+        assert!(wait <= COOLDOWN);
+        let later = build_queued_message(
+            &[],
+            &[],
+            manual.as_ref(),
+            &settings,
+            &metrics,
+            &lyrics,
+            false,
+            false,
+            &mut renderer,
+            now + Duration::from_secs(13),
+        );
+        assert_ne!(first.text, later.text);
+        assert!(first.notify);
+        assert!(!later.notify);
+        assert_eq!(first.expires_at, later.expires_at);
+        assert!(later.text.ends_with("XYZ"));
+        assert!(refresh_chatbox_entries(
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut manual,
+            Duration::from_secs(15),
+            now + Duration::from_secs(15)
+        ));
+        let expired = build_queued_message(
+            &[],
+            &[],
+            manual.as_ref(),
+            &settings,
+            &metrics,
+            &lyrics,
+            false,
+            false,
+            &mut renderer,
+            now + Duration::from_secs(15),
+        );
+        assert!(expired.text.is_empty());
+        assert!(!renderer.needs_refresh());
+    }
 
     #[test]
     fn lyric_offset_default_and_saved_overrides_round_trip_with_osc_preferences() {

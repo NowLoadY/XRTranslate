@@ -33,6 +33,9 @@ pub(crate) struct DisplayRequest {
     pub output: String,
     pub budget: usize,
     pub offset_ms: i32,
+    /// Optional multi-line context; old consumers request only title/current cue.
+    #[serde(default)]
+    pub window_lines: usize,
 }
 
 pub(crate) struct LyricsPlugin {
@@ -263,6 +266,7 @@ async fn display(
                 lookup,
                 request.budget,
                 request.offset_ms,
+                request.window_lines,
                 now,
             );
             *status.lock() = next_status;
@@ -317,16 +321,19 @@ mod tests {
                     output: "avatar".to_owned(),
                     budget: 24,
                     offset_ms: 0,
+                    window_lines: 0,
                 },
                 DisplayRequest {
                     output: "osc".to_owned(),
                     budget: 24,
                     offset_ms,
+                    window_lines: 0,
                 },
                 DisplayRequest {
                     output: "chilloutvr_osc".to_owned(),
                     budget: 24,
                     offset_ms: 100,
+                    window_lines: 0,
                 },
             ]
         };

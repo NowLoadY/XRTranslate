@@ -151,9 +151,15 @@ impl VoiceInbox {
     }
 }
 
+#[derive(Clone, PartialEq)]
+struct VoiceOutput {
+    tool: String,
+    config: serde_json::Value,
+}
+
 struct Preparation {
     text: String,
-    tool: String,
+    output: VoiceOutput,
     request: crate::plugin_host::Call,
     result: Option<Result<String, String>>,
 }
@@ -175,10 +181,13 @@ impl VoiceHost {
     }
 }
 impl XRTranslateApp {
-    fn voice_output(&self) -> Option<String> {
-        self.plugin_host
-            .states()
-            .find_map(|state| state["voice_output"].as_str().map(str::to_owned))
+    fn voice_output(&self) -> Option<VoiceOutput> {
+        self.plugin_host.states().find_map(|state| {
+            state["voice_output"].as_str().map(|tool| VoiceOutput {
+                tool: tool.to_owned(),
+                config: state["voice_output_config"].clone(),
+            })
+        })
     }
     pub(crate) fn refresh_microphone_sync(&self) {
         let receiver = self
@@ -237,7 +246,7 @@ impl XRTranslateApp {
                         self.voice_interaction.publication = Some((
                             operation,
                             crate::plugin_host::Call::new(
-                                tool,
+                                tool.tool,
                                 serde_json::json!({"action":"publish","operation":operation,"text":text}),
                             ),
                         ));
@@ -352,18 +361,18 @@ impl XRTranslateApp {
                 .voice_interaction
                 .preparation
                 .as_ref()
-                .is_none_or(|p| p.text != snapshot.text || &p.tool != tool)
+                .is_none_or(|p| p.text != snapshot.text || &p.output != tool)
             {
                 if let Some(previous) = self.voice_interaction.preparation.take() {
                     previous.request.cancel(&mut self.plugin_host);
                 }
                 self.voice_interaction.preparation = Some(Preparation {
                     request: crate::plugin_host::Call::new(
-                        tool.clone(),
+                        tool.tool.clone(),
                         serde_json::json!({"action":"prepare","text":snapshot.text}),
                     ),
                     text: snapshot.text.clone(),
-                    tool: tool.clone(),
+                    output: tool.clone(),
                     result: None,
                 });
             }
