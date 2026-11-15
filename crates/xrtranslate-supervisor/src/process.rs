@@ -107,6 +107,41 @@ impl LlamaServerProcess {
 
 const STDERR_TAIL_BYTES: usize = 8192;
 
+/// Keeps the dedicated backend responsive independently of its parent window's focus.
+#[cfg(windows)]
+pub fn configure_inference_performance() -> io::Result<()> {
+    // GetCurrentProcess returns a borrowed pseudo-handle; it must not be closed.
+    set_inference_performance(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+}
+
+#[cfg(windows)]
+fn set_inference_performance(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<()> {
+    use windows_sys::Win32::System::Threading::{
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, SetProcessInformation,
+    };
+    // HighQoS prevents automatic background energy throttling. CPU priority,
+    // affinity and the system power plan retain their normal settings.
+    let policy = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    };
+    // The process handle is live and the initialized structure matches the API's size.
+    if unsafe {
+        SetProcessInformation(
+            process,
+            ProcessPowerThrottling,
+            std::ptr::from_ref(&policy).cast(),
+            std::mem::size_of_val(&policy) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn retain_stderr(tail: &mut VecDeque<u8>, bytes: &[u8]) {
     tail.extend(bytes.iter().copied());
     let overflow = tail.len().saturating_sub(STDERR_TAIL_BYTES);
@@ -271,6 +306,13 @@ impl LlamaServerLauncher for StdLlamaServerLauncher {
             }
         }
         let child = child_command.spawn()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            if let Err(error) = set_inference_performance(child.as_raw_handle()) {
+                eprintln!("Could not set model process performance policy: {error}");
+            }
+        }
         LlamaServerProcess::new(child, spec).map_err(SupervisorError::Spawn)
     }
 }
@@ -399,5 +441,86 @@ mod tests {
     fn stderr_child() {
         eprintln!("cudaMalloc failed: out of memory");
         std::process::exit(1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inference_performance_disables_energy_throttling_without_raising_priority() {
+        use std::os::windows::{io::AsRawHandle, process::CommandExt};
+        use windows_sys::Win32::System::Threading::{
+            GetPriorityClass, GetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            ProcessPowerThrottling,
+        };
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "process::tests::performance_child"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let handle = child.as_raw_handle();
+        // The child waits for stdin EOF, keeping this handle valid for both queries.
+        let priority = unsafe { GetPriorityClass(handle) };
+        let result = set_inference_performance(handle).and_then(|()| {
+            let mut policy = PROCESS_POWER_THROTTLING_STATE {
+                Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                ..Default::default()
+            };
+            let success = unsafe {
+                GetProcessInformation(
+                    handle,
+                    ProcessPowerThrottling,
+                    std::ptr::from_mut(&mut policy).cast(),
+                    std::mem::size_of_val(&policy) as u32,
+                )
+            };
+            if success == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok((policy, unsafe { GetPriorityClass(handle) }))
+        });
+        drop(child.stdin.take());
+        let status = child.wait().unwrap();
+        let (policy, updated_priority) = result.unwrap();
+        assert!(status.success());
+        assert_ne!(priority, 0);
+        assert_eq!(priority, updated_priority);
+        assert_eq!(
+            policy.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        );
+        assert_eq!(
+            policy.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inference_performance_reports_denied_access() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::{
+            Foundation::ERROR_ACCESS_DENIED,
+            System::Threading::{
+                GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            },
+        };
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, GetCurrentProcessId()) };
+        assert!(!handle.is_null());
+        // Own the successful OpenProcess handle so it closes even if an assertion fails.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let error = set_inference_performance(handle.as_raw_handle()).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "subprocess fixture"]
+    fn performance_child() {
+        configure_inference_performance().unwrap();
+        let _ = std::io::stdin().read(&mut [0u8]);
     }
 }

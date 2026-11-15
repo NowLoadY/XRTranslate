@@ -497,6 +497,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(command) = &args.command {
         return diagnostics::run(&args, command).await;
     }
+    #[cfg(windows)]
+    if let Err(error) = xrtranslate_supervisor::configure_inference_performance() {
+        warn!(%error, "Could not set inference process performance policy");
+    }
     info!("XRTranslate backend started");
     let configured_root = args
         .config

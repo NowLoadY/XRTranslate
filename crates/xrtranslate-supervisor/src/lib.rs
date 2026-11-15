@@ -14,6 +14,8 @@ mod spec;
 
 pub use command::LlamaServerCommand;
 pub use health::{HealthCheckRequest, HealthCheckStatus, LlamaHealthChecker};
+#[cfg(windows)]
+pub use process::configure_inference_performance;
 pub use process::{
     LlamaServerLauncher, LlamaServerProcess, LlamaServerProcessHandle, StdLlamaServerLauncher,
     SupervisorError,

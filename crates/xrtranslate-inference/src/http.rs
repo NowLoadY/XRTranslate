@@ -9,6 +9,8 @@ use serde_json::Value;
 
 use crate::TransportError;
 
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// An HTTP request made by an inference adapter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpRequest {
@@ -89,14 +91,14 @@ impl ReqwestClient {
     /// Account credentials may only be sent to the connector's fixed official endpoint.
     pub(crate) fn for_account() -> Result<Self, TransportError> {
         client_builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("XRTranslate/", env!("CARGO_PKG_VERSION")))
             .build()
             .map(|client| Self { client })
             .map_err(|_| TransportError::new("client", "Cannot create account service connection"))
     }
-    /// Builds a client with the request timeout used by the legacy backend.
+    /// Builds a client with a total request deadline, including the response body.
     pub fn new(timeout: Duration) -> Result<Self, TransportError> {
         client_builder()
             .timeout(timeout)
@@ -118,6 +120,7 @@ impl ReqwestClient {
     pub fn new_direct(timeout: Duration) -> Result<Self, TransportError> {
         client_builder()
             .no_proxy()
+            .connect_timeout(Duration::from_secs(3))
             .timeout(timeout)
             .pool_idle_timeout(Duration::from_secs(3))
             .tcp_keepalive(Duration::from_secs(5))
@@ -127,14 +130,14 @@ impl ReqwestClient {
             .map_err(|error| TransportError::new("client", error.to_string()))
     }
 
-    /// The standard 30-second client for online services.
+    /// The default request deadline for online inference.
     pub fn with_default_timeout() -> Result<Self, TransportError> {
-        Self::new(Duration::from_secs(30))
+        Self::new(DEFAULT_REQUEST_TIMEOUT)
     }
 
-    /// The standard proxy-bypassing client for local `llama-server` requests.
+    /// The same request deadline for proxy-bypassing local inference.
     pub fn with_default_direct_timeout() -> Result<Self, TransportError> {
-        Self::new_direct(Duration::from_secs(30))
+        Self::new_direct(DEFAULT_REQUEST_TIMEOUT)
     }
 }
 
@@ -182,8 +185,11 @@ impl ReqwestClient {
                 Ok(response) => return Ok(response),
                 Err(error) => {
                     let kind = request_error_kind(&error);
-                    let should_retry =
-                        attempt + 1 < MAX_ATTEMPTS && (error.is_connect() || error.is_request());
+                    // A timed-out request may already be computing. Replaying it
+                    // adds hidden latency and can duplicate expensive model work.
+                    let should_retry = attempt + 1 < MAX_ATTEMPTS
+                        && !error.is_timeout()
+                        && (error.is_connect() || error.is_request());
                     last_error = Some(transport_error(error));
                     if !should_retry {
                         break;
@@ -450,6 +456,7 @@ mod tests {
             });
             let client = ReqwestClient::new_direct(Duration::from_millis(100)).unwrap();
             let request = HttpRequest::post_json(&endpoint, Value::Null);
+            let started = Instant::now();
             let result = if streaming {
                 client
                     .execute_streaming(request, |_| {
@@ -459,13 +466,115 @@ mod tests {
             } else {
                 client.execute(request).await
             };
+            let elapsed = started.elapsed();
             let _ = release.send(());
             server.join().unwrap();
             let source = result.unwrap_err();
             assert_eq!(source.kind, "timeout");
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "stalled reads must respect the request deadline: {elapsed:?}"
+            );
             assert!(source.message.contains("timed out"), "{source}");
             assert!(crate::InferenceError::Transport { endpoint, source }.is_retryable());
         }
+    }
+
+    #[tokio::test]
+    async fn response_progress_does_not_extend_the_request_deadline() {
+        for streaming in [false, true] {
+            for completes in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                let server = thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    socket.set_nodelay(true).unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    loop {
+                        let mut line = String::new();
+                        assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n")
+                        .unwrap();
+                    for byte in b"hello world!" {
+                        if socket.write_all(&[*byte]).is_err() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                });
+                let total = if completes {
+                    Duration::from_secs(3)
+                } else {
+                    Duration::from_millis(250)
+                };
+                let client = ReqwestClient::new_direct(total).unwrap();
+                let request = HttpRequest::post_json(endpoint, Value::Null);
+                let started = Instant::now();
+                let mut received = Vec::new();
+                let result = if streaming {
+                    client
+                        .execute_streaming(request, |chunk| {
+                            received.extend(chunk);
+                            std::future::ready(Ok(ControlFlow::Continue(())))
+                        })
+                        .await
+                } else {
+                    client.execute(request).await
+                };
+                let elapsed = started.elapsed();
+                server.join().unwrap();
+                if completes {
+                    let response = result.unwrap();
+                    if !streaming {
+                        received = response.body.into_bytes();
+                    }
+                    assert_eq!(received, b"hello world!");
+                    assert!(
+                        elapsed < total,
+                        "completed responses must return immediately"
+                    );
+                } else {
+                    assert_eq!(result.unwrap_err().kind, "timeout");
+                    assert!(elapsed >= total);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_waiting_for_headers_times_out_without_being_replayed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(2));
+            listener.set_nonblocking(true).unwrap();
+            let mut requests = vec![socket];
+            while let Ok((socket, _)) = listener.accept() {
+                requests.push(socket);
+            }
+            requests.len()
+        });
+        let client = ReqwestClient::new_direct(Duration::from_millis(100)).unwrap();
+        let result = client
+            .execute(HttpRequest::post_json(endpoint, Value::Null))
+            .await;
+        let _ = release.send(());
+        let requests = server.join().unwrap();
+        assert_eq!(result.unwrap_err().kind, "timeout");
+        assert_eq!(
+            requests, 1,
+            "a slow model must not receive duplicate inference requests"
+        );
     }
 
     #[tokio::test]
