@@ -64,6 +64,7 @@ impl<'a> Control<'a> {
         let mut state = driver.frame_state.lock().unwrap();
         let index = state.elements.len();
         let mut element = ElementDescriptor {
+            region: state.region.clone(),
             index,
             id_hex: format!("{:016x}", id.value()),
             label: self.label.to_owned(),

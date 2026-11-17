@@ -46,6 +46,7 @@ pub struct FrameState {
     pub pending_widget_reply: Option<Sender<Response>>,
     pub location: crate::Location,
     pub elements: Vec<ElementDescriptor>,
+    pub region: Vec<crate::LocationSegment>,
     pub pending_click: Option<String>,
     pub pending_set: Option<(String, ElementValue)>,
     pub pending_page: Option<String>,
@@ -118,6 +119,7 @@ impl Driver {
                 .surface_elements
                 .insert(element.id_hex.clone(), id.into());
             let mut element = element.clone();
+            element.region.splice(0..0, state.region.clone());
             element.index = state.elements.len();
             state.elements.push(element);
         }
@@ -161,6 +163,7 @@ impl Driver {
             path: Vec::new(),
         };
         state.elements.clear();
+        state.region.clear();
         state.surface_elements.clear();
         state.action_performed_this_frame = false;
         if state

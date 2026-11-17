@@ -82,6 +82,37 @@ pub fn record_location(ui: &egui::Ui, id: impl Into<String>, label: impl Into<St
     }
 }
 
+/// Group existing controls for progressive discovery without changing layout,
+/// widget IDs or action handlers. Nested regions and embedded surfaces compose.
+pub fn region<R>(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let driver = driver();
+    if !driver.owns_context(ui.ctx()) {
+        return contents(ui);
+    }
+    struct RegionGuard(Arc<Driver>);
+    impl Drop for RegionGuard {
+        fn drop(&mut self) {
+            self.0.frame_state.lock().unwrap().region.pop();
+        }
+    }
+    driver
+        .frame_state
+        .lock()
+        .unwrap()
+        .region
+        .push(crate::LocationSegment {
+            id: id.into(),
+            label: label.into(),
+        });
+    let _guard = RegionGuard(driver);
+    contents(ui)
+}
+
 /// Expose rendered read-only values through the same component registry.
 pub fn record_output(ui: &egui::Ui, label: &str, value: ElementValue, rect: Rect) {
     Control::new(label, ElementKind::Other, value).record(

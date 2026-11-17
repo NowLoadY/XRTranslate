@@ -67,6 +67,7 @@ pub struct Player {
     subtitle: String,
     style: Option<SubtitleStyle>,
     routing: Vec<AudioChannelItem>,
+    audio: Option<PlaybackAudio>,
 }
 impl Player {
     pub fn new(client: Client, id: u64, snapshots: Snapshots) -> Result<Self, String> {
@@ -81,6 +82,7 @@ impl Player {
             subtitle: String::new(),
             style: None,
             routing: Vec::new(),
+            audio: None,
         })
     }
     fn send(&mut self, command: Command) {
@@ -107,6 +109,7 @@ impl MediaBackend for Player {
         self.style = None;
         self.subtitle.clear();
         self.routing.clear();
+        self.audio = None;
         self.snapshot = Default::default();
         Ok(())
     }
@@ -114,7 +117,13 @@ impl MediaBackend for Player {
         &self.snapshot.tracks
     }
     fn select_audio(&mut self, selection: PlaybackAudio) -> Result<(), String> {
-        self.send(Command::Audio { selection });
+        if self.audio.as_ref() != Some(&selection) {
+            self.client.event(
+                "playback",
+                json!({"id":self.id,"command":Command::Audio {selection: selection.clone()}}),
+            )?;
+            self.audio = Some(selection);
+        }
         Ok(())
     }
     fn refresh_audio(&mut self) -> Result<(), String> {
@@ -128,12 +137,14 @@ impl MediaBackend for Player {
         self.snapshot.error.take()
     }
     fn load_local_file(&mut self, path: PathBuf) -> Result<(), String> {
+        self.audio = None;
         self.send(Command::Load {
             source: MediaSource::LocalFile(path),
         });
         Ok(())
     }
     fn load_stream_url(&mut self, url: String) -> Result<(), String> {
+        self.audio = None;
         self.send(Command::Load {
             source: MediaSource::NetworkStream(url),
         });

@@ -61,6 +61,8 @@ impl ElementValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElementDescriptor {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub region: Vec<crate::LocationSegment>,
     pub index: usize,
     pub id_hex: String,
     pub label: String,

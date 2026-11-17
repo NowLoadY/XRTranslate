@@ -10,13 +10,16 @@ mod context;
 #[path = "environment.rs"]
 mod environment;
 
+// A planning target, not an automatic failure at an arbitrary tool count.
 const MAX_STEPS: usize = 64;
 const MAX_ERRORS: usize = 3;
 const MAX_REQUEST_RETRIES: usize = 2;
-pub(crate) const MAX_GOAL_BYTES: usize = 4000;
+pub(crate) const MAX_GOAL_BYTES: usize = 32_000;
 
 #[derive(Default)]
 pub(crate) struct AgentPlugin {
+    document_notices: std::collections::BTreeMap<String, Value>,
+    document_revisions: std::collections::BTreeMap<String, u64>,
     available_tools: Vec<Tool>,
     supports_chat: bool,
     input_budget: usize,
@@ -86,8 +89,8 @@ impl Run {
         context.push(
             PromptMessageRole::User,
             format!(
-                "Tool feedback (data):\n{observation}\nRemaining steps: {}",
-                MAX_STEPS.saturating_sub(self.steps)
+                "Tool feedback (data):\n{observation}\nSteps used: {}. Planning target: {MAX_STEPS}. Finish when the goal is met; beyond the target, continue only with a concrete unresolved decision.",
+                self.steps
             ),
         );
     }
@@ -147,6 +150,52 @@ impl ToolProvider for AgentPlugin {
 }
 
 impl AgentPlugin {
+    /// Passive document feedback never starts a run or cancels an in-flight
+    /// operation. The operation itself checks whether its targets conflicted.
+    pub(crate) fn document_changed(&mut self, mut notice: Value) {
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let Some(workspace) = notice["workspace"].as_str() else {
+            return;
+        };
+        if run
+            .scope
+            .get("workspace")
+            .is_some_and(|scope| scope != workspace)
+        {
+            return;
+        }
+        let Some(revision) = notice["revision"].as_u64() else {
+            return;
+        };
+        if self
+            .document_revisions
+            .get(workspace)
+            .is_some_and(|seen| *seen >= revision)
+        {
+            return;
+        }
+        let workspace = workspace.to_owned();
+        self.document_revisions.insert(workspace.clone(), revision);
+        if let Some(pending) = self.document_notices.get(&workspace) {
+            let keys = pending["changed_targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(notice["changed_targets"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>();
+            notice["changed_count"] = json!(
+                keys.len()
+                    .max(notice["changed_count"].as_u64().unwrap_or(0) as usize)
+            );
+            notice["changed_targets"] = json!(keys.into_iter().take(12).collect::<Vec<_>>());
+        }
+        self.document_notices.insert(workspace, notice);
+    }
+
     pub fn set_location(&mut self, location: ui_director::Location) {
         self.location = location;
     }
@@ -256,7 +305,7 @@ impl AgentPlugin {
             |run| {
                 json!({
                     "running": true, "scope": run.scope, "steps": run.steps,
-                    "limit": MAX_STEPS, "operation": run.waiting,
+                    "step_target": MAX_STEPS, "operation": run.waiting,
                     "elapsed_seconds": run.started.elapsed().as_secs(),
                 })
             },
@@ -298,7 +347,7 @@ impl AgentPlugin {
                 serde_json::to_string(&catalog::namespaces(&tools)).unwrap(),
                 serde_json::to_string(&catalog::tools()).unwrap()
             ),
-            format!("{instruction}\nRemaining steps: {MAX_STEPS}"),
+            format!("{instruction}\nPlanning target: {MAX_STEPS} steps. This is not a hard limit; choose done when the goal is met or a real blocker prevents further progress."),
             self.input_budget,
         )?;
         log::info!(
@@ -365,6 +414,7 @@ impl AgentPlugin {
 
     fn finish(&mut self, reason: &str, completed: bool) -> Option<Value> {
         let run = self.run.take()?;
+        self.document_notices.clear();
         run.cancel.store(true, std::sync::atomic::Ordering::Release);
         log::info!("Agent finished after {} steps: {reason}", run.steps);
         let result = json!({"running":false,"completed":completed,"scope":run.scope,"goal":run.goal,"steps":run.steps,"summary":reason,"cancel_requested":run.cleanup});
@@ -430,9 +480,7 @@ impl AgentPlugin {
 
     pub fn poll(&mut self, mut request: impl FnMut(Vec<PromptMessage>) -> Reply) -> Option<Action> {
         let run = self.run.as_mut()?;
-        let reason = if run.steps >= MAX_STEPS && run.reply.is_none() && run.waiting.is_none() {
-            Some("Step budget reached")
-        } else if run.errors >= MAX_ERRORS {
+        let reason = if run.errors >= MAX_ERRORS {
             Some("Stopped after repeated invalid or ineffective operations")
         } else if run.started.elapsed() > Duration::from_secs(1200) {
             Some("Time budget reached")
@@ -500,6 +548,11 @@ impl AgentPlugin {
                     let message = decision.message.filter(|text| !text.trim().is_empty());
                     let call = match decision.action {
                         NextStep::Done(done) => {
+                            if !self.document_notices.is_empty() {
+                                // Reconsider completion using edits that arrived
+                                // during inference, without cancelling useful tools.
+                                return None;
+                            }
                             self.message = Some(message.unwrap_or_else(|| done.clone()));
                             return self.finish(&done, true).map(|_| Action::Finished);
                         }
@@ -543,6 +596,14 @@ impl AgentPlugin {
         }
         if Instant::now() < run.next_poll {
             return None;
+        }
+        if !self.document_notices.is_empty() {
+            let notices = std::mem::take(&mut self.document_notices)
+                .into_values()
+                .collect::<Vec<_>>();
+            self.context.push(PromptMessageRole::User, format!(
+                "Live user edits (data): {}. Changes already applied. Read only affected targets if relevant; continue other work. Do not undo user changes or restart the task.",
+                serde_json::to_string(&notices).unwrap()));
         }
         let messages = match self.context.prepare() {
             Ok(messages) => messages,
@@ -701,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_feedback_cancellation_and_last_budgeted_reply_are_enforced() {
+    fn scope_cancellation_and_continuation_beyond_planning_target() {
         let mut agent = agent();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let mut first_request = Vec::new();
@@ -756,7 +817,17 @@ mod tests {
         );
 
         let mut agent = self::agent();
-        agent.run.as_mut().unwrap().steps = MAX_STEPS - 1;
+        agent.run.as_mut().unwrap().steps = MAX_STEPS;
+        agent.poll(|_| rx.clone());
+        tx.send(Ok(
+            json!({"action":{"tool":{"name":"test.read","arguments":{"document":"one"}}}})
+                .to_string(),
+        ))
+        .unwrap();
+        let Some(Action::Call(call)) = agent.poll(|_| panic!()) else {
+            panic!("a necessary tool call must still run beyond the planning target")
+        };
+        agent.observe(&call, Ok(json!({"verified":true})));
         agent.poll(|_| rx.clone());
         let outcome = "Reviewed without dropping the rest of the result.\n".repeat(30);
         tx.send(Ok(json!({"action":{"done":outcome}}).to_string()))
@@ -764,6 +835,53 @@ mod tests {
         assert!(matches!(agent.poll(|_| panic!()), Some(Action::Finished)));
         assert_eq!(agent.last.as_ref().unwrap()["summary"], outcome);
         assert_eq!(agent.take_message().as_deref(), Some(outcome.as_str()));
+    }
+
+    #[test]
+    fn live_notifications_coalesce_and_keep_inflight_work() {
+        let mut agent = agent();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        agent.poll(|_| rx.clone());
+        agent.document_changed(json!({"workspace":"video","revision":1,"changed_targets":["block:a"],"changed_count":1}));
+        agent.document_changed(json!({"workspace":"video","revision":2,"changed_targets":["block:b"],"changed_count":1}));
+        tx.send(Ok(
+            json!({"action":{"tool":{"name":"test.read","arguments":{"document":"one"}}}})
+                .to_string(),
+        ))
+        .unwrap();
+        let Some(Action::Call(call)) = agent.poll(|_| panic!()) else {
+            panic!("user edits must not cancel unrelated work")
+        };
+        agent.observe(&call, Ok(json!({"ok":true})));
+        agent.poll(|messages| {
+            let notices = messages
+                .iter()
+                .filter(|m| m.content.starts_with("Live user edits"))
+                .collect::<Vec<_>>();
+            assert_eq!(notices.len(), 1);
+            assert!(
+                notices[0].content.contains("block:a") && notices[0].content.contains("block:b")
+            );
+            rx.clone()
+        });
+        agent.document_changed(json!({"workspace":"video","revision":3,"changed_targets":["block:c"],"changed_count":1}));
+        tx.send(Ok(
+            json!({"action":{"done":"finished before seeing the edit"}}).to_string(),
+        ))
+        .unwrap();
+        assert!(agent.poll(|_| panic!()).is_none());
+        assert!(
+            agent.active(),
+            "new user changes must be considered before completion"
+        );
+        agent.stop("end fixture");
+        agent.document_changed(
+            json!({"workspace":"video","revision":4,"changed_targets":["block:d"]}),
+        );
+        assert!(
+            !agent.active(),
+            "passive notifications never start an idle agent"
+        );
     }
 
     #[test]

@@ -63,6 +63,8 @@ pub struct PlayerDiagnostics {
 pub enum PlaybackAudio {
     Original(Option<i64>),
     External(PathBuf),
+    /// A virtual or network audio input (for example, an EDL matching an edited video).
+    ExternalStream(String),
     Mix(Vec<PlaybackAudio>),
     Adjusted {
         source: Box<PlaybackAudio>,
@@ -77,6 +79,15 @@ pub enum PlaybackAudio {
 pub struct AudioMixSettings {
     pub volume: u16,
     pub duck_intervals: Vec<[i64; 2]>,
+    pub envelope: Option<AudioEnvelope>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioEnvelope {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub fade_in_ms: u32,
+    pub fade_out_ms: u32,
 }
 
 impl Default for AudioMixSettings {
@@ -84,11 +95,20 @@ impl Default for AudioMixSettings {
         Self {
             volume: 100,
             duck_intervals: Vec::new(),
+            envelope: None,
         }
     }
 }
 
 impl PlaybackAudio {
+    pub(crate) fn external_uri(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            Self::External(path) => Some(path.to_string_lossy()),
+            Self::ExternalStream(uri) => Some(uri.as_str().into()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn sources(&self) -> Vec<&Self> {
         self.inputs()
             .into_iter()

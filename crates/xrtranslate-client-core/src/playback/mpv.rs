@@ -4,8 +4,16 @@ use super::{MediaBackend, PlaybackStatus};
 use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 mod encoding;
+mod inspection;
 mod tracks;
-pub use encoding::{VideoAudio, VideoEncoding, encode_audio, encode_audio_volume, encode_video};
+pub use encoding::{
+    VideoAudio, VideoEncoding, decode_rgb_samples, encode_audio, encode_audio_volume, encode_video,
+    encode_video_edit,
+};
+pub use inspection::{
+    VideoProbe, capture_displayed_frame, detect_frame_faces, extract_filtered_frame,
+    extract_video_frame, inspect_media, inspect_media as inspect_video,
+};
 #[cfg(test)]
 pub mod tests;
 
@@ -349,7 +357,7 @@ pub struct MpvBackend {
     error: Option<String>,
     active_channels: Vec<super::AudioChannelItem>,
     audio_selection: super::PlaybackAudio,
-    audio_loading: std::collections::HashSet<PathBuf>,
+    audio_loading: std::collections::HashSet<String>,
     applied_audio: Option<Vec<(i64, super::AudioMixSettings)>>,
     audio_reloads: usize,
     audio_resume: Option<(i64, PlaybackStatus)>,
@@ -442,23 +450,43 @@ impl MpvBackend {
             let track = tracks::resolve(source, &self.snapshot.audio_tracks);
             if let Some(track) = track {
                 ids.push((track.id, settings.cloned().unwrap_or_default()));
-            } else if let PlaybackAudio::External(path) = source {
+            } else if let Some(uri) = source.external_uri() {
                 ready = false;
-                if self.audio_loading.insert(path.clone()) {
-                    self.mpv
-                        .command_async(&["audio-add", &path.to_string_lossy(), "auto"])?;
+                if self.audio_loading.insert(uri.to_string()) {
+                    self.mpv.command_async(&["audio-add", &uri, "auto"])?;
                 }
-            } else {
+            } else if !matches!(source, PlaybackAudio::Original(None)) {
                 ready = false;
             }
         }
         ids.sort_by_key(|(id, _)| *id);
         ids.dedup_by_key(|(id, _)| *id);
-        if !ready || self.applied_audio.as_ref() == Some(&ids) {
+        if !ready {
             return Ok(());
         }
-        tracks::apply(&self.mpv, &ids)?;
-        self.applied_audio = Some(ids);
+        if self.applied_audio.as_ref() != Some(&ids) {
+            tracks::apply(&self.mpv, &ids)?;
+            self.applied_audio = Some(ids);
+        }
+        // Moving a sound creates a different EDL. Release superseded external
+        // decoders once the new mix is connected, including late audio-add replies.
+        for track in &self.snapshot.audio_tracks {
+            let Some(uri) = track.external.as_deref().and_then(|p| p.to_str()) else {
+                continue;
+            };
+            if uri.starts_with("edl://")
+                && self.audio_loading.contains(uri)
+                && !self
+                    .audio_selection
+                    .sources()
+                    .iter()
+                    .any(|s| s.external_uri().as_deref() == Some(uri))
+            {
+                self.mpv
+                    .command_async(&["audio-remove", &track.id.to_string()])?;
+                self.audio_loading.remove(uri);
+            }
+        }
         if let Some((position, status)) = self.audio_resume.take() {
             self.seek(position);
             if status == PlaybackStatus::Playing {
@@ -500,12 +528,8 @@ impl MediaBackend for MpvBackend {
     fn refresh_audio(&mut self) -> Result<(), String> {
         if !self.loading {
             for source in self.audio_selection.sources() {
-                if let super::PlaybackAudio::External(path) = source
-                    && let Some(track) = self
-                        .snapshot
-                        .audio_tracks
-                        .iter()
-                        .find(|track| track.external.as_ref() == Some(path))
+                if source.external_uri().is_some()
+                    && let Some(track) = tracks::resolve(source, &self.snapshot.audio_tracks)
                 {
                     if self.audio_reloads == 0 {
                         self.audio_resume = Some((self.snapshot.time_ms, self.status));
@@ -581,6 +605,11 @@ impl MediaBackend for MpvBackend {
     }
 
     fn seek(&mut self, ms: i64) {
+        if self.loading {
+            self.audio_resume = Some((ms.max(0), self.status));
+            self.snapshot.time_ms = ms.max(0);
+            return;
+        }
         if let Some((position, _)) = &mut self.audio_resume {
             *position = ms.max(0);
             self.snapshot.time_ms = ms.max(0);

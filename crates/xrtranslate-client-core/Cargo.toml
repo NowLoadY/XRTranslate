@@ -30,6 +30,7 @@ xrtranslate-config = { path = "../xrtranslate-config" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 unicode-segmentation = "1.13"
 bytemuck = { version = "1.25", features = ["derive"] }
 log = "0.4"
@@ -44,7 +45,7 @@ eframe = "0.37.0"
 rfd = "0.17.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.60", features = ["Win32_Graphics_DirectWrite", "Win32_System_LibraryLoader"] }
+windows = { version = "0.60", features = ["Win32_Graphics_DirectWrite", "Win32_System_LibraryLoader", "Win32_System_WinRT", "Media_FaceAnalysis", "Graphics_Imaging", "Storage_Streams"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 xrtranslate-connections = { path = "../xrtranslate-connections" }
@@ -59,14 +60,12 @@ version = "0.62"
 features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ttf-parser = "0.25"
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
 glutin = { version = "0.32.3", default-features = false, features = ["egl"], optional = true }
 cpal = { version = "0.18.1", features = ["pulseaudio"] }
 libloading = "0.8.9"
 eframe = { version = "0.37.0", features = ["glow"] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [target.'cfg(windows)'.build-dependencies]
 find-msvc-tools = "0.1.15"

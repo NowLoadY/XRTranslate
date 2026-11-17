@@ -21,6 +21,62 @@ pub fn family_options() -> &'static [(String, String)] {
     })
 }
 
+/// ASS measures font size against the font's Windows ascent and descent; editor
+/// geometry uses em units. Resolve the selected output face once per export.
+pub fn ass_em_ratio(family: &str) -> f32 {
+    #[cfg(windows)]
+    fn metrics(family: &str) -> Option<f32> {
+        use windows::Win32::Graphics::DirectWrite::*;
+        use windows::core::HSTRING;
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
+            let mut collection = None;
+            factory
+                .GetSystemFontCollection(&mut collection, false)
+                .ok()?;
+            let collection = collection?;
+            let mut index = 0;
+            let mut found = Default::default();
+            collection
+                .FindFamilyName(&HSTRING::from(family), &mut index, &mut found)
+                .ok()?;
+            if !found.as_bool() {
+                return None;
+            }
+            let font = collection
+                .GetFontFamily(index)
+                .ok()?
+                .GetFirstMatchingFont(
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                )
+                .ok()?;
+            let mut m = DWRITE_FONT_METRICS::default();
+            font.GetMetrics(&mut m);
+            Some((f32::from(m.ascent) + f32::from(m.descent)) / f32::from(m.designUnitsPerEm))
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn metrics(family: &str) -> Option<f32> {
+        let (path, index) = fontconfig_face(family, true)?;
+        let bytes = std::fs::read(path).ok()?;
+        let face = ttf_parser::Face::parse(&bytes, index).ok()?;
+        let os2 = face.tables().os2?;
+        Some(
+            (f32::from(os2.windows_ascender()) - f32::from(os2.windows_descender()))
+                / f32::from(face.units_per_em()),
+        )
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    fn metrics(_: &str) -> Option<f32> {
+        None
+    }
+    metrics(family)
+        .filter(|v| (0.65..=2.5).contains(v))
+        .unwrap_or(1.)
+}
+
 #[cfg(windows)]
 fn installed_families() -> Vec<String> {
     use windows::Win32::Graphics::DirectWrite::*;
@@ -204,23 +260,25 @@ fn system_fonts(bold: bool) -> Vec<(&'static str, std::path::PathBuf, u32, &'sta
     FONTCONFIG_FONTS
         .iter()
         .filter_map(|&(name, family)| {
-            let output = std::process::Command::new("fc-match")
-                .args([
-                    "-f",
-                    "%{file}\t%{index}",
-                    &if bold {
-                        format!("{family}:style=Bold")
-                    } else {
-                        family.to_owned()
-                    },
-                ])
-                .output()
-                .ok()?;
-            let match_text = String::from_utf8(output.stdout).ok()?;
-            let (path, index) = match_text.trim().split_once('\t')?;
-            Some((name, path.into(), index.parse().ok()?, family))
+            fontconfig_face(family, bold).map(|(path, index)| (name, path, index, family))
         })
         .collect()
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
+fn fontconfig_face(family: &str, bold: bool) -> Option<(std::path::PathBuf, u32)> {
+    let pattern = if bold {
+        format!("{family}:style=Bold")
+    } else {
+        family.to_owned()
+    };
+    let output = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}\t%{index}", "--", &pattern])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    let (path, index) = text.trim().split_once('\t')?;
+    Some((path.into(), index.parse().ok()?))
 }
 
 #[cfg(windows)]

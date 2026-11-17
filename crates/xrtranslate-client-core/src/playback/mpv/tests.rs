@@ -192,6 +192,7 @@ fn mixed_tracks_share_playback_seek_and_reload() {
             .adjusted(crate::playback::AudioMixSettings {
                 volume: 35,
                 duck_intervals: vec![[1200, 1800]],
+                ..Default::default()
             });
     }
     player.select_audio(adjusted).unwrap();

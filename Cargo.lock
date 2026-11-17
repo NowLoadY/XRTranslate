@@ -10697,6 +10697,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "tokio",
+ "ttf-parser",
  "ui-director",
  "unicode-segmentation",
  "uuid",

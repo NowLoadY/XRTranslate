@@ -119,7 +119,7 @@ class UIDirector:
         elements = []
         offset = 0
         while True:
-            resp = self.call("ui.read", {"filter": filter_text, "offset": offset, "limit": 50})
+            resp = self.call("ui.read", {"view": "controls", "filter": filter_text, "offset": offset, "limit": 50})
             if not resp.get("success"):
                 return elements
             elements.extend(resp["data"]["controls"])

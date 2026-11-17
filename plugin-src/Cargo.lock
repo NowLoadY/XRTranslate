@@ -341,7 +341,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1306,7 +1306,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2213,7 +2213,7 @@ dependencies = [
  "glutin_egl_sys",
  "glutin_glx_sys",
  "glutin_wgl_sys",
- "libloading",
+ "libloading 0.8.9",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -2875,7 +2875,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -6650,7 +6650,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -7279,7 +7279,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
@@ -7618,7 +7618,7 @@ dependencies = [
  "glutin",
  "image",
  "jni 0.21.1",
- "libloading",
+ "libloading 0.8.9",
  "libmpv-sys",
  "log",
  "parking_lot",
@@ -7628,7 +7628,9 @@ dependencies = [
  "serde",
  "serde_json",
  "symphonia",
+ "tempfile",
  "tokio",
+ "ttf-parser",
  "ui-director",
  "unicode-segmentation",
  "uuid",
@@ -8056,3 +8058,27 @@ dependencies = [
  "syn 2.0.119",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "xrtranslate-denoise"
+version = "0.4.7"
+
+[[patch.unused]]
+name = "xrtranslate-inference"
+version = "0.4.7"
+
+[[patch.unused]]
+name = "xrtranslate-separation"
+version = "0.4.7"
+
+[[patch.unused]]
+name = "xrtranslate-speaker"
+version = "0.4.7"
+
+[[patch.unused]]
+name = "xrtranslate-supervisor"
+version = "0.4.7"
+
+[[patch.unused]]
+name = "xrtranslate-vad"
+version = "0.4.7"

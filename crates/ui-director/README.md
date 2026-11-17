@@ -106,13 +106,21 @@ operations and let the UI sleep.
 In-process callers and the local HTTP server use the same `ToolCall`:
 
 ```json
-{"name":"ui.read","arguments":{"limit":20}}
+{"name":"ui.read","arguments":{}}
 ```
 
 POST a call to the loopback server. Responses contain `success`, `message` and
 optional `data`. A pending result supplies its own polling and cancellation
 calls; poll for completion before relying on the operation's result. The native
 CLI prints one response per invocation, including pending receipts.
+
+`ui.read` starts with a compact region overview. Expand a returned `region`,
+search using `filter`, or inspect a specific `target`. Detail pages default to
+12 visible controls; follow `next_offset` only when needed. `view: "controls"`
+explicitly requests the bounded flat listing for automation clients. Wrap an
+existing panel in `egui::region(ui, "stable-id", "Label", |ui| { ... })` to
+group its controls without changing layout, widget IDs or handlers. Nested
+regions survive embedded plugin surfaces. Ungrouped controls appear in `page`.
 
 Native automation clients can reuse `client::send` with a port and timeout;
 the CLI uses the same loopback transport. Callers own polling and cancellation.

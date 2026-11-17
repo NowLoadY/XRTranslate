@@ -66,11 +66,30 @@ pub(super) fn resolve<'a>(
                     .zip(path.canonicalize().ok())
                     .is_some_and(|(a, b)| a == b)
         }),
+        PlaybackAudio::ExternalStream(uri) => track
+            .external
+            .as_ref()
+            .is_some_and(|file| file.to_str() == Some(uri.as_str())),
         _ => false,
     })
 }
 
 fn volume_expression(settings: &AudioMixSettings) -> String {
+    let level = ducked_volume(settings);
+    let Some(envelope) = &settings.envelope else {
+        return level;
+    };
+    let start = envelope.start_ms as f64 / 1000.0;
+    let end = envelope.end_ms as f64 / 1000.0;
+    let duration = (end - start).max(0.001);
+    let fade_in =
+        (f64::from(envelope.fade_in_ms) / 1000.0).clamp(0.001, (duration / 2.0).max(0.001));
+    let fade_out =
+        (f64::from(envelope.fade_out_ms) / 1000.0).clamp(0.001, (duration / 2.0).max(0.001));
+    format!("({level})*clip(min((t-{start:.3})/{fade_in:.3},({end:.3}-t)/{fade_out:.3}),0,1)")
+}
+
+fn ducked_volume(settings: &AudioMixSettings) -> String {
     let volume = settings.volume.min(200) as f64 / 100.0;
     let mut intervals: Vec<_> = settings
         .duck_intervals

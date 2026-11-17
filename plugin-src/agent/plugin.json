@@ -13,7 +13,8 @@
   },
   "executable": "xrt-agent",
   "subscriptions": [
-    "host.context"
+    "host.context",
+    "plugin.state"
   ],
   "tools": [
     {
