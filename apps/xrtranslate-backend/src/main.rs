@@ -540,6 +540,11 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         usize::from(model_plan.asr_runtime().parallel_slots),
         usize::from(model_plan.translation_runtime().parallel_slots),
     );
+    configure_inference_parallelism(
+        &inference_scheduler,
+        &model_plan,
+        config.model_manager.parallel_inference,
+    );
     let contexts =
         ContextRegistry::new(model_plan.translation_runtime().context_window_tokens as usize);
     let state = BackendState {
@@ -560,6 +565,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/healthz", get(health))
+        .route(
+            "/inference/parallel",
+            axum::routing::put(set_inference_parallelism),
+        )
         .route(
             "/diagnostics/requests",
             get(model_request_history).delete(model_request_history),
@@ -602,6 +611,28 @@ async fn health() -> Json<HealthResponse> {
         runtime: "native-gguf",
         protocol_version: xrtranslate_protocol::PROTOCOL_VERSION,
     })
+}
+
+fn configure_inference_parallelism(
+    scheduler: &InferenceScheduler,
+    plan: &NativeProviderPlan,
+    enabled: bool,
+) {
+    let local_pair = plan.asr_uses_llama_server() && plan.translation_uses_llama_server();
+    scheduler.set_parallel(enabled || !local_pair);
+}
+
+async fn set_inference_parallelism(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>,
+    State(state): State<BackendState>,
+    Json(enabled): Json<bool>,
+) -> axum::http::StatusCode {
+    if !peer.ip().is_loopback() {
+        return axum::http::StatusCode::FORBIDDEN;
+    }
+    configure_inference_parallelism(&state.inference_scheduler, &state.model_plan, enabled);
+    info!(parallel = enabled, "Local inference scheduling updated");
+    axum::http::StatusCode::NO_CONTENT
 }
 
 async fn model_request_history(

@@ -65,7 +65,10 @@ fn render_page(
     let mut actions = Vec::new();
     egui::Panel::bottom(ui.make_persistent_id("osc_bottom_input_bar"))
         .show_separator_line(false)
-        .frame(egui::Frame::NONE)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            bottom: 8,
+            ..egui::Margin::ZERO
+        }))
         .show(ui, |ui| {
             ui.add_space(10.0);
             canvas::render_bottom_input_bar(plugin, ui, context, &mut actions);

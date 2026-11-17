@@ -19,7 +19,10 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     egui::Panel::bottom("translation_text_composer")
         .show_separator_line(false)
-        .frame(egui::Frame::NONE)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            bottom: 8,
+            ..egui::Margin::ZERO
+        }))
         .show(ui, |ui| {
             ui.add_space(10.0);
             app.render_text_composer(ui);
@@ -72,10 +75,11 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             } else {
                 StatusIcon::Idle
             };
-            let status = crate::i18n::tr_dynamic(app.ui_language, &app.connection_status);
-            components::status_icon(ui, icon, status.as_ref());
+            let status = crate::i18n::tr_dynamic(app.ui_language, &app.connection_status).into_owned();
+            components::status_icon(ui, icon, &status);
+            app.render_inference_mode_button(ui);
             if is_error {
-                ui.colored_label(crate::ui::theme::danger(), status.as_ref());
+                ui.colored_label(crate::ui::theme::danger(), &status);
             }
         });
     });

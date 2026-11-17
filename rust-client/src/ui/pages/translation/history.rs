@@ -651,7 +651,6 @@ pub(super) fn render_history_feed(
     available_height: f32,
 ) {
     let scale = HistoryFeedScale::compute(available_width, available_height);
-    let height = (available_height * 0.85 - 56.0).clamp(160.0, 520.0);
     let mut fullscreen = false;
     egui::Frame::new()
         .fill(crate::ui::theme::panel_fill(
@@ -674,7 +673,7 @@ pub(super) fn render_history_feed(
                 ))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_height((height - 8.0).max(0.0));
+                    ui.set_height(ui.available_height().max(160.0));
                     if app.history_display.mode == DisplayMode::Bubbles {
                         render_feed(app, ui, &scale)
                     } else {

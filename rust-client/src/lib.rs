@@ -45,6 +45,7 @@ pub use xrtranslate_client_core::export;
 pub use xrtranslate_client_core::feature_access;
 pub use xrtranslate_client_core::file_dialog;
 mod history;
+mod inference_mode;
 pub use xrtranslate_client_core::i18n;
 mod logging;
 pub(crate) mod media_import;
@@ -656,6 +657,7 @@ struct XRTranslateApp {
     session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>>,
     host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>>,
     connection_status: String,
+    inference_mode_request: Option<Receiver<Result<(), String>>>,
     partial_text: String,
     recognition_history: Vec<RecognitionHistoryEntry>,
     translations: Vec<TranslationHistoryEntry>,
@@ -1808,6 +1810,7 @@ impl Default for XRTranslateApp {
             session_event_subscribers,
             host_output_subscribers,
             connection_status: "Ready".into(),
+            inference_mode_request: None,
             partial_text: String::new(),
             recognition_history: Vec::new(),
             translations: Vec::new(),
@@ -5425,6 +5428,7 @@ impl eframe::App for XRTranslateApp {
             self.last_error = Some(error);
         }
         self.poll_app_update();
+        self.poll_inference_mode();
         self.poll_audio_device_refresh();
         self.poll_audio_application_refresh();
         self.discover_audio_sources_on_page_entry();
@@ -5531,7 +5535,6 @@ impl eframe::App for XRTranslateApp {
                 (8.0, 12.0)
             };
             let margin_x = egui::lerp(min_mx..=max_mx, eased_expand);
-            let margin_y = if compact_height { 6 } else { 14 };
 
             let prev_collapsed = self.navigation.collapsed;
             let prev_page = self.navigation.page;
@@ -5573,7 +5576,7 @@ impl eframe::App for XRTranslateApp {
                             .stroke(egui::Stroke::new(1.0, ui::theme::border()))
                             .inner_margin(egui::Margin::symmetric(
                                 margin_x.round() as i8,
-                                margin_y,
+                                0,
                             )),
                     )
                     .show(ui, |ui| {
@@ -5622,10 +5625,12 @@ impl eframe::App for XRTranslateApp {
                     spread: 0,
                     color: egui::Color32::from_black_alpha(24),
                 })
-                .inner_margin(egui::Margin::symmetric(
-                    if is_compact_screen { 12 } else { 24 },
-                    if is_compact_screen { 10 } else { 20 },
-                ))
+                .inner_margin(egui::Margin {
+                    left: if is_compact_screen { 12 } else { 24 },
+                    right: if is_compact_screen { 12 } else { 24 },
+                    top: 8,
+                    bottom: 0,
+                })
         };
 
         let content = egui::CentralPanel::default()

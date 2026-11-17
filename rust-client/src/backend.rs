@@ -808,7 +808,7 @@ fn is_managed_llama_server_path(layout: &RuntimeLayout, path: &std::path::Path) 
     path.parent() == Some(layout.llama_cpp_directory().as_path()) && is_supported_name
 }
 
-fn is_local_server(server_url: &str) -> bool {
+pub(crate) fn is_local_server(server_url: &str) -> bool {
     let address = server_address(server_url).unwrap_or_default();
     let host = if let Some(ipv6) = address.strip_prefix('[') {
         ipv6.split(']').next().unwrap_or_default()

@@ -1279,6 +1279,9 @@ impl OptionalProviderConfig {
 /// Paths and repositories used to manage llama.cpp-backed GGUF models.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelManagerConfig {
+    /// Allow local recognition and translation requests to compute concurrently.
+    #[serde(default = "default_true")]
+    pub parallel_inference: bool,
     #[serde(default = "default_hunyuan_gguf_repo")]
     pub hunyuan_gguf_repo: String,
     #[serde(default = "default_llama_server_path")]
@@ -1448,6 +1451,7 @@ pub enum LlamaCppAssetKind {
 impl Default for ModelManagerConfig {
     fn default() -> Self {
         Self {
+            parallel_inference: true,
             hunyuan_gguf_repo: default_hunyuan_gguf_repo(),
             llama_server_path: default_llama_server_path(),
             llama_cpp: LlamaCppRuntimeConfig::default(),

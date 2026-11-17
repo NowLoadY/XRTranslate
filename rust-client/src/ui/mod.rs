@@ -140,7 +140,7 @@ pub fn render_sidebar(
     let compact_height = ui.available_height() < 500.0;
 
     ui.vertical(|ui| {
-        ui.add_space(if compact_height { 2.0 } else { 4.0 });
+        ui.add_space(if compact_height { 6.0 } else { 12.0 });
 
         // Brand Header & Expand/Collapse Toggle
         ui.horizontal(|ui| {
@@ -203,6 +203,10 @@ pub fn render_sidebar(
             .id_salt("sidebar_scroll")
             .auto_shrink([false, false])
             .min_scrolled_height(0.0)
+            .content_margin(Margin {
+                bottom: 8,
+                ..Margin::ZERO
+            })
             .show(ui, |ui| {
                 let mut previous_group = "";
                 for entry in navigation_entries(plugin_pages, tts_configured) {

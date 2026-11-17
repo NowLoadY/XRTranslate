@@ -116,6 +116,54 @@ pub struct ServiceConfigEditor {
 }
 
 impl ServiceConfigEditor {
+    pub(crate) fn parallel_inference(&self) -> bool {
+        self.document["model_manager"]["parallel_inference"]
+            .as_bool()
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn local_parallel_inference_available(&self) -> bool {
+        use xrtranslate_assets::{ModelCapability, ModelRuntime, language::provider_model};
+        [
+            ("asr", ModelCapability::Asr),
+            ("translation", ModelCapability::Translation),
+        ]
+        .into_iter()
+        .all(|(section, capability)| {
+            let Some(category) = self.categories.iter().find(|category| category.key == section)
+            else {
+                return false;
+            };
+            let Some(provider) = category
+                .providers
+                .iter()
+                .find(|provider| provider.name == category.selected_provider)
+            else {
+                return false;
+            };
+            let asset = provider.fields.iter().find(|field| field.name == "model_asset");
+            !provider_is_remote(provider)
+                && provider_model(
+                    &provider.name,
+                    asset.map(|field| field.value.as_str()),
+                    capability,
+                )
+                .ok()
+                .and_then(|model| model.runtime)
+                .is_some_and(ModelRuntime::uses_llama_cpp)
+        })
+    }
+
+    pub(crate) fn set_parallel_inference(&mut self, enabled: bool) -> Result<(), String> {
+        let previous = self.document.clone();
+        self.document["model_manager"]["parallel_inference"] = Value::Bool(enabled);
+        if let Err(error) = self.save_draft() {
+            self.document = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(crate) fn model_contexts(&self) -> Vec<ModelContextControl> {
         let mut controls = Vec::new();
         let mut add = |role, section, provider: &str, settings: &Value| {
