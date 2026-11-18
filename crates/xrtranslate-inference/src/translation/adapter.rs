@@ -85,6 +85,25 @@ impl<C> TranslationAdapter<C> {
         self
     }
 
+    pub fn with_openai_responses(
+        endpoint: &str,
+        model: impl Into<String>,
+        key: &str,
+    ) -> Result<Self, InferenceError> {
+        Ok(Self {
+            chat: ChatTransport::OpenAiResponses(crate::responses::KeyResponses::new(
+                endpoint, key,
+            )?),
+            model: validated_model(model)?,
+            profile: TranslationPromptProfile::ChatMessages,
+            streaming: RemoteStreaming::Delta,
+            request_format: RequestFormat::Messages,
+            reasoning_effort: None,
+            supports_json_output: true,
+            history: HistoryBudget::default(),
+        })
+    }
+
     pub fn with_chatgpt_account(
         store: xrtranslate_connections::AccountStore,
         endpoint: &str,
@@ -114,6 +133,29 @@ impl<C> TranslationAdapter<C> {
 }
 
 impl<C: AsyncHttpClient> TranslationAdapter<C> {
+    pub async fn agent_turn(
+        &self,
+        messages: &[PromptMessage],
+        turn: &xrtranslate_protocol::AgentTurn,
+        window: u32,
+    ) -> Result<crate::ChatCompletion, InferenceError> {
+        let ChatTransport::OpenAiResponses(client) = &self.chat else {
+            return Err(InferenceError::InvalidConfiguration {
+                field: "agent.model",
+                message: "This model does not support native Responses tools".into(),
+            });
+        };
+        client
+            .agent(
+                &self.model,
+                self.reasoning_effort.as_deref().unwrap_or("medium"),
+                messages,
+                turn,
+                window,
+            )
+            .await
+    }
+
     /// One stateless request with caller-owned context. It does not render a
     /// translation graph, retrieve references, or read/write conversation history.
     pub async fn ask(

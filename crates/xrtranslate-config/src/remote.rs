@@ -356,6 +356,7 @@ pub(crate) fn resolve(
             connector,
             Some(
                 RemoteConnector::OpenaiChat
+                    | RemoteConnector::OpenaiResponses
                     | RemoteConnector::OpenaiAudioChat
                     | RemoteConnector::ChatgptResponses
             )

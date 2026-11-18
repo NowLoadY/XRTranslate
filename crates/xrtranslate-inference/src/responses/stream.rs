@@ -6,6 +6,9 @@ const MAX_BYTES: usize = 1024 * 1024;
 
 #[derive(Default)]
 pub(super) struct ResponseStream {
+    capture_items: bool,
+    items: BTreeMap<u64, Value>,
+    pub(super) response: Option<Value>,
     pending: Vec<u8>,
     data: String,
     text: String,
@@ -16,8 +19,20 @@ pub(super) struct ResponseStream {
 }
 
 impl ResponseStream {
+    pub(super) fn native() -> Self {
+        Self {
+            capture_items: true,
+            ..Self::default()
+        }
+    }
+
     pub fn push(&mut self, bytes: &[u8]) -> Result<Option<String>, TransportError> {
-        if self.pending.len() + bytes.len() > MAX_BYTES {
+        let limit = if self.capture_items {
+            16 * MAX_BYTES
+        } else {
+            MAX_BYTES
+        };
+        if self.pending.len() + bytes.len() > limit {
             return Err(error("ChatGPT response frame exceeded its size limit"));
         }
         self.pending.extend_from_slice(bytes);
@@ -35,7 +50,7 @@ impl ResponseStream {
                 }
                 self.data.push_str(data.strip_prefix(' ').unwrap_or(data));
             }
-            if self.data.len() > MAX_BYTES || self.text.len() > MAX_BYTES {
+            if self.data.len() > limit || self.text.len() > limit {
                 return Err(error("ChatGPT response exceeded its size limit"));
             }
         }
@@ -52,7 +67,16 @@ impl ResponseStream {
         } // Not proof of completed inference.
         let value: Value =
             serde_json::from_str(&data).map_err(|_| error("Invalid ChatGPT response event"))?;
+        self.event(value)
+    }
+
+    pub(super) fn event(&mut self, value: Value) -> Result<bool, TransportError> {
         match value["type"].as_str() {
+            Some("response.output_item.added" | "response.output_text.delta")
+                if self.capture_items =>
+            {
+                Ok(false)
+            }
             Some("response.output_item.added") => {
                 if value["item"]["phase"] == "commentary" {
                     let index = value["output_index"]
@@ -77,6 +101,13 @@ impl ResponseStream {
                 Ok(true)
             }
             Some("response.output_item.done") => {
+                if self.capture_items {
+                    let index = value["output_index"]
+                        .as_u64()
+                        .ok_or_else(|| error("Missing output index"))?;
+                    self.items.insert(index, value["item"].clone());
+                    return Ok(false);
+                }
                 if let Some(text) = assistant_text(&value["item"])? {
                     let index = value["output_index"]
                         .as_u64()
@@ -94,6 +125,16 @@ impl ResponseStream {
                 let output = response["output"]
                     .as_array()
                     .ok_or_else(|| error("Missing ChatGPT final output"))?;
+                if self.capture_items {
+                    let mut final_response = response.clone();
+                    if output.is_empty() {
+                        final_response["output"] =
+                            Value::Array(std::mem::take(&mut self.items).into_values().collect());
+                    }
+                    self.response = Some(final_response);
+                    self.completed = true;
+                    return Ok(false);
+                }
                 let mut final_outputs = BTreeMap::new();
                 for (index, item) in output.iter().enumerate() {
                     if let Some(text) = assistant_text(item)? {
@@ -116,6 +157,17 @@ impl ResponseStream {
                     .pointer("/response/error/code")
                     .or_else(|| value.get("code"))
                     .and_then(Value::as_str);
+                if self.capture_items {
+                    let detail = value["response"]["error"]["message"]
+                        .as_str()
+                        .or(value["error"]["message"].as_str())
+                        .or(value["message"].as_str())
+                        .unwrap_or("Responses request failed");
+                    let code = code
+                        .or(value["error"]["code"].as_str())
+                        .unwrap_or("responses");
+                    return Err(TransportError::new(code, detail));
+                }
                 Err(error(match code {
                     Some(
                         "subscription_sharing_usage_limit_exceeded"
@@ -131,6 +183,15 @@ impl ResponseStream {
                     }
                     _ => "ChatGPT failed to complete the request. Please try again later.",
                 }))
+            }
+            Some("response.incomplete") if self.capture_items => {
+                let reason = value["response"]["incomplete_details"]["reason"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                Err(TransportError::new(
+                    "incomplete",
+                    format!("Incomplete Agent response ({reason})"),
+                ))
             }
             Some("response.incomplete") => Err(error(
                 "ChatGPT returned an incomplete response; partial text was not accepted",

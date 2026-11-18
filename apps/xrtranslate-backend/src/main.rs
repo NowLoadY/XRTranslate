@@ -573,7 +573,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
             "/diagnostics/requests",
             get(model_request_history).delete(model_request_history),
         )
-        .route("/ask", axum::routing::post(ask))
+        .route(
+            "/ask",
+            axum::routing::post(ask).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route(
             "/tts/synthesize",
             axum::routing::post(tts_session::synthesize),
@@ -655,7 +658,13 @@ async fn ask(
 ) -> impl IntoResponse {
     let target = request.target();
     let response_schema = request.response_schema().cloned();
-    let messages = request.into_messages();
+    let (messages, agent_turn) = match request {
+        xrtranslate_protocol::AskRequest::AgentTurn {
+            messages,
+            agent_turn,
+        } => (messages, Some(agent_turn)),
+        other => (other.into_messages(), None),
+    };
     if messages.is_empty()
         || messages
             .iter()
@@ -683,7 +692,7 @@ async fn ask(
             "Instruction request ready"
         );
         inference
-            .ask(&messages, response_schema.as_ref())
+            .ask(&messages, response_schema.as_ref(), agent_turn.as_ref())
             .await
             .map_err(|error| xrtranslate_protocol::AskError {
                 invalid_output: error.is_rejected_output(),

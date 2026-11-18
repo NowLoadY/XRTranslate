@@ -123,7 +123,7 @@ pub fn model_context_window(
         maximum: if is_local(settings) {
             32_768
         } else {
-            1_048_576
+            1_048_576.max(default)
         },
         customized: override_value.is_some(),
     })

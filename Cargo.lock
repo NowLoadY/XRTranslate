@@ -10830,6 +10830,7 @@ dependencies = [
  "xrtranslate-engine",
  "xrtranslate-http",
  "xrtranslate-prompt",
+ "xrtranslate-protocol",
 ]
 
 [[package]]
@@ -10888,6 +10889,7 @@ version = "0.4.7"
 dependencies = [
  "serde",
  "serde_json",
+ "ui-director",
  "xr-corpus-protocol",
  "xrtranslate-prompt",
 ]

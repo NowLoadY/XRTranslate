@@ -184,6 +184,7 @@ fn inspectable(value: &Value) -> Value {
                             | "api_key"
                             | "access_token"
                             | "refresh_token"
+                            | "encrypted_content"
                             | "cookie"
                             | "password"
                     );

@@ -61,8 +61,19 @@ impl AppConfig {
                     .map(|model| model.id.as_str().to_owned())
                     .collect()
             } else {
-                xrtranslate_assets::remote::services(provider, ModelCapability::Translation)
-                    .flat_map(|service| service.models.iter().cloned())
+                xrtranslate_assets::remote::catalog()
+                    .providers
+                    .iter()
+                    .find(|entry| entry.id == *provider)
+                    .and_then(|entry| entry.default_agent_model.clone())
+                    .into_iter()
+                    .chain(
+                        xrtranslate_assets::remote::services(
+                            provider,
+                            ModelCapability::Translation,
+                        )
+                        .flat_map(|service| service.models.iter().cloned()),
+                    )
                     .chain(
                         settings
                             .get("model")

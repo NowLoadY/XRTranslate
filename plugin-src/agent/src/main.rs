@@ -23,6 +23,7 @@ struct Inference {
 #[derive(Default)]
 struct Agent {
     core: Option<AgentPlugin>,
+    session: String,
     inference: Option<Inference>,
     operation: Option<(u64, ToolCall)>,
     status: Value,
@@ -36,6 +37,7 @@ impl Plugin for Agent {
     ) -> std::result::Result<(), String> {
         // Environment refreshes never replace the application's conversation.
         if self.core.is_none() {
+            self.session = uuid::Uuid::new_v4().to_string();
             self.core = Some(AgentPlugin::load(environment.data_directory));
         }
         Ok(())
@@ -62,6 +64,11 @@ impl Plugin for Agent {
             return;
         }
         let core = self.core.as_mut().unwrap();
+        let native_tools = value["inference"]["native_tools"] == true;
+        if core.native_tools != native_tools && core.active() {
+            core.stop("The Agent model connection changed");
+        }
+        core.native_tools = native_tools;
         core.configure(
             value["inference"]["agent"].as_bool().unwrap_or(false),
             value["inference"]["input_budget"].as_u64().unwrap_or(0) as usize,
@@ -123,24 +130,28 @@ impl Plugin for Agent {
         }
         if self.operation.is_none() {
             let cancel = core.cancellation().unwrap_or_default();
-            match core.poll(|messages| {
+            let mut pending = None;
+            let action = core.poll(|messages| {
                 let (reply, receiver) = crossbeam_channel::bounded(1);
-                let id = context.call(
-                    "inference.request",
-                    serde_json::to_value(AskRequest::Messages {
+                pending = Some((reply, messages));
+                receiver
+            });
+            if let Some((reply, messages)) = pending {
+                let request = match core.native_turn(&self.session) {
+                    Some(agent_turn) => AskRequest::AgentTurn {
+                        messages,
+                        agent_turn,
+                    },
+                    None => AskRequest::Messages {
                         messages,
                         target: AskTarget::Agent,
                         response_schema: Some(AgentPlugin::response_schema()),
-                    })
-                    .unwrap(),
-                );
-                self.inference = Some(Inference {
-                    id,
-                    reply,
-                    cancel: cancel.clone(),
-                });
-                receiver
-            }) {
+                    },
+                };
+                let id = context.call("inference.request", serde_json::to_value(request).unwrap());
+                self.inference = Some(Inference { id, reply, cancel });
+            }
+            match action {
                 Some(Action::Call(call)) => {
                     let id = context.call(&call.name, call.arguments.clone());
                     self.operation = Some((id, call));

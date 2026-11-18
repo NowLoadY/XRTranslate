@@ -5,6 +5,7 @@ use xrtranslate_prompt::{PromptMessage, PromptMessageRole, estimated_tokens};
 pub(super) struct Context {
     pub messages: Vec<PromptMessage>,
     pub memory: String,
+    pub feedback_index: Option<usize>,
     // The progress note covers all messages through this assistant reply.
     summarized: usize,
     // Only the current execution's user instructions are kept verbatim.
@@ -77,6 +78,10 @@ impl Context {
             retained.push(summary);
             let next = retained.len() + 1;
             self.messages.splice(1..end, retained);
+            self.feedback_index = self
+                .feedback_index
+                .filter(|&index| index >= end)
+                .map(|index| index - end + next);
             for (order, index) in self.instructions.iter_mut().enumerate() {
                 *index = if *index < end {
                     order + 1

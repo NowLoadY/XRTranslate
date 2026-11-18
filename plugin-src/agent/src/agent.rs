@@ -22,6 +22,7 @@ pub(crate) struct AgentPlugin {
     document_revisions: std::collections::BTreeMap<String, u64>,
     available_tools: Vec<Tool>,
     supports_chat: bool,
+    pub(crate) native_tools: bool,
     input_budget: usize,
     language: String,
     location: ui_director::Location,
@@ -86,6 +87,7 @@ impl Run {
                 self.steps
             );
         }
+        context.feedback_index = Some(context.messages.len());
         context.push(
             PromptMessageRole::User,
             format!(
@@ -222,6 +224,16 @@ impl AgentPlugin {
         },"required":["action","memory"],"additionalProperties":false})
     }
 
+    pub fn native_turn(&self, session: &str) -> Option<xrtranslate_protocol::AgentTurn> {
+        let run = self.run.as_ref().filter(|_| self.native_tools)?;
+        Some(xrtranslate_protocol::AgentTurn {
+            session: session.to_owned(),
+            scope: run.scope.clone(),
+            tools: run.tools.clone(),
+            feedback_index: self.context.feedback_index,
+        })
+    }
+
     pub fn take_message(&mut self) -> Option<String> {
         self.message.take()
     }
@@ -338,18 +350,33 @@ impl AgentPlugin {
             return Err("No tools accept this scope".into());
         }
         let instruction = self.instruction("User instruction", &goal);
-        self.context.begin(
-            format!(
-                "{}\nUI language: {}\nCurrent execution scope: {}\nAvailable namespaces (operation counts): {}\nDiscovery operations (shared with the application CLI): {}",
-                include_str!("instructions.md").trim(),
-                self.language,
-                scope,
-                serde_json::to_string(&catalog::namespaces(&tools)).unwrap(),
-                serde_json::to_string(&catalog::tools()).unwrap()
-            ),
-            format!("{instruction}\nPlanning target: {MAX_STEPS} steps. This is not a hard limit; choose done when the goal is met or a real blocker prevents further progress."),
-            self.input_budget,
-        )?;
+        let common = include_str!("instructions.md").trim();
+        let task = format!(
+            "{instruction}\nPlanning target: {MAX_STEPS} steps. Finish when the goal is met or a real blocker prevents progress."
+        );
+        let (rules, task) = if self.native_tools {
+            // Keep the developer prefix identical across goals. Scope remains enforced locally.
+            (
+                format!("{common}\n\n{}", include_str!("native-protocol.md").trim()),
+                format!(
+                    "UI language: {}\nCurrent execution scope: {scope}\n{task}",
+                    self.language
+                ),
+            )
+        } else {
+            (
+                format!(
+                    "{common}\n\n{}\nUI language: {}\nCurrent execution scope: {}\nAvailable namespaces (operation counts): {}\nDiscovery operations (shared with the application CLI): {}",
+                    include_str!("text-protocol.md").trim(),
+                    self.language,
+                    scope,
+                    serde_json::to_string(&catalog::namespaces(&tools)).unwrap(),
+                    serde_json::to_string(&catalog::tools()).unwrap()
+                ),
+                task,
+            )
+        };
+        self.context.begin(rules, task, self.input_budget)?;
         log::info!(
             "Agent execution started: goal_bytes={}, tools={}, input_budget={}, conversation_messages={}",
             goal.len(),

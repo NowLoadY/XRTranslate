@@ -204,6 +204,7 @@
     },
     {
       "id": "openai",
+      "default_agent_model": "gpt-6.2-sol",
       "guide_url": "https://platform.openai.com/api-keys",
       "services": [
         {
@@ -223,7 +224,7 @@
           "capability": "translation",
           "defaults": {
             "api_key": "",
-            "context_window_tokens": 8192,
+            "context_window_tokens": 128000,
             "max_tokens": 512,
             "model": "gpt-4o-mini",
             "parallel_slots": 2,
@@ -231,6 +232,19 @@
             "url": "https://api.openai.com/v1/chat/completions"
           },
           "models": ["gpt-4o-mini"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 1050000,
+            "max_tokens": 1024,
+            "model": "gpt-6.2-sol",
+            "parallel_slots": 2,
+            "connector": "openai-responses",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "models": ["gpt-6.2-sol", "gpt-6.2-astra"]
         }
       ]
     },
@@ -483,11 +497,30 @@
     {
       "model": "gpt-4o-mini",
       "connector": "openai-chat",
-      "default_context_window_tokens": 8192,
+      "default_context_window_tokens": 128000,
       "capabilities": {
         "supports_chat": true,
+        "supports_json_output": true,
         "streaming": "delta",
         "supports_context": true
+      }
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "connector": "openai-responses",
+      "default_context_window_tokens": 1050000,
+      "capabilities": {
+        "supports_chat": true, "supports_json_output": true, "supports_context": true,
+        "streaming": "delta", "reasoning_effort": "medium"
+      }
+    },
+    {
+      "model": "gpt-6.2-astra",
+      "connector": "openai-responses",
+      "default_context_window_tokens": 1050000,
+      "capabilities": {
+        "supports_chat": true, "supports_json_output": true, "supports_context": true,
+        "streaming": "delta", "reasoning_effort": "medium"
       }
     },
     {

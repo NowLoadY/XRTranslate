@@ -26,6 +26,20 @@ remains a model capability; it does not create another provider or pipeline.
 Former provider IDs declared by a service are folded at the same boundary,
 preserving the active model and credentials without duplicate Welcome entries.
 
+## OpenAI API key for the built-in Agent
+
+The OpenAI Agent selector lists `gpt-6.2-sol` first and also offers `gpt-6.2-astra`.
+Both use `/v1/responses`, medium reasoning, and the project's service tier. The
+developer user configuration stores the key under `translation.providers.openai.api_key`
+and the independent selection under `agent.model`. Existing translation selections
+and per-model context overrides are respected. [Sol model specification](https://developers.openai.com/api/docs/models/gpt-6.2-sol)
+
+The Agent sends native tool calls over a persistent WebSocket and returns each local
+tool result with its call ID. Stable instructions and ordered tools support prompt
+caching. The HTTPS streaming fallback replays retained native items, including
+encrypted reasoning. The local transcript is authoritative when the scope or
+catalogue changes. [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) · [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+
 ## Free-tier translation presets
 
 The following API options were checked against official documentation on
@@ -143,6 +157,7 @@ it to one of the implemented wire formats:
 | Connector | Capability | Request and result |
 | --- | --- | --- |
 | `openai-chat` | Translation | Chat-completions messages; JSON or SSE text |
+| `openai-responses` | Translation and Agent | API key, Responses SSE or persistent WebSocket with native Agent functions |
 | `dashscope-translation` | Translation | Source-only user message, language options and graph-rendered domain hints; JSON or SSE text |
 | `openai-speech` | TTS | Speech JSON request; WAV audio |
 | `gemini-speech` | TTS | Interactions speech request; SSE PCM audio |

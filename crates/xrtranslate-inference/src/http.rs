@@ -88,6 +88,17 @@ pub struct ReqwestClient {
 }
 
 impl ReqwestClient {
+    pub(crate) fn for_responses() -> Result<Self, TransportError> {
+        client_builder()
+            .timeout(Duration::from_secs(150))
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .tcp_nodelay(true)
+            .build()
+            .map(|client| Self { client })
+            .map_err(transport_error)
+    }
+
     /// Account credentials may only be sent to the connector's fixed official endpoint.
     pub(crate) fn for_account() -> Result<Self, TransportError> {
         client_builder()

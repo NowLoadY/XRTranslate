@@ -6,6 +6,7 @@ use xrtranslate_prompt::TranslationPromptProfile;
 
 #[derive(Clone, Copy)]
 struct TextModelContract {
+    native_agent_tools: bool,
     profile: TranslationPromptProfile,
     history_percent: Option<u8>,
     supports_ask: bool,
@@ -17,8 +18,12 @@ struct TextModelContract {
 
 impl TextModelContract {
     fn resolve(provider: xrtranslate_config::NativeProviderConfig) -> Option<Self> {
+        let native_agent_tools =
+            provider.connector == Some(xrtranslate_assets::remote::RemoteConnector::OpenaiResponses);
+        let window = provider.runtime.context_window_tokens;
         Some(Self {
-            context_tokens: provider.runtime.context_window_tokens,
+            native_agent_tools,
+            context_tokens: window,
             output_tokens: provider.runtime.max_tokens,
             history_percent: provider
                 .supports_reference_context()
@@ -26,11 +31,13 @@ impl TextModelContract {
             profile: provider.translation_prompt_profile().ok()?,
             supports_ask: provider.supports_ask().ok()?,
             supports_chat: provider.supports_chat().ok()?,
-            input_budget: provider
-                .runtime
-                .context_window_tokens
-                .saturating_sub(provider.runtime.max_tokens)
-                .saturating_sub(256) as usize,
+            input_budget: if native_agent_tools {
+                xrtranslate_assets::remote::openai_agent_limits(window).0
+            } else {
+                window
+                    .saturating_sub(provider.runtime.max_tokens)
+                    .saturating_sub(256)
+            } as usize,
         })
     }
 }
@@ -370,6 +377,11 @@ impl ServiceConfigEditor {
     pub(crate) fn agent_available(&self) -> bool {
         self.agent_contract()
             .is_some_and(|contract| contract.supports_chat)
+    }
+
+    pub(crate) fn agent_native_tools(&self) -> bool {
+        self.agent_contract()
+            .is_some_and(|contract| contract.native_agent_tools)
     }
 
     pub(crate) fn agent_input_budget(&self) -> usize {
@@ -1628,6 +1640,7 @@ mod tests {
         let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
         document["translation"]["provider"] = json!("qwen");
         document["translation"]["providers"]["qwen"]["api_key"] = json!("test-only");
+        document["translation"]["providers"]["openai"]["api_key"] = json!("test-only");
         let document = xrtranslate_config::AppConfig::from_value(document)
             .unwrap()
             .raw;
@@ -1681,6 +1694,17 @@ mod tests {
             editor.onboarding_provider_state("agent").unwrap().model,
             "qwen-plus"
         );
+        editor.select_onboarding_provider("agent", "openai");
+        assert_eq!(
+            editor.onboarding_provider_state("agent").unwrap().model,
+            "gpt-6.2-sol"
+        );
+        assert!(editor.agent_native_tools());
+        assert_eq!(editor.agent_input_budget(), 922_000);
+        assert_eq!(editor.document["translation"], expected);
+        editor.select_agent_model("gpt-4o-mini".into());
+        assert!(!editor.agent_native_tools());
+
         editor.set_agent_follows_translation(true);
         assert!(!editor.agent_available());
         assert!(editor.document["agent"]["model"].is_null());

@@ -85,6 +85,7 @@ impl RequestFormat {
 pub(super) enum ChatTransport<C> {
     Completions(OpenAiCompatibleClient<C>),
     Responses(ChatGptClient),
+    OpenAiResponses(crate::responses::KeyResponses),
 }
 
 impl<C: AsyncHttpClient> ChatTransport<C> {
@@ -92,6 +93,9 @@ impl<C: AsyncHttpClient> ChatTransport<C> {
         match self {
             Self::Completions(client) => client.chat_completion(payload).await,
             Self::Responses(client) => client.complete(payload, |_| std::future::ready(())).await,
+            Self::OpenAiResponses(client) => {
+                client.complete(payload, |_| std::future::ready(())).await
+            }
         }
     }
 
@@ -112,6 +116,7 @@ impl<C: AsyncHttpClient> ChatTransport<C> {
                     .await
             }
             Self::Responses(client) => client.complete(payload, on_update).await,
+            Self::OpenAiResponses(client) => client.complete(payload, on_update).await,
         }
     }
 }

@@ -1,6 +1,11 @@
-//! ChatGPT plan transport. Keeps the shared prompt graph and translation output
-//! checks intact while speaking the official Responses API contract.
+//! Responses API transports for account and API-key authentication.
+mod agent;
+mod key;
+#[cfg(test)]
+mod recovery_tests;
+mod socket;
 mod stream;
+pub(crate) use key::KeyResponses;
 use std::ops::ControlFlow;
 
 use crate::{AsyncHttpClient, ChatCompletion, HttpRequest, InferenceError, ReqwestClient};
@@ -44,39 +49,16 @@ impl ChatGptClient {
         let grant = chatgpt::access(&self.accounts, payload["model"].as_str())
             .await
             .map_err(account_error)?;
-        let mut request = HttpRequest::post_json(RESPONSES_ENDPOINT, payload);
-        request.headers.extend([
-            ("authorization".into(), grant.authorization()),
-            ("accept".into(), "text/event-stream".into()),
-        ]);
         let mut stream = stream::ResponseStream::default();
-        let response = self
-            .http
-            .execute_streaming(request, |chunk| {
-                let update = stream.push(&chunk);
-                let completed = stream.is_completed();
-                let callback = update
-                    .as_ref()
-                    .ok()
-                    .and_then(Clone::clone)
-                    .map(&mut on_update);
-                async move {
-                    update?;
-                    if let Some(callback) = callback {
-                        callback.await;
-                    }
-                    Ok(if completed {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    })
-                }
-            })
-            .await
-            .map_err(|source| InferenceError::Transport {
-                endpoint: RESPONSES_ENDPOINT.into(),
-                source,
-            })?;
+        let response = sse(
+            &self.http,
+            RESPONSES_ENDPOINT,
+            grant.authorization(),
+            payload,
+            &mut stream,
+            &mut on_update,
+        )
+        .await?;
         if response.status == 401 {
             let _ = chatgpt::invalidate(&self.accounts, &grant).await;
             return Err(InferenceError::AccountLoginRequired {
@@ -106,6 +88,50 @@ impl ChatGptClient {
     }
 }
 
+async fn sse<F, Fut>(
+    http: &ReqwestClient,
+    endpoint: &str,
+    authorization: String,
+    payload: Value,
+    stream: &mut stream::ResponseStream,
+    on_update: &mut F,
+) -> Result<crate::HttpResponse, InferenceError>
+where
+    F: FnMut(String) -> Fut + Send,
+    Fut: Future<Output = ()> + Send,
+{
+    let mut request = HttpRequest::post_json(endpoint, payload);
+    request.headers.extend([
+        ("authorization".into(), authorization),
+        ("accept".into(), "text/event-stream".into()),
+    ]);
+    http.execute_streaming(request, |chunk| {
+        let update = stream.push(&chunk);
+        let completed = stream.is_completed();
+        let callback = update
+            .as_ref()
+            .ok()
+            .and_then(Clone::clone)
+            .map(&mut *on_update);
+        async move {
+            update?;
+            if let Some(callback) = callback {
+                callback.await;
+            }
+            Ok(if completed {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
+        }
+    })
+    .await
+    .map_err(|source| InferenceError::Transport {
+        endpoint: endpoint.into(),
+        source,
+    })
+}
+
 fn account_error(error: ConnectionError) -> InferenceError {
     if error == ConnectionError::LoginRequired {
         InferenceError::AccountLoginRequired {
@@ -122,7 +148,7 @@ fn account_error(error: ConnectionError) -> InferenceError {
 fn responses_payload(chat: Value) -> Result<Value, InferenceError> {
     let invalid = || InferenceError::InvalidConfiguration {
         field: "translation.messages",
-        message: "ChatGPT requires ordered text chat messages".into(),
+        message: "Responses requires ordered text chat messages".into(),
     };
     let model = chat["model"]
         .as_str()

@@ -1115,7 +1115,7 @@ fn provider_runtime_config(
         .and_then(Value::as_str)
     {
         None | Some("local" | "onnx-cpu") => 32_768,
-        Some(_) => 1_048_576,
+        Some(_) => 1_048_576.max(default_context_window(section, provider, settings)),
     };
     let mut value = |field: &str, default: u32, minimum: u32, maximum: u32| {
         let raw = match field {

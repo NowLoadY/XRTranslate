@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteConnector {
     OpenaiChat,
+    OpenaiResponses,
     DashscopeTranslation,
     ChatgptResponses,
     OpenaiSpeech,
@@ -33,12 +34,22 @@ pub enum ConnectionChannel {
 
 pub use xrtranslate_connections::AccountProvider;
 
+/// GPT-6.2 counts visible output and reasoning against one allowance.
+pub fn openai_agent_limits(window: u32) -> (u32, u32) {
+    let output = 25_000.min(window / 4);
+    (
+        922_000.min(window.saturating_sub(output).saturating_sub(256)),
+        output,
+    )
+}
+
 impl RemoteConnector {
     pub fn capability(self) -> ModelCapability {
         match self {
-            Self::OpenaiChat | Self::DashscopeTranslation | Self::ChatgptResponses => {
-                ModelCapability::Translation
-            }
+            Self::OpenaiChat
+            | Self::OpenaiResponses
+            | Self::DashscopeTranslation
+            | Self::ChatgptResponses => ModelCapability::Translation,
             Self::OpenaiSpeech
             | Self::GeminiSpeech
             | Self::MinimaxSpeech
@@ -50,6 +61,7 @@ impl RemoteConnector {
     pub fn transport(self) -> &'static str {
         match self {
             Self::OpenaiChat
+            | Self::OpenaiResponses
             | Self::DashscopeTranslation
             | Self::ChatgptResponses
             | Self::OpenaiTranscription
@@ -243,6 +255,8 @@ pub struct RemoteServiceManifest {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteProviderManifest {
+    #[serde(default)]
+    pub default_agent_model: Option<String>,
     pub id: String,
     #[serde(default)]
     pub label: Option<String>,

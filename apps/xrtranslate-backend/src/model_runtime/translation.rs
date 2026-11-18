@@ -8,6 +8,7 @@ pub(super) enum TranslationProfile {
     LocalCatalog,
     OpenAiCompatible,
     ChatGptAccount,
+    OpenAiResponses,
 }
 
 impl TranslationProfile {
@@ -21,6 +22,7 @@ impl TranslationProfile {
             Some(RemoteConnector::OpenaiChat | RemoteConnector::DashscopeTranslation) => {
                 Some(Self::OpenAiCompatible)
             }
+            Some(RemoteConnector::OpenaiResponses) => Some(Self::OpenAiResponses),
             Some(RemoteConnector::ChatgptResponses) => Some(Self::ChatGptAccount),
             _ => None,
         }
@@ -33,6 +35,11 @@ impl TranslationProfile {
         accounts: &xrtranslate_connections::AccountStore,
     ) -> Result<TranslationAdapter<ReqwestClient>, InferenceError> {
         let adapter = match self {
+            Self::OpenAiResponses => TranslationAdapter::with_openai_responses(
+                &config.url,
+                &config.model,
+                config.api_key.as_deref().unwrap_or_default(),
+            ),
             Self::ChatGptAccount => TranslationAdapter::with_chatgpt_account(
                 accounts.clone(),
                 &config.url,

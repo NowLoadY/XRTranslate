@@ -7358,6 +7358,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ui-director",
+ "uuid",
  "xrtranslate-plugin",
  "xrtranslate-prompt",
  "xrtranslate-protocol",
@@ -7740,6 +7741,7 @@ version = "0.4.7"
 dependencies = [
  "serde",
  "serde_json",
+ "ui-director",
  "xr-corpus-protocol",
  "xrtranslate-prompt",
 ]

@@ -8,7 +8,7 @@
 
 pub mod tts;
 
-/// Configured text-model role. Both use the same stateless inference transport.
+/// Configured text-model role for an inference request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AskTarget {
@@ -17,11 +17,15 @@ pub enum AskTarget {
     Agent,
 }
 
-/// One stateless inference. The caller supplies all context; neither form joins
-/// a backend conversation or continues a provider session.
+/// Local history is authoritative. A negotiated Agent turn may reuse an exact
+/// prefix on the provider connection.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum AskRequest {
+    AgentTurn {
+        messages: Vec<xrtranslate_prompt::PromptMessage>,
+        agent_turn: AgentTurn,
+    },
     Prompt {
         prompt: String,
     },
@@ -35,9 +39,20 @@ pub enum AskRequest {
     },
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTurn {
+    /// Identifies this live Agent instance, never a provider response.
+    pub session: String,
+    pub scope: serde_json::Value,
+    pub tools: Vec<ui_director::Tool>,
+    pub feedback_index: Option<usize>,
+}
+
 impl AskRequest {
     pub fn target(&self) -> AskTarget {
         match self {
+            Self::AgentTurn { .. } => AskTarget::Agent,
             Self::Messages { target, .. } => *target,
             Self::Prompt { .. } => AskTarget::Translation,
         }
@@ -57,7 +72,7 @@ impl AskRequest {
                 role: xrtranslate_prompt::PromptMessageRole::User,
                 content: prompt,
             }],
-            Self::Messages { messages, .. } => messages,
+            Self::Messages { messages, .. } | Self::AgentTurn { messages, .. } => messages,
         }
     }
 }

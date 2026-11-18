@@ -1031,8 +1031,16 @@ impl NativeInference {
         &self,
         messages: &[xrtranslate_prompt::PromptMessage],
         response_schema: Option<&serde_json::Value>,
+        agent_turn: Option<&xrtranslate_protocol::AgentTurn>,
     ) -> Result<String, InferenceError> {
         let started = Instant::now();
+        if let Some(turn) = agent_turn {
+            return self
+                .translation
+                .agent_turn(messages, turn, self.translation_context_window_tokens)
+                .await
+                .map(|completion| completion.text);
+        }
         self.translation
             .ask(
                 messages,

@@ -119,6 +119,50 @@ fn independent_agent_reuses_credentials_without_changing_translation() {
 }
 
 #[test]
+fn openai_agent_prefers_responses_and_honors_per_model_window_overrides() {
+    use xrtranslate_assets::remote::{RemoteConnector, openai_agent_limits};
+    let mut raw = config().raw;
+    raw["translation"]["providers"]["openai"]["api_key"] = json!("fixture");
+    raw["agent"]["model"] = json!(selection("openai", "gpt-6.2-sol"));
+    let configured = AppConfig::from_value(raw.clone()).unwrap();
+    let choices = configured.chat_model_selections();
+    assert_eq!(
+        choices.iter().find(|item| item.provider == "openai"),
+        Some(&selection("openai", "gpt-6.2-sol"))
+    );
+    let agent = configured.agent_provider().unwrap();
+    assert_eq!(agent.connector, Some(RemoteConnector::OpenaiResponses));
+    assert_eq!(agent.url, "https://api.openai.com/v1/responses");
+    assert_eq!(agent.api_key.as_deref(), Some("fixture"));
+    assert_eq!(agent.runtime.context_window_tokens, 1_050_000);
+    assert_eq!(openai_agent_limits(1_050_000), (922_000, 25_000));
+    assert_eq!(
+        configured
+            .native_model_route()
+            .unwrap()
+            .translation
+            .provider,
+        "qwen"
+    );
+
+    raw["translation"]["providers"]["openai"]["context_windows"]["gpt-6.2-sol"] = json!(131_072);
+    let adjusted = AppConfig::from_value(raw.clone())
+        .unwrap()
+        .agent_provider()
+        .unwrap();
+    assert_eq!(adjusted.runtime.context_window_tokens, 131_072);
+    assert_eq!(openai_agent_limits(131_072), (105_816, 25_000));
+
+    raw["agent"]["model"] = json!(selection("openai", "gpt-4o-mini"));
+    let mini = AppConfig::from_value(raw)
+        .unwrap()
+        .agent_provider()
+        .unwrap();
+    assert_eq!(mini.connector, Some(RemoteConnector::OpenaiChat));
+    assert_eq!(mini.runtime.context_window_tokens, 128_000);
+}
+
+#[test]
 fn chat_choices_use_capability_records_not_transport_or_credentials() {
     let mut raw = config().raw;
     raw["translation"]["providers"]["qwen"]["api_key"] = json!("");
