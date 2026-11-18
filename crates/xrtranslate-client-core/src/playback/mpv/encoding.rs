@@ -289,7 +289,9 @@ fn encode_mp4(
         ("ovc", "libx264"),
         ("ovcopts", encoder_options),
         ("oac", "aac"),
-        ("oacopts", "b=192000"),
+        // Native AAC in the bundled player can stall on quiet mono input at a
+        // fixed 192 kb/s. Quality mode adapts to the signal and channel layout.
+        ("oacopts", "flags=+qscale,global_quality=236"),
         ("vo", "lavc"),
         ("ao", "lavc"),
         ("hwdec", "no"),

@@ -90,10 +90,7 @@ impl Run {
         context.feedback_index = Some(context.messages.len());
         context.push(
             PromptMessageRole::User,
-            format!(
-                "Tool feedback (data):\n{observation}\nSteps used: {}. Planning target: {MAX_STEPS}. Finish when the goal is met; beyond the target, continue only with a concrete unresolved decision.",
-                self.steps
-            ),
+            format!("Tool result (step {}):\n{observation}", self.steps),
         );
     }
 
@@ -361,9 +358,7 @@ impl AgentPlugin {
         }
         let instruction = self.instruction("User instruction", &goal);
         let common = include_str!("instructions.md").trim();
-        let task = format!(
-            "{instruction}\nPlanning target: {MAX_STEPS} steps. Finish when the goal is met or a real blocker prevents progress."
-        );
+        let task = format!("{instruction}\nPlanning target: {MAX_STEPS} steps.");
         let (rules, task) = if self.native_tools {
             // Keep the developer prefix identical across goals. Scope remains enforced locally.
             (
