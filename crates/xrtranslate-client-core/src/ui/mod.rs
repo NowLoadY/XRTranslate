@@ -22,6 +22,7 @@ pub fn icon_source(name: &str) -> eframe::egui::ImageSource<'static> {
         "power.svg" => include_bytes!("../../resources/icons/power.svg"),
         "record.svg" => include_bytes!("../../resources/icons/record.svg"),
         "import.svg" => include_bytes!("../../resources/icons/import.svg"),
+        "image.svg" => include_bytes!("../../resources/icons/image.svg"),
         "plus.svg" => include_bytes!("../../resources/icons/plus.svg"),
         "scissors.svg" => include_bytes!("../../resources/icons/scissors.svg"),
         "trash.svg" => include_bytes!("../../resources/icons/trash.svg"),
