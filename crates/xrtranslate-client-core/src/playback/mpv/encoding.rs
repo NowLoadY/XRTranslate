@@ -153,6 +153,26 @@ pub fn encode_video_edit(
     progress: &AtomicU32,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    encode_video_edit_range(
+        source,
+        output,
+        options,
+        video_filter,
+        None,
+        progress,
+        cancelled,
+    )
+}
+
+pub fn encode_video_edit_range(
+    source: &str,
+    output: &Path,
+    options: VideoEncoding<'_>,
+    video_filter: Option<&str>,
+    range: Option<[i64; 2]>,
+    progress: &AtomicU32,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     encode_mp4(
         source,
         output,
@@ -160,7 +180,12 @@ pub fn encode_video_edit(
         video_filter,
         progress,
         cancelled,
-        "preset=medium,crf=20",
+        if range.is_some() {
+            "preset=veryfast,crf=20"
+        } else {
+            "preset=medium,crf=20"
+        },
+        range,
     )
 }
 
@@ -178,6 +203,7 @@ pub fn encode_still_tile(source: &str, output: &Path) -> Result<(), String> {
         &AtomicU32::new(0),
         &AtomicBool::new(false),
         "preset=ultrafast,crf=0",
+        None,
     )
 }
 
@@ -199,6 +225,7 @@ pub fn encode_material_picture(
         &AtomicU32::new(0),
         &AtomicBool::new(false),
         "preset=ultrafast,crf=16",
+        None,
     )
 }
 
@@ -242,6 +269,7 @@ fn encode_mp4(
     progress: &AtomicU32,
     cancelled: &AtomicBool,
     encoder_options: &str,
+    range: Option<[i64; 2]>,
 ) -> Result<(), String> {
     if !super::is_mpv_dll_available() {
         return Err("The video playback runtime is required for export".into());
@@ -320,6 +348,10 @@ fn encode_mp4(
     if let Some(filter) = video_filter {
         mpv.set_option_string("vf", filter)?;
     }
+    if let Some([start, end]) = range {
+        mpv.set_option_string("start", &format!("{:.3}", start as f64 / 1000.))?;
+        mpv.set_option_string("end", &format!("{:.3}", end as f64 / 1000.))?;
+    }
     encode_with_audio(
         mpv,
         source,
@@ -327,7 +359,10 @@ fn encode_mp4(
         &options.audio,
         Some(progress),
         cancelled,
-        None,
+        range.map(|[_, end_ms]| ReviewRange {
+            end_ms,
+            clock_only: false,
+        }),
     )
 }
 

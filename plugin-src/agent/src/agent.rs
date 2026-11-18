@@ -345,6 +345,16 @@ impl AgentPlugin {
                         .all(|key| tool.input_schema["properties"].get(key).is_some())
             })
             .cloned()
+            .map(|mut tool| {
+                if let Some(properties) = tool.input_schema["properties"].as_object_mut() {
+                    properties.retain(|name, _| !fields.contains_key(name));
+                }
+                if let Some(required) = tool.input_schema["required"].as_array_mut() {
+                    required
+                        .retain(|name| !name.as_str().is_some_and(|key| fields.contains_key(key)));
+                }
+                tool
+            })
             .collect();
         if tools.is_empty() {
             return Err("No tools accept this scope".into());
@@ -554,7 +564,8 @@ impl AgentPlugin {
                 }
                 Err(error) if error.invalid_output => {
                     run.errors += 1;
-                    run.feedback(&mut self.context, json!({"error":error.error}));
+                    run.feedback(&mut self.context, json!({"error":error.error,
+                        "next":"Nothing ran. Retry with the smallest complete operation. Split a large edit into related batches and use each returned revision."}));
                     return None;
                 }
                 Err(error) => return self.stop(&error.error).map(|_| Action::Finished),
@@ -583,7 +594,17 @@ impl AgentPlugin {
                             self.message = Some(message.unwrap_or_else(|| done.clone()));
                             return self.finish(&done, true).map(|_| Action::Finished);
                         }
-                        NextStep::Tool(call) => call,
+                        NextStep::Tool(mut call) => {
+                            if !catalog::handles(&call.name)
+                                && let Some(args) = call.arguments.as_object_mut()
+                                && let Some(scope) = run.scope.as_object()
+                            {
+                                for (name, value) in scope {
+                                    args.entry(name).or_insert_with(|| value.clone());
+                                }
+                            }
+                            call
+                        }
                     };
                     let allowed = run.permits(&call);
                     if allowed {
@@ -611,12 +632,12 @@ impl AgentPlugin {
                     run.errors += 1;
                     run.feedback(
                         &mut self.context,
-                        json!({"error":"Use tools.list / tools.describe to discover available operations; other calls must include the exact supplied scope"}),
+                        json!({"error":"Choose an available operation. The executor supplies the exact supplied scope; a different target cannot be used."}),
                     );
                 }
                 Err(error) => {
                     run.errors += 1;
-                    run.feedback(&mut self.context, json!({"error":format!("No operation was executed. Invalid decision: {error}. Return one JSON object with action containing only tool or done. Put memory and optional message alongside action, not inside it. Wait for successful tool feedback before reporting an operation as completed.")}));
+                    run.feedback(&mut self.context, json!({"error":format!("No operation was executed. Invalid decision: {error}. Return one JSON object with action containing only tool or done. Put memory and optional message alongside action. Retry a large edit in smaller complete batches.")}));
                 }
             }
             return None;
@@ -827,13 +848,13 @@ mod tests {
                 .is_none()
         );
         tx.send(Ok(
-            json!({"action":{"tool":{"name":"test.read","arguments":{"document":"one"}}}})
-                .to_string(),
+            json!({"action":{"tool":{"name":"test.read","arguments":{}}}}).to_string(),
         ))
         .unwrap();
         let Some(Action::Call(call)) = agent.poll(|_| panic!()) else {
             panic!("valid call must run")
         };
+        assert_eq!(call.arguments["document"], "one");
         agent.observe(&call,Ok(json!({"pending":call,"cancel":{"name":"test.cancel","arguments":{"document":"one"}}})));
         agent.stop("Takeover");
         assert_eq!(agent.take_cleanup()[0].name, "test.cancel");
