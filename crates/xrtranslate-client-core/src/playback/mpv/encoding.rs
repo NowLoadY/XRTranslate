@@ -153,6 +153,43 @@ pub fn encode_video_edit(
     progress: &AtomicU32,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    encode_mp4(
+        source,
+        output,
+        options,
+        video_filter,
+        progress,
+        cancelled,
+        "preset=medium,crf=20",
+    )
+}
+
+/// A short reusable source for a still picture. Preserve the pixels before the final encode.
+pub fn encode_still_tile(source: &str, output: &Path) -> Result<(), String> {
+    encode_mp4(
+        source,
+        output,
+        VideoEncoding {
+            subtitles: None,
+            style: &Default::default(),
+            audio: VideoAudio::Original(None),
+        },
+        None,
+        &AtomicU32::new(0),
+        &AtomicBool::new(false),
+        "preset=ultrafast,crf=0",
+    )
+}
+
+fn encode_mp4(
+    source: &str,
+    output: &Path,
+    options: VideoEncoding<'_>,
+    video_filter: Option<&str>,
+    progress: &AtomicU32,
+    cancelled: &AtomicBool,
+    encoder_options: &str,
+) -> Result<(), String> {
     if !super::is_mpv_dll_available() {
         return Err("The video playback runtime is required for export".into());
     }
@@ -169,7 +206,7 @@ pub fn encode_video_edit(
         ("of", "mp4"),
         ("ofopts", "movflags=+faststart"),
         ("ovc", "libx264"),
-        ("ovcopts", "preset=medium,crf=20"),
+        ("ovcopts", encoder_options),
         ("oac", "aac"),
         ("oacopts", "b=192000"),
         ("vo", "lavc"),
@@ -230,7 +267,83 @@ pub fn encode_video_edit(
     if let Some(filter) = video_filter {
         mpv.set_option_string("vf", filter)?;
     }
-    match &options.audio {
+    encode_with_audio(
+        mpv,
+        source,
+        output,
+        &options.audio,
+        Some(progress),
+        cancelled,
+        None,
+    )
+}
+
+/// Encode an interval on the edited clock with the same track routing, fades and levels as MP4.
+pub fn encode_audio_review(
+    source: &str,
+    output: &Path,
+    audio: &VideoAudio,
+    [start, end]: [i64; 2],
+    clock_only: bool,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    if start < 0 || end <= start || end - start > 15_000 {
+        return Err("Choose an audio review interval of up to 15 seconds".into());
+    }
+    if !super::is_mpv_dll_available() {
+        return Err("The media playback runtime is required for audio review".into());
+    }
+    let mpv = MpvHandle::create()?;
+    for (name, value) in [
+        ("config", "no"),
+        ("load-scripts", "no"),
+        ("terminal", "no"),
+        ("o", output.to_str().ok_or("Invalid audio review path")?),
+        ("of", "wav"),
+        ("oac", "pcm_s16le"),
+        ("ao", "lavc"),
+        ("vid", "no"),
+        ("vo", "null"),
+        ("sid", "no"),
+        ("audio-file-auto", "no"),
+        ("keep-open", "no"),
+        ("idle", "yes"),
+    ] {
+        mpv.set_option_string(name, value)?;
+    }
+    mpv.set_option_string("start", &format!("{:.3}", start as f64 / 1000.))?;
+    mpv.set_option_string("end", &format!("{:.3}", end as f64 / 1000.))?;
+    encode_with_audio(
+        mpv,
+        source,
+        output,
+        audio,
+        None,
+        cancelled,
+        Some(ReviewRange {
+            end_ms: end,
+            clock_only,
+        }),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ReviewRange {
+    end_ms: i64,
+    // A picture project supplies a seekable silent clock instead of decoding its images.
+    clock_only: bool,
+}
+
+fn encode_with_audio(
+    mpv: MpvHandle,
+    source: &str,
+    output: &Path,
+    audio: &VideoAudio,
+    progress: Option<&AtomicU32>,
+    cancelled: &AtomicBool,
+    review: Option<ReviewRange>,
+) -> Result<(), String> {
+    match audio {
         VideoAudio::Original(track) => {
             if let Some(track) = track {
                 mpv.set_option_string("aid", &track.to_string())?;
@@ -261,14 +374,14 @@ pub fn encode_video_edit(
         }
     }
     mpv.initialize()?;
-    if !matches!(options.audio, VideoAudio::Original(_)) {
+    if review.is_some() || !matches!(audio, VideoAudio::Original(_)) {
         let error = unsafe { libmpv_sys::mpv_hook_add(mpv.handle, 0, c"on_preloaded".as_ptr(), 0) };
         if error < 0 {
             return Err(format!("Cannot prepare export audio: {error}"));
         }
     }
     mpv.command(&["loadfile", source])?;
-    wait_for_encoding(mpv, output, Some(progress), cancelled, Some(&options.audio))
+    wait_for_encoding(mpv, output, progress, cancelled, Some((audio, review)))
 }
 
 // Native arrays preserve commas, Unicode and other punctuation in file paths.
@@ -309,10 +422,11 @@ fn set_files(mpv: &MpvHandle, name: &std::ffi::CStr, paths: &[&str]) -> Result<(
     Ok(())
 }
 
-fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio) -> Result<(), String> {
-    if matches!(audio, VideoAudio::Original(_)) {
-        return Ok(());
-    }
+fn select_export_audio(
+    mpv: &MpvHandle,
+    audio: &VideoAudio,
+    review: Option<ReviewRange>,
+) -> Result<(), String> {
     let mut node: libmpv_sys::mpv_node = unsafe { std::mem::zeroed() };
     let error = unsafe {
         libmpv_sys::mpv_get_property(
@@ -325,8 +439,16 @@ fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio) -> Result<(), String
     if error < 0 {
         return Err("Cannot read export audio tracks".into());
     }
-    let tracks = unsafe { super::tracks::read(&node) };
+    let mut tracks = unsafe { super::tracks::read(&node) };
     unsafe { libmpv_sys::mpv_free_node_contents(&mut node) };
+    let mut silent_clock = None;
+    if review.is_some_and(|r| r.clock_only) {
+        silent_clock = tracks.iter().find(|t| t.external.is_none()).map(|t| t.id);
+        tracks.retain(|t| t.external.is_some());
+    }
+    if matches!(audio, VideoAudio::Original(_)) && !tracks.is_empty() {
+        return Ok(()); // Keep the default or explicitly selected source track.
+    }
     let mut inputs = Vec::new();
     for (source, settings) in audio.inputs() {
         let Some(track) = super::tracks::resolve(source, &tracks) else {
@@ -339,9 +461,28 @@ fn select_export_audio(mpv: &MpvHandle, audio: &VideoAudio) -> Result<(), String
     }
     inputs.sort_by_key(|(id, _)| *id);
     inputs.dedup_by_key(|(id, _)| *id);
-    super::tracks::apply(mpv, &inputs)?;
+    if inputs.is_empty()
+        && let Some(id) = silent_clock
+    {
+        inputs.push((id, Default::default()));
+    }
+    if inputs.is_empty()
+        && let Some(range) = review
+    {
+        mpv.set_property_string(
+            "lavfi-complex",
+            &format!(
+                "anullsrc=r=48000:cl=stereo:d={:.3}[ao]",
+                range.end_ms as f64 / 1000.
+            ),
+        )?;
+    } else {
+        super::tracks::apply(mpv, &inputs)?;
+    }
     // A moved speech clip must not extend the original video's duration.
-    if let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0) {
+    if review.is_none()
+        && let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0)
+    {
         mpv.command(&["set", "end", &duration.to_string()])?;
     }
     Ok(())
@@ -352,7 +493,7 @@ fn wait_for_encoding(
     output: &Path,
     progress: Option<&AtomicU32>,
     cancelled: &AtomicBool,
-    audio: Option<&VideoAudio>,
+    audio: Option<(&VideoAudio, Option<ReviewRange>)>,
 ) -> Result<(), String> {
     loop {
         if cancelled.load(Ordering::Relaxed) {
@@ -361,7 +502,7 @@ fn wait_for_encoding(
         let event = unsafe { &*libmpv_sys::mpv_wait_event(mpv.handle, 0.1) };
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_HOOK {
             let hook = unsafe { &*(event.data as *const libmpv_sys::mpv_event_hook) };
-            let result = audio.map_or(Ok(()), |audio| select_export_audio(&mpv, audio));
+            let result = audio.map_or(Ok(()), |(audio, end)| select_export_audio(&mpv, audio, end));
             let error = unsafe { libmpv_sys::mpv_hook_continue(mpv.handle, hook.id) };
             result?;
             if error < 0 {

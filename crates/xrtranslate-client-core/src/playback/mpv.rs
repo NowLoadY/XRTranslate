@@ -7,12 +7,12 @@ mod encoding;
 mod inspection;
 mod tracks;
 pub use encoding::{
-    VideoAudio, VideoEncoding, decode_rgb_samples, encode_audio, encode_audio_volume, encode_video,
-    encode_video_edit,
+    VideoAudio, VideoEncoding, decode_rgb_samples, encode_audio, encode_audio_review,
+    encode_audio_volume, encode_still_tile, encode_video, encode_video_edit,
 };
 pub use inspection::{
-    VideoProbe, capture_displayed_frame, detect_frame_faces, extract_filtered_frame,
-    extract_video_frame, inspect_media, inspect_media as inspect_video,
+    VideoProbe, capture_displayed_frame, extract_filtered_frame, extract_video_frame,
+    inspect_media, inspect_media as inspect_video,
 };
 #[cfg(test)]
 pub mod tests;

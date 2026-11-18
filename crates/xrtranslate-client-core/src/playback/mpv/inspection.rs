@@ -12,109 +12,6 @@ pub struct VideoProbe {
     pub height: u32,
 }
 
-/// Real, device-local detection. Empty output means no face was detected, not
-/// proof that the entire image is safe for text. This does not estimate a body.
-pub fn detect_frame_faces(path: &Path) -> Result<Vec<[f32; 4]>, String> {
-    #[cfg(windows)]
-    {
-        faces::detect(path)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        Err("No face detector is configured for this platform".into())
-    }
-}
-
-// WinRT caches activation factories for the process. Keep one apartment alive
-// and reuse its detector across all review and automatic placement requests.
-#[cfg(windows)]
-mod faces {
-    use std::{
-        path::{Path, PathBuf},
-        sync::{OnceLock, mpsc},
-    };
-    use windows::{
-        Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
-        Media::FaceAnalysis::FaceDetector,
-        Storage::Streams::DataWriter,
-        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
-    };
-
-    type Boxes = Result<Vec<[f32; 4]>, String>;
-    type Request = (PathBuf, mpsc::SyncSender<Boxes>);
-
-    pub(super) fn detect(path: &Path) -> Boxes {
-        static WORKER: OnceLock<Result<mpsc::SyncSender<Request>, String>> = OnceLock::new();
-        let worker = WORKER
-            .get_or_init(|| {
-                let (queue, requests) = mpsc::sync_channel(4);
-                std::thread::Builder::new()
-                    .name("media-face-detection".into())
-                    .spawn(move || run(requests))
-                    .map_err(|e| e.to_string())?;
-                Ok(queue)
-            })
-            .as_ref()
-            .map_err(Clone::clone)?;
-        let (reply, result) = mpsc::sync_channel(1);
-        worker
-            .send((path.to_owned(), reply))
-            .map_err(|_| "Face detection worker stopped")?;
-        result.recv().map_err(|_| "Face detection worker stopped")?
-    }
-
-    fn run(requests: mpsc::Receiver<Request>) {
-        let apartment = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let detector = apartment
-            .as_ref()
-            .map_err(ToString::to_string)
-            .and_then(|_| {
-                FaceDetector::CreateAsync()
-                    .and_then(|async_op| async_op.get())
-                    .map_err(|e| e.to_string())
-            });
-        for (path, reply) in requests {
-            let result = detector
-                .as_ref()
-                .map_err(Clone::clone)
-                .and_then(|d| frame(d, &path));
-            let _ = reply.send(result);
-        }
-        drop(detector);
-        if apartment.is_ok() {
-            unsafe { RoUninitialize() };
-        }
-    }
-
-    fn frame(detector: &FaceDetector, path: &Path) -> Boxes {
-        let image = image::open(path).map_err(|e| e.to_string())?.to_luma8();
-        let result = (|| -> windows::core::Result<Vec<[f32; 4]>> {
-            let bitmap = SoftwareBitmap::Create(
-                BitmapPixelFormat::Gray8,
-                image.width() as i32,
-                image.height() as i32,
-            )?;
-            let writer = DataWriter::new()?;
-            writer.WriteBytes(image.as_raw())?;
-            bitmap.CopyFromBuffer(&writer.DetachBuffer()?)?;
-            let faces = detector.DetectFacesAsync(&bitmap)?.get()?;
-            let mut boxes = Vec::new();
-            for index in 0..faces.Size()? {
-                let rect = faces.GetAt(index)?.FaceBox()?;
-                boxes.push([
-                    rect.X as f32 / image.width() as f32,
-                    rect.Y as f32 / image.height() as f32,
-                    (rect.X + rect.Width) as f32 / image.width() as f32,
-                    (rect.Y + rect.Height) as f32 / image.height() as f32,
-                ]);
-            }
-            Ok(boxes)
-        })();
-        result.map_err(|e| e.to_string())
-    }
-}
-
 fn probe_handle() -> Result<MpvHandle, String> {
     if !super::is_mpv_dll_available() {
         return Err("Install the media playback runtime first".into());
@@ -170,7 +67,12 @@ pub fn inspect_media(source: &str) -> Result<VideoProbe, String> {
 }
 
 pub fn extract_video_frame(source: &str, source_ms: i64, output: &Path) -> Result<(), String> {
-    extract_filtered_frame(source, source_ms, output, "scale=480:-2")
+    extract_filtered_frame(
+        source,
+        source_ms,
+        output,
+        "scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2",
+    )
 }
 
 /// Save the displayed frame covering the playhead and return its presentation time.

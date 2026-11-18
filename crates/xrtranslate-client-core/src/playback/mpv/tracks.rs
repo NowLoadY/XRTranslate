@@ -36,8 +36,9 @@ fn mix_graph(tracks: &[(i64, AudioMixSettings)]) -> String {
         .enumerate()
         .map(|(i, (id, settings))| {
             format!(
-                "[aid{id}]aformat=channel_layouts=stereo,volume='{}':eval=frame[a{i}];",
-                volume_expression(settings)
+                "[aid{id}]aformat=channel_layouts=stereo,volume='{}':eval=frame{}[a{i}];",
+                ducked_volume(settings),
+                fade_filters(settings)
             )
         })
         .collect::<String>();
@@ -74,19 +75,28 @@ pub(super) fn resolve<'a>(
     })
 }
 
-fn volume_expression(settings: &AudioMixSettings) -> String {
-    let level = ducked_volume(settings);
+fn fade_filters(settings: &AudioMixSettings) -> String {
     let Some(envelope) = &settings.envelope else {
-        return level;
+        return String::new();
     };
     let start = envelope.start_ms as f64 / 1000.0;
     let end = envelope.end_ms as f64 / 1000.0;
-    let duration = (end - start).max(0.001);
-    let fade_in =
-        (f64::from(envelope.fade_in_ms) / 1000.0).clamp(0.001, (duration / 2.0).max(0.001));
-    let fade_out =
-        (f64::from(envelope.fade_out_ms) / 1000.0).clamp(0.001, (duration / 2.0).max(0.001));
-    format!("({level})*clip(min((t-{start:.3})/{fade_in:.3},({end:.3}-t)/{fade_out:.3}),0,1)")
+    let max_fade = ((end - start) / 2.).max(0.);
+    let fade_in = (f64::from(envelope.fade_in_ms) / 1000.).min(max_fade);
+    let fade_out = (f64::from(envelope.fade_out_ms) / 1000.).min(max_fade);
+    // afade uses individual sample times. A frame-evaluated gain can mute the
+    // entire attack of a short sound when its first audio packet starts at zero.
+    let mut filters = String::new();
+    if fade_in > 0. {
+        filters.push_str(&format!(",afade=t=in:st={start:.6}:d={fade_in:.6}"));
+    }
+    if fade_out > 0. {
+        filters.push_str(&format!(
+            ",afade=t=out:st={:.6}:d={fade_out:.6}",
+            end - fade_out
+        ));
+    }
+    filters
 }
 
 fn ducked_volume(settings: &AudioMixSettings) -> String {

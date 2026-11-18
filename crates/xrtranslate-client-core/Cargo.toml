@@ -45,7 +45,7 @@ eframe = "0.37.0"
 rfd = "0.17.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.60", features = ["Win32_Graphics_DirectWrite", "Win32_System_LibraryLoader", "Win32_System_WinRT", "Media_FaceAnalysis", "Graphics_Imaging", "Storage_Streams"] }
+windows = { version = "0.60", features = ["Win32_Graphics_DirectWrite", "Win32_System_LibraryLoader"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 xrtranslate-connections = { path = "../xrtranslate-connections" }

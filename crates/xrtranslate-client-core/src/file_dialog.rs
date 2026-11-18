@@ -128,6 +128,37 @@ impl FileDialog {
             }
         }
     }
+    pub fn pick_files(
+        self,
+        context: &egui::Context,
+        key: &str,
+        requested: bool,
+    ) -> Option<Vec<PathBuf>> {
+        #[cfg(not(target_os = "android"))]
+        {
+            let id = egui::Id::unique(key);
+            if requested && !context.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
+                context.data_mut(|data| data.insert_temp(id, true));
+                let context = context.clone();
+                std::thread::spawn(move || {
+                    let paths = self.native.pick_files();
+                    context.data_mut(|data| {
+                        data.remove::<bool>(id);
+                        if let Some(paths) = paths {
+                            data.insert_temp(id, paths);
+                        }
+                    });
+                    context.request_repaint();
+                });
+            }
+            context.data_mut(|data| data.remove_temp::<Vec<PathBuf>>(id))
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.pick_file(context, key, requested)
+                .map(|path| vec![path])
+        }
+    }
     pub fn save(self, content: impl AsRef<[u8]>) -> Result<(), String> {
         let bytes = content.as_ref().to_vec();
         self.write(move |path| std::fs::write(path, bytes))
