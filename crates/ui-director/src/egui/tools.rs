@@ -129,7 +129,7 @@ impl ToolProvider for UiTools {
             Tool::new("ui.operation", "Read the actual UI action result; a pending receipt means the UI frame has not completed it yet.", json!({"operation":{"type":"string"}}), &["operation"]).read_only(),
             Tool::new("ui.cancel", "Cancel an action that has not reached the UI. Already executed actions are not undone.", json!({"operation":{"type":"string"}}), &["operation"]),
             Tool::new("ui.input", "Send text to the focused input. Prefer ui.set when a control is discoverable.", json!({"text":{"type":"string","maxLength":8000}}), &["text"]),
-            Tool::new("ui.pointer", "Send a pointer event for custom interactions. Prefer named controls when available.", json!({"x":{"type":"number"},"y":{"type":"number"},"pressed":{"type":["boolean","null"]}}), &["x","y"]),
+            Tool::new("ui.pointer", "Move, press or release at viewport coordinates. Use secondary for context menus.", json!({"x":{"type":"number"},"y":{"type":"number"},"pressed":{"type":["boolean","null"]},"button":{"type":"string","enum":["primary","secondary"],"default":"primary"}}), &["x","y"]),
             Tool::new("ui.viewport", "Set the viewport size and scale for UI inspection or recording.", json!({"width":{"type":"number","minimum":640,"maximum":4096},"height":{"type":"number","minimum":480,"maximum":2160},"scale":{"type":"number","minimum":0.75,"maximum":3}}), &["width","height","scale"]),
         ]
     }
@@ -340,6 +340,7 @@ impl ToolProvider for UiTools {
                     x: f32,
                     y: f32,
                     pressed: Option<bool>,
+                    button: Option<String>,
                 }
                 let args: Pointer = arguments(call)?;
                 if !args.x.is_finite() || !args.y.is_finite() {
@@ -349,6 +350,11 @@ impl ToolProvider for UiTools {
                     x: args.x,
                     y: args.y,
                     pressed: args.pressed,
+                    secondary: match args.button.as_deref() {
+                        None | Some("primary") => false,
+                        Some("secondary") => true,
+                        _ => return Err("button must be primary or secondary".into()),
+                    },
                 }
             }
             "ui.viewport" => {

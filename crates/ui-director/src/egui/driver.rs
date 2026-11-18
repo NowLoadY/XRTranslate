@@ -25,6 +25,8 @@ pub enum Command {
         x: f32,
         y: f32,
         pressed: Option<bool>,
+        #[serde(default)]
+        secondary: bool,
     },
     Scroll {
         x: f32,
@@ -331,7 +333,12 @@ impl Driver {
                 )));
                 let _ = responder.send(Response::ok("Viewport updated", None));
             }
-            Command::Pointer { x, y, pressed } => {
+            Command::Pointer {
+                x,
+                y,
+                pressed,
+                secondary,
+            } => {
                 let position = egui::pos2(x, y);
                 state
                     .pending_input
@@ -339,7 +346,11 @@ impl Driver {
                 if let Some(pressed) = pressed {
                     state.pending_input.push(egui::Event::PointerButton {
                         pos: position,
-                        button: egui::PointerButton::Primary,
+                        button: if secondary {
+                            egui::PointerButton::Secondary
+                        } else {
+                            egui::PointerButton::Primary
+                        },
                         pressed,
                         modifiers: egui::Modifiers::NONE,
                     });

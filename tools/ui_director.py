@@ -180,9 +180,14 @@ class UIDirector:
                     return width, height, pixels
                 yield frame_at
 
-    def pointer(self, x: float, y: float, pressed: Optional[bool] = None) -> Dict[str, Any]:
-        """Move or press/release the app's pointer, in logical viewport coordinates."""
-        return self.call("ui.pointer", {"x": x, "y": y, "pressed": pressed})
+    def pointer(
+        self, x: float, y: float, pressed: Optional[bool] = None, *, button: str = "primary"
+    ) -> Dict[str, Any]:
+        """Move or press/release at viewport coordinates. Use secondary for a context menu."""
+        args: Dict[str, Any] = {"x": x, "y": y, "pressed": pressed}
+        if button != "primary":
+            args["button"] = button
+        return self.call("ui.pointer", args)
 
     def text(self, text: str) -> Dict[str, Any]:
         """Type into the focused widget without using the desktop keyboard."""

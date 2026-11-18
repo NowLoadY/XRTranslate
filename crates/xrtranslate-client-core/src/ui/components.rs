@@ -1363,6 +1363,17 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
 }
 
 pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
+    let label = if hint.is_empty() { "search" } else { hint };
+    labeled_search_bar(ui, query, hint, label, "Clear search")
+}
+
+pub fn labeled_search_bar(
+    ui: &mut Ui,
+    query: &mut String,
+    hint: &str,
+    label: &str,
+    clear_label: &str,
+) -> bool {
     let is_hand_drawn = theme::is_hand_drawn(ui.ctx());
     let id = ui.make_persistent_id("search_bar_comp");
     let is_hovered = ui.memory(|m| {
@@ -1394,6 +1405,17 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
     let inner_resp = frame.show(ui, |ui| {
         ui.spacing_mut().interact_size.y = content_height;
         ui.horizontal(|ui| {
+            let icon_size = Vec2::splat(16.0);
+            ui.add(
+                egui::Image::new(egui::include_image!("../../resources/icons/search.svg"))
+                    .fit_to_exact_size(icon_size)
+                    .tint(ui.visuals().weak_text_color()),
+            );
+            let clear_width = if has_query {
+                24.0 + ui.spacing().item_spacing.x
+            } else {
+                0.0
+            };
             let text_frame = Frame::new()
                 .fill(Color32::TRANSPARENT)
                 .stroke(Stroke::NONE)
@@ -1405,32 +1427,31 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
                     .align(egui::Align2::LEFT_CENTER)
                     .frame(text_frame)
                     .margin(Margin::symmetric(0, 0))
-                    .desired_width(ui.available_width() - if has_query { 24.0 } else { 0.0 }),
+                    .desired_width((ui.available_width() - clear_width).max(0.0)),
             );
             if response.changed() {
                 changed = true;
             }
-            if !query.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let clear_btn = Frame::new()
-                        .fill(Color32::from_black_alpha(10))
-                        .corner_radius(CornerRadius::same(6))
-                        .inner_margin(Margin::symmetric(6, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new("×")
-                                    .color(Color32::from_rgb(100, 116, 139))
-                                    .size(12.0)
-                                    .strong(),
-                            )
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if clear_btn.clicked() {
-                        query.clear();
-                        changed = true;
-                    }
+            if has_query {
+                let clear_icon = egui::Image::new(crate::ui::icon!("x.svg"))
+                    .fit_to_exact_size(icon_size)
+                    .tint(ui.visuals().text_color());
+                let clear = ui.add_sized(
+                    [24.0, content_height],
+                    egui::Button::image(clear_icon).frame(false),
+                );
+                clear.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), clear_label)
                 });
+                if ui_director::egui::Control::button(clear_label)
+                    .response(ui, clear)
+                    .on_hover_text(clear_label)
+                    .clicked()
+                {
+                    query.clear();
+                    response.request_focus();
+                    changed = true;
+                }
             }
             response
         })
@@ -1463,14 +1484,9 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
         );
     }
 
-    if let Some(new_query) = ui_director::egui::record_text_input(
-        ui,
-        id,
-        if hint.is_empty() { "search" } else { hint },
-        query,
-        true,
-        rect,
-    ) {
+    if let Some(new_query) =
+        ui_director::egui::record_text_input(ui, id, label, query, true, inner_resp.inner.rect)
+    {
         *query = new_query;
         changed = true;
     }
