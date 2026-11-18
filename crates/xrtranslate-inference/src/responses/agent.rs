@@ -129,9 +129,9 @@ impl Catalogue {
         &self,
         response: &Value,
     ) -> Result<(ChatCompletion, Vec<String>), InferenceError> {
-        let invalid = |reason| InferenceError::RejectedOutput {
+        let invalid = |reason: &str| InferenceError::RejectedOutput {
             operation: "Agent",
-            reason,
+            reason: reason.to_owned(),
         };
         let mut action = None;
         let mut call_ids = Vec::new();
@@ -161,9 +161,13 @@ impl Catalogue {
                         return Err(invalid("Expected a single local operation"));
                     }
                     let wire = item["name"].as_str().unwrap_or("");
-                    let parameters: Value =
-                        serde_json::from_str(item["arguments"].as_str().unwrap_or(""))
-                            .map_err(|_| invalid("Invalid function arguments"))?;
+                    let arguments = item["arguments"]
+                        .as_str()
+                        .ok_or_else(|| invalid("Expected JSON-encoded function arguments"))?;
+                    let parameters: Value = serde_json::from_str(arguments).map_err(|error| {
+                        let name = self.names.get(wire).map_or("operation", String::as_str);
+                        invalid(&format!("Malformed JSON arguments for {name} ({error})"))
+                    })?;
                     let name = if self.local_discovery {
                         parameters["name"].as_str().filter(|name| {
                             wire == "director_operation"
@@ -419,6 +423,13 @@ mod tests {
             assert_eq!(decision["action"]["tool"]["name"], *local);
             assert_eq!(id, ["c1"]);
         }
+        let mut malformed = call(0);
+        malformed["arguments"] = json!("{\"arguments\":{}}}");
+        let error = catalogue
+            .decision(&json!({"output":[malformed]}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("a.b") && error.contains("trailing characters at line 1 column"));
         assert!(
             catalogue
                 .decision(&json!({"output":[call(0),call(1)]}))

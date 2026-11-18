@@ -67,7 +67,7 @@ pub enum InferenceError {
     /// material instead of producing a usable domain result.
     RejectedOutput {
         operation: &'static str,
-        reason: &'static str,
+        reason: String,
     },
 }
 

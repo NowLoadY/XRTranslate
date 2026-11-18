@@ -357,7 +357,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                     self.history.reject(&prompt.context);
                     InferenceError::RejectedOutput {
                         operation: "translation",
-                        reason,
+                        reason: reason.into(),
                     }
                 } else {
                     error
@@ -376,7 +376,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                 self.history.reject(&prompt.context);
                 return Err(InferenceError::RejectedOutput {
                     operation: "translation",
-                    reason,
+                    reason: reason.into(),
                 });
             }
             self.history.recover(history_limit, requested_history);
