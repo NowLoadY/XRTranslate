@@ -171,8 +171,36 @@ impl KeyResponses {
             })
         });
         let continuation = delta.is_some();
-        let input =
+        let mut input =
             delta.unwrap_or_else(|| messages.iter().map(|m| input_item(m, self.api)).collect());
+        // Attach pixels at the confirmed receipt, including on a fresh full-history
+        // turn. Replays keep its text and the model's observations after consumption.
+        let receipt = match state.previous.as_ref().filter(|_| continuation) {
+            Some(previous) if !previous.call_ids.is_empty() => input.iter().position(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == previous.call_ids[0]
+            }),
+            Some(previous) => turn
+                .feedback_index
+                .and_then(|i| i.checked_sub(previous.expected.len())),
+            None => turn.feedback_index,
+        };
+        let attachment = receipt
+            .zip(turn.feedback_jpeg.as_deref())
+            .and_then(|(i, jpeg)| {
+                let item = input.get_mut(i)?;
+                let key = if item["type"] == "function_call_output" {
+                    "output"
+                } else if item["role"] == "user" {
+                    "content"
+                } else {
+                    return None;
+                };
+                let field = item.get_mut(key)?;
+                let text = field.as_str()?;
+                let parts = json!([{"type":"input_text","text":text},
+                {"type":"input_image","image_url":format!("data:image/jpeg;base64,{jpeg}")}]);
+                Some((i, key, std::mem::replace(field, parts)))
+            });
         let wire_input = match state.previous.as_ref() {
             Some(previous) if continuation && self.api == AgentApi::DeepseekResponses => {
                 Value::Array(previous.replay.iter().chain(&input).cloned().collect())
@@ -215,6 +243,9 @@ impl KeyResponses {
         )
         .await
         .unwrap_or_else(|_| Err(self.transport("timeout", "Responses turn deadline reached")));
+        if let Some((index, key, text)) = attachment {
+            input[index][key] = text;
+        }
         let result = exchange.and_then(|reply| {
             let (completion, call_ids) = catalogue.decision(&reply.response)?;
             let output = reply.response["output"]

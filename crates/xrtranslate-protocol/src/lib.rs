@@ -47,6 +47,9 @@ pub struct AgentTurn {
     pub scope: serde_json::Value,
     pub tools: Vec<ui_director::Tool>,
     pub feedback_index: Option<usize>,
+    /// Base64 JPEG attached only to the current tool receipt, outside the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback_jpeg: Option<String>,
 }
 
 impl AskRequest {

@@ -23,6 +23,7 @@ pub(crate) struct AgentPlugin {
     available_tools: Vec<Tool>,
     supports_chat: bool,
     pub(crate) native_tools: bool,
+    pub(crate) image_input: bool,
     input_budget: usize,
     language: String,
     location: ui_director::Location,
@@ -48,6 +49,7 @@ struct Run {
     steps: usize,
     errors: usize,
     request_retries: usize,
+    review_jpeg: Option<String>,
     previous_call: String,
     repeats: usize,
 }
@@ -73,8 +75,37 @@ pub(crate) enum Action {
     Finished,
 }
 
+/// Only read an image produced by the media renderer inside its OS-temp session.
+fn review_jpeg(path: &std::path::Path) -> Option<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::io::Read;
+    let root = std::env::temp_dir()
+        .join("XRTranslate-media")
+        .canonicalize()
+        .ok()?;
+    let path = path.canonicalize().ok()?;
+    let mut parts = path.strip_prefix(&root).ok()?.iter().map(|s| s.to_str());
+    if !matches!(parts.next(), Some(Some(s)) if s.starts_with("session-"))
+        || !matches!(parts.next(), Some(Some(s)) if s.starts_with("review-"))
+        || parts.next() != Some(Some("contact-sheet.jpg"))
+        || parts.next().is_some()
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    std::fs::File::open(path)
+        .ok()?
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= LIMIT as usize && bytes.starts_with(&[0xff, 0xd8, 0xff]))
+        .then(|| STANDARD.encode(bytes))
+}
+
 impl Run {
-    fn feedback(&self, context: &mut context::Context, observation: Value) {
+    fn feedback(&mut self, context: &mut context::Context, observation: Value) {
+        self.review_jpeg = None;
         let tool = observation["tool"]["name"].as_str().unwrap_or("decision");
         if let Some(error) = observation.get("error") {
             log::warn!(
@@ -228,6 +259,10 @@ impl AgentPlugin {
             scope: run.scope.clone(),
             tools: run.tools.clone(),
             feedback_index: self.context.feedback_index,
+            feedback_jpeg: self
+                .context
+                .feedback_index
+                .and_then(|_| run.review_jpeg.clone()),
         })
     }
 
@@ -404,6 +439,7 @@ impl AgentPlugin {
             steps: 0,
             errors: 0,
             request_retries: 0,
+            review_jpeg: None,
             previous_call: String::new(),
             repeats: 0,
         });
@@ -498,7 +534,27 @@ impl AgentPlugin {
                 } else {
                     run.errors = 0;
                 }
-                run.feedback(&mut self.context, json!({"tool":call,"result":value}));
+                let mut receipt = json!({"tool":call,"result":value});
+                let mut image = None;
+                if call.name == "media.render" {
+                    let result = &receipt["result"];
+                    let output = result.get("tool_output").unwrap_or(result);
+                    if let Some(path) = output["contact_sheet"].as_str() {
+                        let status = if self.image_input && self.native_tools {
+                            image = review_jpeg(std::path::Path::new(path));
+                            if image.is_some() {
+                                "attached"
+                            } else {
+                                "unavailable"
+                            }
+                        } else {
+                            "text_only"
+                        };
+                        receipt["image_input"] = json!(status);
+                    }
+                }
+                run.feedback(&mut self.context, receipt);
+                run.review_jpeg = image;
             }
             Err(error) => {
                 run.waiting = None;
@@ -565,6 +621,7 @@ impl AgentPlugin {
                 }
                 Err(error) => return self.stop(&error.error).map(|_| Action::Finished),
             };
+            run.review_jpeg = None;
             self.context
                 .push(PromptMessageRole::Assistant, answer.clone());
             let answer = answer.trim();
@@ -662,6 +719,47 @@ impl AgentPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_pixels_follow_model_capabilities_and_stay_out_of_the_transcript() {
+        let root = std::env::temp_dir().join("XRTranslate-media");
+        std::fs::create_dir_all(&root).unwrap();
+        let session = tempfile::Builder::new()
+            .prefix("session-")
+            .tempdir_in(root)
+            .unwrap();
+        let review = tempfile::Builder::new()
+            .prefix("review-")
+            .tempdir_in(session.path())
+            .unwrap();
+        let path = review.path().join("contact-sheet.jpg");
+        std::fs::write(&path, [0xff, 0xd8, 0xff, 0xd9]).unwrap();
+        let mut agent = AgentPlugin {
+            native_tools: true,
+            ..Default::default()
+        };
+        agent.configure(
+            true,
+            8192,
+            vec![Tool::new("media.render", "Review", json!({}), &[])],
+            "English",
+        );
+        agent.start(json!({}), "Review a frame".into()).unwrap();
+        let call = ToolCall {
+            name: "media.render".into(),
+            arguments: json!({}),
+        };
+        for enabled in [true, false] {
+            agent.image_input = enabled;
+            agent.observe(&call, Ok(json!({"contact_sheet":path})));
+            let jpeg = agent.native_turn("trial").unwrap().feedback_jpeg;
+            assert_eq!(jpeg.as_deref(), enabled.then_some("/9j/2Q=="));
+            let message = &agent.context.messages.last().unwrap().content;
+            assert!(!message.contains("/9j/"));
+            assert!(message.contains(if enabled { "attached" } else { "text_only" }));
+        }
+        assert!(review_jpeg(&std::env::current_exe().unwrap()).is_none());
+    }
 
     #[test]
     fn global_goals_use_plugin_operations_and_recover_rejected_model_output() {

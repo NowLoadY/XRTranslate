@@ -218,6 +218,8 @@ pub struct RemoteCapabilities {
     pub supports_ask: bool,
     /// Supports general conversation and decisions using supplied history.
     pub supports_chat: bool,
+    /// Native Agent turns can include an image from a tool receipt.
+    pub agent_image_input: bool,
     /// Connector accepts JSON Schema output for structured inference.
     pub supports_json_output: bool,
     pub supports_context: bool,

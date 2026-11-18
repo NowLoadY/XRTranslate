@@ -7,6 +7,7 @@ use xrtranslate_prompt::TranslationPromptProfile;
 #[derive(Clone, Copy)]
 struct TextModelContract {
     native_agent_tools: bool,
+    agent_image_input: bool,
     profile: TranslationPromptProfile,
     history_percent: Option<u8>,
     supports_ask: bool,
@@ -22,6 +23,7 @@ impl TextModelContract {
         let window = provider.runtime.context_window_tokens;
         Some(Self {
             native_agent_tools: agent_api.is_some(),
+            agent_image_input: agent_api.is_some() && provider.capabilities.agent_image_input,
             context_tokens: window,
             output_tokens: provider.runtime.max_tokens,
             history_percent: provider
@@ -381,6 +383,11 @@ impl ServiceConfigEditor {
     pub(crate) fn agent_native_tools(&self) -> bool {
         self.agent_contract()
             .is_some_and(|contract| contract.native_agent_tools)
+    }
+
+    pub(crate) fn agent_image_input(&self) -> bool {
+        self.agent_contract()
+            .is_some_and(|contract| contract.agent_image_input)
     }
 
     pub(crate) fn agent_input_budget(&self) -> usize {

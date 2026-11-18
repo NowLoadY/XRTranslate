@@ -69,6 +69,7 @@ impl Plugin for Agent {
             core.stop("The Agent model connection changed");
         }
         core.native_tools = native_tools;
+        core.image_input = value["inference"]["image_input"] == true;
         core.configure(
             value["inference"]["agent"].as_bool().unwrap_or(false),
             value["inference"]["input_budget"].as_u64().unwrap_or(0) as usize,

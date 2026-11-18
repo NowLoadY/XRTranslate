@@ -47,7 +47,13 @@ async fn check_replay(dropped_socket: bool, compacted: bool) {
         )
         .await;
         let incremental = read(&mut socket).await;
-        let receipt = json!({"type":"function_call_output","call_id":"call_first","output":"actual local receipt"});
+        let output = if dropped_socket {
+            json!([{"type":"input_text","text":"actual local receipt"},
+                {"type":"input_image","image_url":"data:image/jpeg;base64,/9j/"}])
+        } else {
+            json!("actual local receipt")
+        };
+        let receipt = json!({"type":"function_call_output","call_id":"call_first","output":output});
         assert_eq!(incremental["input"], json!([receipt]));
         assert_eq!(incremental["previous_response_id"], "resp_first");
         if dropped_socket {
@@ -104,6 +110,7 @@ async fn check_replay(dropped_socket: bool, compacted: bool) {
         role: PromptMessageRole::Assistant,
         content: answer.text,
     });
+    turn.feedback_jpeg = dropped_socket.then(|| "/9j/".into());
     turn.feedback_index = Some(messages.len());
     messages.push(PromptMessage {
         role: PromptMessageRole::User,

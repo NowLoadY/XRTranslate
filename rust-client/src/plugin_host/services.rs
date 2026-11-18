@@ -618,6 +618,7 @@ impl crate::XRTranslateApp {
                 "ask": self.service_config.supports_ask(),
                 "input_budget": self.service_config.agent_input_budget(),
                 "native_tools": self.service_config.agent_native_tools(),
+                "image_input": self.service_config.agent_image_input(),
             },
         });
         let previous = self.plugin_host.context.get("host.context");

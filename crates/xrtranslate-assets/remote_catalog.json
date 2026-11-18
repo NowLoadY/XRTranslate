@@ -407,6 +407,7 @@
       "connector": "openai-chat",
       "default_context_window_tokens": 1048576,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true,
         "supports_context": true,
         "streaming": "delta",
@@ -442,6 +443,7 @@
       "connector": "openai-chat",
       "default_context_window_tokens": 1000000,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true,
         "reasoning_effort": "medium",
         "streaming": "delta",
@@ -454,6 +456,7 @@
       "connector": "openai-chat",
       "default_context_window_tokens": 1000000,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true,
         "reasoning_effort": "medium",
         "streaming": "delta",
@@ -466,6 +469,7 @@
       "connector": "openai-chat",
       "default_context_window_tokens": 1000000,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true,
         "reasoning_effort": "medium",
         "streaming": "delta",
@@ -609,6 +613,7 @@
       "connector": "openai-responses",
       "default_context_window_tokens": 1050000,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true, "supports_json_output": true, "supports_context": true,
         "streaming": "delta", "reasoning_effort": "medium"
       }
@@ -618,6 +623,7 @@
       "connector": "openai-responses",
       "default_context_window_tokens": 1050000,
       "capabilities": {
+        "agent_image_input": true,
         "supports_chat": true, "supports_json_output": true, "supports_context": true,
         "streaming": "delta", "reasoning_effort": "medium"
       }

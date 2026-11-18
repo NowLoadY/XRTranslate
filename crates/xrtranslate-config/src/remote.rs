@@ -339,6 +339,7 @@ pub(crate) fn resolve(
             // Unknown models opt in through their declared capabilities.
             supports_ask: false,
             supports_chat: false,
+            agent_image_input: false,
             supports_json_output: false,
             streaming: if capability == ModelCapability::Translation {
                 RemoteStreaming::Delta
