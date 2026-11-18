@@ -128,6 +128,70 @@ fn recommendations_follow_style_input_references_and_output_and_preserve_the_ful
 }
 
 #[test]
+fn history_share_uses_only_spare_space_and_keeps_whole_recent_turns() {
+    let turn = |i| PromptTurn {
+        turn_id: None,
+        speaker_id: "speaker".into(),
+        source_language: "en".into(),
+        target_language: "zh".into(),
+        source_text: format!("Turn {i}: {}", "A complete thought. ".repeat(6)),
+        translated_text: "一句完整的话。".repeat(6),
+    };
+    let mut options = TranslationOptions::new("English", "Chinese");
+    let style = "Use the speaker's register and preserve every detail. ".repeat(9);
+    assert!(options.prompt_graph.set_style_text(&style));
+    options.context_window_tokens = 2_800;
+    options.prompt_context = TranslationPromptContext {
+        mode: PromptMode::PseudoStreaming,
+        previous_revision: Some(turn(0)),
+        terminology_rows: vec!["harbour,港口".into()],
+        ..Default::default()
+    };
+    let turns: Vec<_> = (1..=20).map(turn).collect();
+    let profile = TranslationPromptProfile::Contextual;
+    for (source, output) in [
+        ("The ship is here.".to_owned(), 256),
+        ("More detail. ".repeat(100), 640),
+    ] {
+        options.max_tokens = output;
+        options.prompt_context.recent_turns.clear();
+        let render = |context: &TranslationPromptContext| {
+            options
+                .prompt_graph
+                .render(profile.target(), &source, "English", "Chinese", context)
+                .unwrap()
+        };
+        let base = render(&options.prompt_context).estimated_tokens();
+        let available = (options.context_window_tokens - output) as usize - base;
+        // An exhaustive fit is the reference for the production search.
+        let candidates: Vec<_> = (0..=turns.len())
+            .map(|count| {
+                let mut context = options.prompt_context.clone();
+                context.recent_turns = turns[turns.len() - count..].to_vec();
+                (render(&context), context)
+            })
+            .collect();
+        options.prompt_context.recent_turns.clone_from(&turns);
+        for percent in [0, 1, 25, 50, 99, 100] {
+            options.history_percent = percent;
+            let (expected, context) = candidates
+                .iter()
+                .rev()
+                .find(|(prompt, _)| {
+                    prompt.estimated_tokens() <= base + available * usize::from(percent) / 100
+                })
+                .unwrap();
+            let actual = registered(profile).build_prompt(&source, &options).unwrap();
+            assert_eq!(actual.context, *context);
+            assert_eq!(actual.messages, expected.messages);
+            if percent == 50 {
+                assert!((1..turns.len()).contains(&context.recent_turns.len()));
+            }
+        }
+    }
+}
+
+#[test]
 fn excess_history_is_removed_before_reporting_a_window_error() {
     let mut options = TranslationOptions::new("English", "Chinese");
     options.prompt_context = TranslationPromptContext {
@@ -262,6 +326,57 @@ fn translated_prompt_expansion_is_rejected_even_without_history() {
         )
         .is_some()
     );
+}
+
+#[test]
+fn repeated_input_in_references_does_not_make_its_translation_a_prompt_echo() {
+    let source = "演出结束后，我们在入口见吧。";
+    let translation = "Let's meet at the entrance after the show.";
+    let turn = PromptTurn {
+        turn_id: None,
+        speaker_id: String::new(),
+        source_language: "zh".into(),
+        target_language: "en".into(),
+        source_text: source.into(),
+        translated_text: translation.into(),
+    };
+    let style = "Keep the speaker's tone natural and conversational.";
+    let mut options = TranslationOptions::new("Chinese", "English");
+    assert!(options.prompt_graph.set_style_text(style));
+
+    for context in [
+        TranslationPromptContext {
+            recent_turns: vec![turn.clone()],
+            ..Default::default()
+        },
+        TranslationPromptContext {
+            mode: PromptMode::PseudoStreaming,
+            previous_revision: Some(PromptTurn {
+                source_text: "演出结束后，我们在入口见吧，好吗？".into(),
+                translated_text: "Let's meet at the entrance after the show, okay?".into(),
+                ..turn
+            }),
+            ..Default::default()
+        },
+    ] {
+        options.prompt_context = context;
+        for profile in [
+            TranslationPromptProfile::Contextual,
+            TranslationPromptProfile::ChatMessages,
+        ] {
+            let prompt = registered(profile).build_prompt(source, &options).unwrap();
+            let rejection = |text: &str| {
+                output::translation_output_rejection(
+                    source,
+                    text,
+                    &prompt.messages,
+                    &prompt.context,
+                )
+            };
+            assert_eq!(rejection(translation), None);
+            assert_eq!(rejection(style), Some("echoed a rendered prompt fragment"));
+        }
+    }
 }
 
 #[test]

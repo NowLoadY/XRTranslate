@@ -1104,11 +1104,10 @@ fn provider_runtime_config(
 ) -> LocalModelRuntimeConfig {
     let settings = providers.get(provider).unwrap_or(&Value::Null);
     let object = settings.as_object();
-    if settings
-        .get("context_windows")
-        .is_some_and(|value| !value.is_object())
-    {
-        issues.push(format!("{path}.context_windows must be an object"));
+    for field in ["context_windows", "history_percentages"] {
+        if settings.get(field).is_some_and(|value| !value.is_object()) {
+            issues.push(format!("{path}.{field} must be an object"));
+        }
     }
     // Online context capacity is independent of the local runtime's memory limit.
     let context_maximum = match object
@@ -1119,10 +1118,10 @@ fn provider_runtime_config(
         Some(_) => 1_048_576,
     };
     let mut value = |field: &str, default: u32, minimum: u32, maximum: u32| {
-        let raw = if field == "context_window_tokens" {
-            context_window::context_window_override(settings)
-        } else {
-            object.and_then(|provider| provider.get(field))
+        let raw = match field {
+            "context_window_tokens" => context_window::model_override(settings, "context_windows"),
+            "history_percentages" => context_window::model_override(settings, field),
+            _ => object.and_then(|provider| provider.get(field)),
         };
         let Some(raw) = raw else {
             return default;
@@ -1140,6 +1139,7 @@ fn provider_runtime_config(
         raw
     };
     let runtime = LocalModelRuntimeConfig {
+        history_percent: value("history_percentages", 100, 0, 100) as u8,
         context_window_tokens: value(
             "context_window_tokens",
             default_context_window(section, provider, settings),
@@ -1613,6 +1613,7 @@ pub struct NativeProviderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalModelRuntimeConfig {
     pub context_window_tokens: u32,
+    pub history_percent: u8,
     pub max_tokens: u32,
     pub parallel_slots: u16,
 }
@@ -1888,6 +1889,23 @@ fn active_native_provider(
 }
 
 impl NativeProviderConfig {
+    pub fn supports_reference_context(&self) -> bool {
+        if self.uses_local_runtime()
+            && let Ok(model) = xrtranslate_assets::language::provider_model(
+                &self.provider,
+                self.model_asset.as_deref(),
+                xrtranslate_assets::ModelCapability::Translation,
+            )
+            && let Some(xrtranslate_assets::ModelRuntime::LlamaTextChat {
+                allow_reference_context,
+                ..
+            }) = model.runtime
+        {
+            return allow_reference_context;
+        }
+        self.capabilities.supports_context
+    }
+
     pub fn supports_audio_streaming(&self) -> bool {
         self.connector
             .is_some_and(|connector| connector.supports_audio_streaming())

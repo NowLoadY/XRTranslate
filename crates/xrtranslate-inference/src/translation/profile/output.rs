@@ -148,10 +148,12 @@ pub(in crate::translation) fn translation_output_rejection(
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    remove_all_sequences(&mut prompt, &normalized_characters(source_text));
+    // History and previous revisions can contain the current input. Strip each
+    // reference while it is still intact so its translation is excluded too.
     for reference_block in prompt_context.reference_blocks_for_quality_checks() {
         remove_all_sequences(&mut prompt, &normalized_characters(&reference_block));
     }
+    remove_all_sequences(&mut prompt, &normalized_characters(source_text));
 
     if prompt.len() < 24 {
         return None;

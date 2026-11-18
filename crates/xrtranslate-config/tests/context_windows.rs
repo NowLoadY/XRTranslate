@@ -60,6 +60,25 @@ fn each_model_remembers_its_own_value_and_default() {
 }
 
 #[test]
+fn history_preferences_follow_the_selected_model_and_default_to_auto() {
+    let mut raw = document();
+    raw["translation"]["providers"]["qwen"]["history_percentages"] = json!({"qwen-plus": 35});
+    raw["translation"]["providers"]["hunyuan"]["history_percentages"] = json!({"hy-mt2": 0});
+    let config = AppConfig::from_value(raw).unwrap();
+    for (provider, model, expected) in [
+        ("qwen", "qwen-plus", 35),
+        ("qwen", "qwen-mt-plus", 100),
+        ("hunyuan", "hy-mt2", 0),
+        ("hunyuan", "hy-mt2-big", 100),
+    ] {
+        let route = selected(&config, provider, model)
+            .native_model_route()
+            .unwrap();
+        assert_eq!(route.translation.runtime.history_percent, expected);
+    }
+}
+
+#[test]
 fn local_packages_and_agent_share_the_same_model_key() {
     let mut raw = document();
     raw["asr"]["providers"]["qwen3-gguf"]["context_windows"] = json!({"qwen3-asr-gguf":8192});

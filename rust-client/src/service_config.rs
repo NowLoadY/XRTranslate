@@ -7,6 +7,7 @@ use xrtranslate_prompt::TranslationPromptProfile;
 #[derive(Clone, Copy)]
 struct TextModelContract {
     profile: TranslationPromptProfile,
+    history_percent: Option<u8>,
     supports_ask: bool,
     supports_chat: bool,
     input_budget: usize,
@@ -19,6 +20,9 @@ impl TextModelContract {
         Some(Self {
             context_tokens: provider.runtime.context_window_tokens,
             output_tokens: provider.runtime.max_tokens,
+            history_percent: provider
+                .supports_reference_context()
+                .then_some(provider.runtime.history_percent),
             profile: provider.translation_prompt_profile().ok()?,
             supports_ask: provider.supports_ask().ok()?,
             supports_chat: provider.supports_chat().ok()?,
@@ -62,6 +66,7 @@ pub(crate) struct ModelContextControl {
     pub provider: String,
     pub label: String,
     pub window: xrtranslate_config::ModelContextWindow,
+    pub history_percent: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -155,13 +160,10 @@ impl ServiceConfigEditor {
     }
 
     pub(crate) fn set_parallel_inference(&mut self, enabled: bool) -> Result<(), String> {
-        let previous = self.document.clone();
-        self.document["model_manager"]["parallel_inference"] = Value::Bool(enabled);
-        if let Err(error) = self.save_draft() {
-            self.document = previous;
-            return Err(error);
-        }
-        Ok(())
+        self.save_draft_with(|document| {
+            document["model_manager"]["parallel_inference"] = Value::Bool(enabled);
+            Ok(())
+        })
     }
 
     pub(crate) fn model_contexts(&self) -> Vec<ModelContextControl> {
@@ -188,6 +190,12 @@ impl ServiceConfigEditor {
                 provider: provider.to_owned(),
                 label,
                 window,
+                history_percent: if role == "Translation Model" {
+                    self.translation_contract()
+                        .and_then(|contract| contract.history_percent)
+                } else {
+                    None
+                },
             });
         };
         for (section, role) in [
@@ -228,49 +236,50 @@ impl ServiceConfigEditor {
         {
             return Err("Context length is outside the supported range".into());
         }
-        let provider = self
-            .categories
-            .iter_mut()
-            .find(|category| category.key == control.section)
-            .and_then(|category| {
-                category
-                    .providers
-                    .iter_mut()
-                    .find(|provider| provider.name == control.provider)
-            })
-            .ok_or("Model provider is unavailable")?;
-        let mut overrides = provider
-            .fields
-            .iter()
-            .find(|field| field.name == "context_windows")
-            .map(|field| serde_json::from_str::<Map<String, Value>>(&field.value))
-            .transpose()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_default();
-        match value.filter(|value| *value != control.window.default) {
-            Some(value) => {
-                overrides.insert(control.window.model.clone(), Value::from(value));
-            }
-            None => {
+        self.set_model_override(
+            control,
+            "context_windows",
+            value.filter(|v| *v != control.window.default),
+        )
+    }
+
+    pub(crate) fn set_model_history_percent(
+        &mut self,
+        control: &ModelContextControl,
+        percent: u8,
+    ) -> Result<(), String> {
+        self.set_model_override(
+            control,
+            "history_percentages",
+            (percent < 100).then_some(u32::from(percent)),
+        )
+    }
+
+    fn set_model_override(
+        &mut self,
+        control: &ModelContextControl,
+        name: &str,
+        value: Option<u32>,
+    ) -> Result<(), String> {
+        self.save_draft_with(|document| {
+            let provider = document[control.section]["providers"][&control.provider]
+                .as_object_mut()
+                .ok_or("Model provider is unavailable")?;
+            let overrides = provider
+                .entry(name)
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .ok_or_else(|| format!("{name} must be an object"))?;
+            if let Some(value) = value {
+                overrides.insert(control.window.model.clone(), value.into());
+            } else {
                 overrides.remove(&control.window.model);
+                if overrides.is_empty() {
+                    provider.remove(name);
+                }
             }
-        }
-        let encoded = serde_json::to_string(&overrides).map_err(|error| error.to_string())?;
-        if let Some(field) = provider
-            .fields
-            .iter_mut()
-            .find(|field| field.name == "context_windows")
-        {
-            field.value = encoded;
-        } else {
-            provider.fields.push(ConfigField {
-                name: "context_windows".into(),
-                value: encoded,
-                kind: JsonFieldKind::Json,
-            });
-        }
-        self.dirty = true;
-        self.save_draft()
+            Ok(())
+        })
     }
 
     pub fn default_audio_preprocessing(&self) -> xrtranslate_protocol::AudioPreprocessing {
@@ -1042,13 +1051,23 @@ impl ServiceConfigEditor {
     }
 
     fn save_draft(&mut self) -> Result<(), String> {
+        self.save_draft_with(|_| Ok(()))
+    }
+
+    fn save_draft_with(
+        &mut self,
+        edit: impl FnOnce(&mut Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut document = self.document.clone();
+        Self::sync_categories(&mut document, &self.categories)?;
+        edit(&mut document)?;
+        xrtranslate_config::save_user_config_document(&self.path, &project_root(), &document)?;
+        self.document = document;
         self.language_capabilities.take();
         self.translation_contract.take();
         self.agent_contract.take();
         self.agent_choices.take();
         self.asr_streaming.take();
-        Self::sync_categories(&mut self.document, &self.categories)?;
-        xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         for category in &mut self.categories {
             *category = Self::make_category(&self.document, category.key);
         }

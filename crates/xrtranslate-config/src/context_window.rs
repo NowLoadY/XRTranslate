@@ -93,10 +93,8 @@ pub fn default_context_window(section: &str, provider: &str, settings: &Value) -
         .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
 }
 
-pub(crate) fn context_window_override(settings: &Value) -> Option<&Value> {
-    settings
-        .get("context_windows")?
-        .get(context_model_id(settings)?)
+pub(crate) fn model_override<'a>(settings: &'a Value, field: &str) -> Option<&'a Value> {
+    settings.get(field)?.get(context_model_id(settings)?)
 }
 
 pub fn model_context_window(
@@ -106,7 +104,7 @@ pub fn model_context_window(
 ) -> Option<ModelContextWindow> {
     let model = context_model_id(settings)?.to_owned();
     let default = default_context_window(section, provider, settings);
-    let override_value = context_window_override(settings);
+    let override_value = model_override(settings, "context_windows");
     let output_tokens = settings
         .get("max_tokens")
         .and_then(Value::as_u64)

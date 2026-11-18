@@ -8,7 +8,7 @@ mod tests;
 use serde_json::{Value, json};
 use xrtranslate_prompt::{
     PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeGraph, PromptTarget,
-    estimated_tokens,
+    TranslationPromptContext, estimated_tokens,
 };
 
 use crate::InferenceError;
@@ -92,30 +92,26 @@ fn render_prompt(
     let input_limit = options
         .context_window_tokens
         .saturating_sub(options.max_tokens) as usize;
-    let mut recommendation = None;
-    let execution = loop {
-        let execution = graph
+    let render = |context: &TranslationPromptContext| {
+        graph
             .render_with_trace(
                 target,
                 source_text,
                 &options.source_language,
                 &options.target_language,
-                &context,
+                context,
             )
             .map_err(|error| InferenceError::InvalidConfiguration {
                 field: "prompt_graph",
                 message: error.to_string(),
-            })?;
-        // Retain the complete request's requirement before dropping optional
-        // references, so the suggestion can also preserve the selected context.
-        let recommendation = *recommendation.get_or_insert_with(|| {
-            execution
-                .render
-                .context_window_recommendation(options.max_tokens)
-        });
-        if execution.render.estimated_tokens() <= input_limit {
-            break execution;
-        }
+            })
+    };
+    let mut execution =
+        render_with_history_limit(&mut context, input_limit, options.history_percent, &render)?;
+    let recommendation = execution
+        .render
+        .context_window_recommendation(options.max_tokens);
+    while execution.render.estimated_tokens() > input_limit {
         if !context.reduce_reference_context() {
             return Err(InferenceError::InvalidConfiguration {
                 field: "context_window_tokens",
@@ -129,12 +125,54 @@ fn render_prompt(
                 ),
             });
         }
-    };
+        execution = render(&context)?;
+    }
     Ok(RenderedTranslationPrompt {
         messages: execution.render.messages,
         trace: execution.trace,
         context,
     })
+}
+
+fn render_with_history_limit(
+    context: &mut TranslationPromptContext,
+    input_limit: usize,
+    percent: u8,
+    render: impl Fn(&TranslationPromptContext) -> Result<PromptExecution, InferenceError>,
+) -> Result<PromptExecution, InferenceError> {
+    if percent == 0 {
+        context.recent_turns.clear();
+    }
+    let full = render(context)?;
+    if percent >= 100 || context.recent_turns.is_empty() {
+        return Ok(full);
+    }
+
+    let mut turns = std::mem::take(&mut context.recent_turns);
+    let mut best = render(context)?;
+    let base = best.render.estimated_tokens().min(input_limit);
+    let remaining = (input_limit - base) as u64;
+    let limit = base + (remaining * u64::from(percent) / 100) as usize;
+    if full.render.estimated_tokens() <= limit {
+        context.recent_turns = turns;
+        return Ok(full);
+    }
+
+    // Find the longest suffix that fits the actual template, including its history labels.
+    let (mut kept, mut rejected) = (0, turns.len());
+    while rejected - kept > 1 {
+        let count = kept + (rejected - kept) / 2;
+        context.recent_turns = turns[turns.len() - count..].to_vec();
+        let candidate = render(context)?;
+        if candidate.render.estimated_tokens() <= limit {
+            kept = count;
+            best = candidate;
+        } else {
+            rejected = count;
+        }
+    }
+    context.recent_turns = turns.split_off(turns.len() - kept);
+    Ok(best)
 }
 
 fn context_window_diagnostic(

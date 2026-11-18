@@ -9,6 +9,8 @@ pub struct TranslationOptions {
     pub target_language: String,
     pub prompt_graph: PromptNodeGraph,
     pub prompt_context: TranslationPromptContext,
+    /// Maximum percentage of the remaining input budget for completed dialogue.
+    pub history_percent: u8,
     /// Context capacity available to one endpoint request. Provider profiles
     /// use this when a sampling parameter needs the concrete slot window.
     pub context_window_tokens: u32,
@@ -22,6 +24,7 @@ impl TranslationOptions {
             target_language: target_language.into(),
             prompt_graph: PromptNodeGraph::builtin_default(),
             prompt_context: TranslationPromptContext::default(),
+            history_percent: 100,
             context_window_tokens: 2_048,
             max_tokens: 256,
         }

@@ -498,6 +498,7 @@ pub(crate) struct NativeInference {
     translation_output_ceiling: u32,
     asr_context_window_tokens: u32,
     translation_context_window_tokens: u32,
+    translation_history_percent: u8,
     speaker: Option<SpeakerInferenceConfig>,
 }
 
@@ -1099,6 +1100,7 @@ impl NativeInference {
                 .translation_supports_reference_context(),
             asr_max_output_tokens: model_plan.asr_runtime().max_tokens,
             translation_max_output_tokens: model_plan.translation_runtime().max_tokens,
+            translation_history_percent: model_plan.translation_runtime().history_percent,
             translation_output_ceiling: u32::MAX,
             asr_context_window_tokens: model_plan.asr_runtime().context_window_tokens,
             translation_context_window_tokens: model_plan
@@ -1612,6 +1614,7 @@ impl NativeInference {
             });
         }
         let mut options = TranslationOptions::new(route.source.clone(), route.target.clone());
+        options.history_percent = self.translation_history_percent;
         options.prompt_graph = prompt_graph;
         options.context_window_tokens = self.translation_context_window_tokens;
         options.max_tokens = self.translation_max_output_tokens;

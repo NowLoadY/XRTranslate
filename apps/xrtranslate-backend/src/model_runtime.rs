@@ -44,7 +44,6 @@ pub(crate) struct NativeProviderPlan {
     accounts: xrtranslate_connections::AccountStore,
     translation_profile: TranslationProfile,
     tts_profile: Option<TtsProfile>,
-    translation_supports_reference_context: bool,
     native_runtime: Option<ResolvedNativeRuntimeSelection>,
 }
 
@@ -123,17 +122,6 @@ impl NativeProviderPlan {
                 .chain(translation_asset_id)
                 .chain(tts_asset_ids),
         );
-        let translation_supports_reference_context = translation_asset_id
-            .and_then(|id| xrtranslate_assets::manifest_for(id).runtime)
-            .and_then(|runtime| match runtime {
-                ModelRuntime::LlamaTextChat {
-                    allow_reference_context,
-                    ..
-                } => Some(allow_reference_context),
-                _ => None,
-            })
-            .unwrap_or(route.translation.capabilities.supports_context);
-
         Ok(Self {
             language_capabilities: route.language_capabilities()?,
             route,
@@ -142,7 +130,6 @@ impl NativeProviderPlan {
             accounts,
             translation_profile,
             tts_profile,
-            translation_supports_reference_context,
             native_runtime,
         })
     }
@@ -368,7 +355,7 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn translation_supports_reference_context(&self) -> bool {
-        self.translation_supports_reference_context
+        self.route.translation.supports_reference_context()
     }
 
     pub(crate) fn translation_supports_ask(&self) -> Result<bool, String> {
