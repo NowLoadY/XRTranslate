@@ -17,20 +17,77 @@ pub struct VideoProbe {
 pub fn detect_frame_faces(path: &Path) -> Result<Vec<[f32; 4]>, String> {
     #[cfg(windows)]
     {
-        use windows::{
-            Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
-            Media::FaceAnalysis::FaceDetector,
-            Storage::Streams::DataWriter,
-            Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
-        };
-        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|e| e.to_string())?;
-        struct Apartment;
-        impl Drop for Apartment {
-            fn drop(&mut self) {
-                unsafe { RoUninitialize() };
-            }
+        faces::detect(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err("No face detector is configured for this platform".into())
+    }
+}
+
+// WinRT caches activation factories for the process. Keep one apartment alive
+// and reuse its detector across all review and automatic placement requests.
+#[cfg(windows)]
+mod faces {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{OnceLock, mpsc},
+    };
+    use windows::{
+        Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
+        Media::FaceAnalysis::FaceDetector,
+        Storage::Streams::DataWriter,
+        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+    };
+
+    type Boxes = Result<Vec<[f32; 4]>, String>;
+    type Request = (PathBuf, mpsc::SyncSender<Boxes>);
+
+    pub(super) fn detect(path: &Path) -> Boxes {
+        static WORKER: OnceLock<Result<mpsc::SyncSender<Request>, String>> = OnceLock::new();
+        let worker = WORKER
+            .get_or_init(|| {
+                let (queue, requests) = mpsc::sync_channel(4);
+                std::thread::Builder::new()
+                    .name("media-face-detection".into())
+                    .spawn(move || run(requests))
+                    .map_err(|e| e.to_string())?;
+                Ok(queue)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let (reply, result) = mpsc::sync_channel(1);
+        worker
+            .send((path.to_owned(), reply))
+            .map_err(|_| "Face detection worker stopped")?;
+        result.recv().map_err(|_| "Face detection worker stopped")?
+    }
+
+    fn run(requests: mpsc::Receiver<Request>) {
+        let apartment = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let detector = apartment
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| {
+                FaceDetector::CreateAsync()
+                    .and_then(|async_op| async_op.get())
+                    .map_err(|e| e.to_string())
+            });
+        for (path, reply) in requests {
+            let result = detector
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|d| frame(d, &path));
+            let _ = reply.send(result);
         }
-        let _apartment = Apartment;
+        drop(detector);
+        if apartment.is_ok() {
+            unsafe { RoUninitialize() };
+        }
+    }
+
+    fn frame(detector: &FaceDetector, path: &Path) -> Boxes {
         let image = image::open(path).map_err(|e| e.to_string())?.to_luma8();
         let result = (|| -> windows::core::Result<Vec<[f32; 4]>> {
             let bitmap = SoftwareBitmap::Create(
@@ -41,7 +98,6 @@ pub fn detect_frame_faces(path: &Path) -> Result<Vec<[f32; 4]>, String> {
             let writer = DataWriter::new()?;
             writer.WriteBytes(image.as_raw())?;
             bitmap.CopyFromBuffer(&writer.DetachBuffer()?)?;
-            let detector = FaceDetector::CreateAsync()?.get()?;
             let faces = detector.DetectFacesAsync(&bitmap)?.get()?;
             let mut boxes = Vec::new();
             for index in 0..faces.Size()? {
@@ -56,11 +112,6 @@ pub fn detect_frame_faces(path: &Path) -> Result<Vec<[f32; 4]>, String> {
             Ok(boxes)
         })();
         result.map_err(|e| e.to_string())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        Err("No face detector is configured for this platform".into())
     }
 }
 
