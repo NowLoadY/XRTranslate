@@ -18,11 +18,10 @@ struct TextModelContract {
 
 impl TextModelContract {
     fn resolve(provider: xrtranslate_config::NativeProviderConfig) -> Option<Self> {
-        let native_agent_tools =
-            provider.connector == Some(xrtranslate_assets::remote::RemoteConnector::OpenaiResponses);
+        let agent_api = provider.agent_endpoint.as_ref().map(|(api, _)| *api);
         let window = provider.runtime.context_window_tokens;
         Some(Self {
-            native_agent_tools,
+            native_agent_tools: agent_api.is_some(),
             context_tokens: window,
             output_tokens: provider.runtime.max_tokens,
             history_percent: provider
@@ -31,8 +30,8 @@ impl TextModelContract {
             profile: provider.translation_prompt_profile().ok()?,
             supports_ask: provider.supports_ask().ok()?,
             supports_chat: provider.supports_chat().ok()?,
-            input_budget: if native_agent_tools {
-                xrtranslate_assets::remote::openai_agent_limits(window).0
+            input_budget: if let Some(api) = agent_api {
+                api.limits(window).0
             } else {
                 window
                     .saturating_sub(provider.runtime.max_tokens)
@@ -682,6 +681,19 @@ impl ServiceConfigEditor {
                 .map(|field| field.value.clone())
                 .unwrap_or_default()
         };
+        let model = selection.as_ref().map(|s| s.model.clone()).unwrap_or_else(|| {
+            if is_agent && !provider_is_remote(selected) {
+                field("model_asset")
+            } else {
+                field("model")
+            }
+        });
+        let agent_workspace = is_agent
+            && xrtranslate_assets::remote::services(
+                &selected.name,
+                xrtranslate_assets::ModelCapability::Translation,
+            )
+            .any(|service| service.agent.is_some() && service.models.contains(&model));
         Some(OnboardingProviderState {
             follow_translation: is_agent.then_some(selection.is_none()),
             selected: selected.name.clone(),
@@ -740,16 +752,9 @@ impl ServiceConfigEditor {
                         models
                     })
             },
-            model: selection.map(|s| s.model).unwrap_or_else(|| {
-                if is_agent && !provider_is_remote(selected) {
-                    field("model_asset")
-                } else {
-                    field("model")
-                }
-            }),
+            model,
             api_key: field("api_key"),
-            workspace_id: field("url")
-                .contains("{workspace_id}")
+            workspace_id: (agent_workspace || field("url").contains("{workspace_id}"))
                 .then(|| field("workspace_id")),
         })
     }
@@ -1664,7 +1669,10 @@ mod tests {
         };
         let state = editor.onboarding_provider_state("agent").unwrap();
         assert_eq!(state.follow_translation, Some(true));
-        assert_eq!(state.models, ["qwen-plus"]);
+        assert_eq!(
+            state.models,
+            ["qwen3.8-flash", "qwen-plus", "qwen3.8-max", "qwen4-max"]
+        );
         assert!(!editor.agent_available());
         assert!(!state.choices.iter().any(|choice| choice.name == "hunyuan"));
         editor.set_agent_follows_translation(false);
@@ -1678,7 +1686,8 @@ mod tests {
         assert_eq!(state.follow_translation, Some(false));
         assert_eq!(state.model, "qwen-plus");
         assert!(editor.agent_available());
-        assert!(editor.agent_input_budget() > 28_000);
+        assert!(editor.agent_native_tools());
+        assert_eq!(editor.agent_input_budget(), 983_360);
         let controls = editor.model_contexts();
         assert_eq!(controls.len(), 3);
         let agent = controls
@@ -1686,7 +1695,7 @@ mod tests {
             .find(|control| control.role == "Agent")
             .unwrap();
         assert_eq!(agent.window.model, "qwen-plus");
-        assert_eq!(agent.window.default, 32768);
+        assert_eq!(agent.window.default, 1_000_000);
         assert_eq!(agent.window.minimum, 2048 + 128);
         assert_eq!(editor.document["translation"], expected);
         editor.select_agent_model("qwen-mt-plus".into());

@@ -63,6 +63,12 @@ impl TranslationProfile {
                 config.api_key.as_deref().unwrap_or_default(),
             ),
         }?;
+        let adapter = match &config.agent_endpoint {
+            Some((xrtranslate_assets::remote::AgentApi::DashscopeResponses, url)) => {
+                adapter.with_dashscope_agent(url, config.api_key.as_deref().unwrap_or_default())?
+            }
+            _ => adapter,
+        };
         Ok(adapter.with_remote_config(config.connector, &config.capabilities))
     }
 }

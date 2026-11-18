@@ -82,7 +82,7 @@ fn independent_agent_reuses_credentials_without_changing_translation() {
     assert_eq!(agent.model, "qwen-plus");
     assert_eq!(agent.api_key, original.api_key);
     assert!(agent.supports_chat().unwrap());
-    assert_eq!(agent.runtime.context_window_tokens, 32768);
+    assert_eq!(agent.runtime.context_window_tokens, 1_000_000);
     assert!(
         config
             .for_agent()
@@ -160,6 +160,56 @@ fn openai_agent_prefers_responses_and_honors_per_model_window_overrides() {
         .unwrap();
     assert_eq!(mini.connector, Some(RemoteConnector::OpenaiChat));
     assert_eq!(mini.runtime.context_window_tokens, 128_000);
+}
+
+#[test]
+fn qwen_agent_uses_the_selected_regional_service_and_respects_custom_gateways() {
+    use xrtranslate_assets::remote::AgentApi;
+    let mut raw = config().raw;
+    for (provider, region) in [("qwen", "cn-beijing"), ("qwen-intl", "ap-southeast-1")] {
+        raw["translation"]["providers"][provider]["api_key"] = json!("fixture");
+        raw["translation"]["providers"][provider]["workspace_id"] = json!("test-workspace");
+        raw["agent"]["model"] = json!(selection(provider, "qwen3.8-flash"));
+        let configured = AppConfig::from_value(raw.clone()).unwrap();
+        let agent = configured.agent_provider().unwrap();
+        let expected = format!(
+            "https://test-workspace.{region}.maas.aliyuncs.com/compatible-mode/v1/responses"
+        );
+        assert_eq!(
+            agent.agent_endpoint,
+            Some((AgentApi::DashscopeResponses, expected.clone()))
+        );
+        assert!(agent.url.ends_with("/chat/completions"));
+        assert_eq!(agent.runtime.context_window_tokens, 1_000_000);
+        assert_eq!(
+            configured
+                .chat_model_selections()
+                .iter()
+                .find(|s| s.provider == provider),
+            Some(&selection(provider, "qwen3.8-flash"))
+        );
+        let mut custom = raw.clone();
+        custom["translation"]["providers"][provider]["url"] =
+            json!(expected.replace("/responses", "/chat/completions"));
+        assert_eq!(
+            AppConfig::from_value(custom.clone())
+                .unwrap()
+                .agent_provider()
+                .unwrap()
+                .agent_endpoint,
+            agent.agent_endpoint
+        );
+        custom["translation"]["providers"][provider]["url"] =
+            json!("https://private.invalid/v1/chat/completions");
+        assert!(
+            AppConfig::from_value(custom)
+                .unwrap()
+                .agent_provider()
+                .unwrap()
+                .agent_endpoint
+                .is_none()
+        );
+    }
 }
 
 #[test]

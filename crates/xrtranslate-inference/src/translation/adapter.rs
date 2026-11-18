@@ -19,6 +19,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct TranslationAdapter<C> {
     chat: ChatTransport<C>,
+    agent: Option<crate::responses::KeyResponses>,
     model: String,
     profile: TranslationPromptProfile,
     streaming: RemoteStreaming,
@@ -38,6 +39,7 @@ impl<C> TranslationAdapter<C> {
         let model = validated_model(model)?;
         Ok(Self {
             chat: ChatTransport::Completions(OpenAiCompatibleClient::new(http, endpoint)?),
+            agent: None,
             model,
             profile,
             streaming: RemoteStreaming::Delta,
@@ -62,6 +64,7 @@ impl<C> TranslationAdapter<C> {
             chat: ChatTransport::Completions(OpenAiCompatibleClient::with_bearer_token(
                 http, endpoint, token,
             )?),
+            agent: None,
             model,
             profile,
             streaming: RemoteStreaming::Delta,
@@ -90,10 +93,10 @@ impl<C> TranslationAdapter<C> {
         model: impl Into<String>,
         key: &str,
     ) -> Result<Self, InferenceError> {
+        let client = crate::responses::KeyResponses::new(endpoint, key)?;
         Ok(Self {
-            chat: ChatTransport::OpenAiResponses(crate::responses::KeyResponses::new(
-                endpoint, key,
-            )?),
+            chat: ChatTransport::OpenAiResponses(client.clone()),
+            agent: Some(client),
             model: validated_model(model)?,
             profile: TranslationPromptProfile::ChatMessages,
             streaming: RemoteStreaming::Delta,
@@ -104,6 +107,19 @@ impl<C> TranslationAdapter<C> {
         })
     }
 
+    pub fn with_dashscope_agent(
+        mut self,
+        endpoint: &str,
+        key: &str,
+    ) -> Result<Self, InferenceError> {
+        self.agent = Some(crate::responses::KeyResponses::for_api(
+            xrtranslate_assets::remote::AgentApi::DashscopeResponses,
+            endpoint,
+            key,
+        )?);
+        Ok(self)
+    }
+
     pub fn with_chatgpt_account(
         store: xrtranslate_connections::AccountStore,
         endpoint: &str,
@@ -111,6 +127,7 @@ impl<C> TranslationAdapter<C> {
     ) -> Result<Self, InferenceError> {
         Ok(Self {
             chat: ChatTransport::Responses(crate::responses::ChatGptClient::new(store, endpoint)?),
+            agent: None,
             model: validated_model(model)?,
             profile: TranslationPromptProfile::ChatMessages,
             streaming: RemoteStreaming::Delta,
@@ -139,7 +156,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         turn: &xrtranslate_protocol::AgentTurn,
         window: u32,
     ) -> Result<crate::ChatCompletion, InferenceError> {
-        let ChatTransport::OpenAiResponses(client) = &self.chat else {
+        let Some(client) = &self.agent else {
             return Err(InferenceError::InvalidConfiguration {
                 field: "agent.model",
                 message: "This model does not support native Responses tools".into(),
@@ -148,7 +165,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         client
             .agent(
                 &self.model,
-                self.reasoning_effort.as_deref().unwrap_or("medium"),
+                self.reasoning_effort.as_deref(),
                 messages,
                 turn,
                 window,

@@ -74,6 +74,13 @@ Agent 模型默认跟随翻译模型，也可独立引用同一模型库。后�
 核验调用范围并执行操作，后端用实际的 `call_id` 回传结果。后续轮次通过 `previous_response_id`
 只发送新增输入。上下文或范围出现分歧时，后端以插件历史重新建立请求。
 连接中断时可重放工具结果和加密推理项，网络不支持 WebSocket 升级时使用 HTTPS 流式传输。
+Qwen 使用百炼 Responses 的 HTTPS 流。服务端保存响应后，Agent 用 `previous_response_id`
+续接已接受的决策，用 `function_call_output` 回传真实结果。Qwen3.8 和 Plus 开启 Session
+缓存，Qwen4-Max 使用五分钟显式缓存。函数目录超过 64 项时，模型通过 Director 按需读取
+工具说明和参数。响应 ID 失效时，后端用本地保存的调用和结果恢复。
+百炼通用模型默认窗口为 1,000,000 token，Agent 每轮为推理及回答预留 16,384 token。输入接近本地预算时，插件通过累计摘要保留任务进度和最近的工具结果。
+[百炼 Responses 指南](https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api)
+
 其他模型继续使用有序文本消息，翻译和账号连接各自沿用对应的推理通道。
 
 Sol 和 Astra 默认总窗口为 1,050,000 token，Agent 最多可使用约 922,000 token 输入。

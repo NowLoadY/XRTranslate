@@ -1595,6 +1595,7 @@ pub struct NativeProviderConfig {
     /// HTTP, or a provider-native WebSocket.
     pub transport: String,
     pub connector: Option<xrtranslate_assets::remote::RemoteConnector>,
+    pub agent_endpoint: Option<(xrtranslate_assets::remote::AgentApi, String)>,
     pub capabilities: xrtranslate_assets::remote::RemoteCapabilities,
     pub url: String,
     /// Remote model identifier. Local routes may leave this empty and use the
@@ -1854,6 +1855,26 @@ fn active_native_provider(
         .map(str::to_owned);
     let runtime = provider_runtime_config(providers, provider, section, &path, issues);
     let (connector, capabilities) = remote::resolve(section, object, &transport, &path, issues);
+    let agent_endpoint = if section == "translation" {
+        let workspace = object
+            .and_then(|o| o.get("workspace_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        remote::agent_endpoint(
+            provider,
+            &model,
+            connector,
+            url.as_deref().unwrap_or(""),
+            workspace,
+        )
+        .unwrap_or_else(|error| {
+            issues.push(format!("{path}.workspace_id: {error}"));
+            None
+        })
+    } else {
+        None
+    };
     let vocabulary_weight = object
         .and_then(|provider| provider.get("vocabulary_weight"))
         .and_then(Value::as_u64)
@@ -1873,6 +1894,7 @@ fn active_native_provider(
                 provider: provider.to_owned(),
                 transport,
                 connector,
+                agent_endpoint,
                 capabilities,
                 url,
                 model,

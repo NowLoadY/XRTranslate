@@ -1,5 +1,6 @@
 //! Responses API transports for account and API-key authentication.
 mod agent;
+mod dashscope;
 mod key;
 #[cfg(test)]
 mod recovery_tests;
@@ -50,15 +51,8 @@ impl ChatGptClient {
             .await
             .map_err(account_error)?;
         let mut stream = stream::ResponseStream::default();
-        let response = sse(
-            &self.http,
-            RESPONSES_ENDPOINT,
-            grant.authorization(),
-            payload,
-            &mut stream,
-            &mut on_update,
-        )
-        .await?;
+        let request = sse_request(RESPONSES_ENDPOINT, grant.authorization(), payload);
+        let response = sse(&self.http, request, &mut stream, &mut on_update).await?;
         if response.status == 401 {
             let _ = chatgpt::invalidate(&self.accounts, &grant).await;
             return Err(InferenceError::AccountLoginRequired {
@@ -88,11 +82,18 @@ impl ChatGptClient {
     }
 }
 
+fn sse_request(endpoint: &str, authorization: String, payload: Value) -> HttpRequest {
+    let mut request = HttpRequest::post_json(endpoint, payload);
+    request.headers.extend([
+        ("authorization".into(), authorization),
+        ("accept".into(), "text/event-stream".into()),
+    ]);
+    request
+}
+
 async fn sse<F, Fut>(
     http: &ReqwestClient,
-    endpoint: &str,
-    authorization: String,
-    payload: Value,
+    request: HttpRequest,
     stream: &mut stream::ResponseStream,
     on_update: &mut F,
 ) -> Result<crate::HttpResponse, InferenceError>
@@ -100,11 +101,7 @@ where
     F: FnMut(String) -> Fut + Send,
     Fut: Future<Output = ()> + Send,
 {
-    let mut request = HttpRequest::post_json(endpoint, payload);
-    request.headers.extend([
-        ("authorization".into(), authorization),
-        ("accept".into(), "text/event-stream".into()),
-    ]);
+    let endpoint = request.url.clone();
     http.execute_streaming(request, |chunk| {
         let update = stream.push(&chunk);
         let completed = stream.is_completed();
@@ -126,10 +123,7 @@ where
         }
     })
     .await
-    .map_err(|source| InferenceError::Transport {
-        endpoint: endpoint.into(),
-        source,
-    })
+    .map_err(|source| InferenceError::Transport { endpoint, source })
 }
 
 fn account_error(error: ConnectionError) -> InferenceError {

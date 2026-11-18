@@ -250,6 +250,7 @@
     },
     {
       "id": "qwen",
+      "default_agent_model": "qwen3.8-flash",
       "label": "Alibaba Cloud Bailian",
       "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
       "services": [
@@ -306,19 +307,26 @@
           "capability": "translation",
           "defaults": {
             "api_key": "",
-            "context_window_tokens": 32768,
+            "context_window_tokens": 1000000,
             "max_tokens": 2048,
+            "workspace_id": "",
             "model": "qwen-plus",
             "parallel_slots": 2,
             "connector": "openai-chat",
             "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "models": ["qwen-plus"]
+          "models": ["qwen-plus", "qwen3.8-flash", "qwen3.8-max", "qwen4-max"],
+          "agent": {
+            "api": "dashscope-responses",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+            "workspace_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/responses"
+          }
         }
       ]
     },
     {
       "id": "qwen-intl",
+      "default_agent_model": "qwen3.8-flash",
       "guide_url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
       "services": [
         {
@@ -350,14 +358,20 @@
           "capability": "translation",
           "defaults": {
             "api_key": "",
-            "context_window_tokens": 32768,
+            "context_window_tokens": 1000000,
             "max_tokens": 2048,
+            "workspace_id": "",
             "model": "qwen-plus",
             "parallel_slots": 2,
             "connector": "openai-chat",
             "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
-          "models": ["qwen-plus"]
+          "models": ["qwen-plus", "qwen3.8-flash", "qwen3.8-max", "qwen4-max"],
+          "agent": {
+            "api": "dashscope-responses",
+            "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses",
+            "workspace_url": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/responses"
+          }
         }
       ]
     }
@@ -366,9 +380,45 @@
     {
       "model": "qwen-plus",
       "connector": "openai-chat",
-      "default_context_window_tokens": 32768,
+      "default_context_window_tokens": 1000000,
       "capabilities": {
         "supports_chat": true,
+        "streaming": "delta",
+        "supports_context": true,
+        "supports_json_output": true
+      }
+    },
+    {
+      "model": "qwen3.8-flash",
+      "connector": "openai-chat",
+      "default_context_window_tokens": 1000000,
+      "capabilities": {
+        "supports_chat": true,
+        "reasoning_effort": "medium",
+        "streaming": "delta",
+        "supports_context": true,
+        "supports_json_output": true
+      }
+    },
+    {
+      "model": "qwen3.8-max",
+      "connector": "openai-chat",
+      "default_context_window_tokens": 1000000,
+      "capabilities": {
+        "supports_chat": true,
+        "reasoning_effort": "medium",
+        "streaming": "delta",
+        "supports_context": true,
+        "supports_json_output": true
+      }
+    },
+    {
+      "model": "qwen4-max",
+      "connector": "openai-chat",
+      "default_context_window_tokens": 1000000,
+      "capabilities": {
+        "supports_chat": true,
+        "reasoning_effort": "medium",
         "streaming": "delta",
         "supports_context": true,
         "supports_json_output": true

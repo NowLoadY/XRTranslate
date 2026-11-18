@@ -7,6 +7,7 @@ use xrtranslate_protocol::AgentTurn;
 
 pub(super) struct Catalogue {
     pub definitions: Vec<Value>,
+    local_discovery: bool,
     // A wire name always maps back to exactly one declared local operation.
     names: BTreeMap<String, String>,
 }
@@ -25,10 +26,12 @@ fn identifier(name: &str) -> String {
 }
 
 impl Catalogue {
-    pub fn new(turn: &AgentTurn) -> Self {
+    pub fn for_api(turn: &AgentTurn, api: xrtranslate_assets::remote::AgentApi) -> Self {
         let mut tools: Vec<_> = turn.tools.iter().collect();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
-        let deferred = tools.len() > 16;
+        let hosted_search = api == xrtranslate_assets::remote::AgentApi::OpenaiResponses;
+        let deferred = hosted_search && tools.len() > 16;
+        let local_discovery = !hosted_search && tools.len() > 64;
         let mut names = BTreeMap::new();
         let mut groups = BTreeMap::<String, Vec<Value>>::new();
         let mut definitions = Vec::new();
@@ -87,7 +90,36 @@ impl Catalogue {
         if deferred {
             definitions.push(json!({"type":"tool_search"}));
         }
-        Self { definitions, names }
+        Self {
+            definitions,
+            names,
+            local_discovery,
+        }
+    }
+
+    pub fn wire_tools(&self) -> Value {
+        if !self.local_discovery {
+            return json!(self.definitions);
+        }
+        // Keep large catalogues discoverable using the plugin's bounded local catalogue.
+        // Store the full definitions for exact continuation checks even in this mode.
+        let names: std::collections::BTreeSet<_> = self
+            .names
+            .values()
+            .map(String::as_str)
+            .chain(["tools.list", "tools.describe"])
+            .collect();
+        json!([{
+            "type": "function", "name": "director_operation",
+            "description": "Call one application operation. Start with tools.list (optional namespace or query) or tools.describe (names array) to read schemas, then call the matching name with its declared arguments.",
+            "parameters": {
+                "type":"object", "properties":{
+                    "name":{"type":"string","enum":names},
+                    "arguments":{"type":"object","additionalProperties":true},
+                    "memory":{"type":"string","description":"Brief cumulative progress note"}
+                }, "required":["name","arguments","memory"], "additionalProperties":false
+            }
+        }])
     }
 
     pub fn decision(
@@ -112,13 +144,20 @@ impl Catalogue {
                     if action.is_some() {
                         return Err(invalid("Expected a single local operation"));
                     }
-                    let name = item["name"]
-                        .as_str()
-                        .and_then(|wire| self.names.get(wire))
-                        .ok_or_else(|| invalid("Unknown Agent function"))?;
+                    let wire = item["name"].as_str().unwrap_or("");
                     let parameters: Value =
                         serde_json::from_str(item["arguments"].as_str().unwrap_or(""))
                             .map_err(|_| invalid("Invalid function arguments"))?;
+                    let name = if self.local_discovery {
+                        parameters["name"].as_str().filter(|name| {
+                            wire == "director_operation"
+                                && (matches!(*name, "tools.list" | "tools.describe")
+                                    || self.names.values().any(|local| local.as_str() == *name))
+                        })
+                    } else {
+                        self.names.get(wire).map(String::as_str)
+                    }
+                    .ok_or_else(|| invalid("Unknown Agent function"))?;
                     if !parameters["arguments"].is_object() {
                         return Err(invalid("Expected operation arguments"));
                     }
@@ -224,6 +263,12 @@ impl Previous {
 mod tests {
     use super::*;
 
+    impl Catalogue {
+        fn new(turn: &AgentTurn) -> Self {
+            Self::for_api(turn, xrtranslate_assets::remote::AgentApi::OpenaiResponses)
+        }
+    }
+
     fn turn(names: &[&str]) -> AgentTurn {
         let tools: Vec<_> = names.iter().map(|name| json!({
             "name": name, "description": "Read a document", "inputSchema": {"type":"object"},
@@ -238,6 +283,29 @@ mod tests {
             role,
             content: content.into(),
         }
+    }
+
+    #[test]
+    fn dashscope_large_inventory_dispatches_only_declared_operations_or_local_discovery() {
+        use xrtranslate_assets::remote::AgentApi;
+        let names: Vec<_> = (0..65).map(|i| format!("notes.read_{i}")).collect();
+        let refs: Vec<_> = names.iter().map(String::as_str).collect();
+        let catalogue = Catalogue::for_api(&turn(&refs), AgentApi::DashscopeResponses);
+        let tools = catalogue.wire_tools();
+        assert_eq!(tools.as_array().unwrap().len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        let select = |name| {
+            json!({"output":[{"type":"function_call","name":"director_operation","call_id":"call_1",
+            "arguments":json!({"name":name,"arguments":{},"memory":"read"}).to_string()}]})
+        };
+        for name in ["tools.list", "notes.read_64"] {
+            let (result, _) = catalogue.decision(&select(name)).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&result.text).unwrap()["action"]["tool"]["name"],
+                name
+            );
+        }
+        assert!(catalogue.decision(&select("notes.delete")).is_err());
     }
 
     #[test]

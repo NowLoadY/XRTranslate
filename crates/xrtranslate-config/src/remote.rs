@@ -6,6 +6,59 @@ use xrtranslate_assets::{
     remote::{self, RemoteCapabilities, RemoteConnector, RemoteStreaming},
 };
 
+fn valid_workspace(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 63 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+pub(crate) fn agent_endpoint(
+    provider: &str,
+    model: &str,
+    connector: Option<RemoteConnector>,
+    url: &str,
+    workspace: &str,
+) -> Result<Option<(remote::AgentApi, String)>, String> {
+    if connector == Some(RemoteConnector::OpenaiResponses) {
+        return Ok(Some((remote::AgentApi::OpenaiResponses, url.to_owned())));
+    }
+    let Some((service, agent)) = remote::services(provider, ModelCapability::Translation)
+        .find(|s| s.models.iter().any(|m| m == model))
+        .and_then(|s| Some((s, s.agent.as_ref()?)))
+    else {
+        return Ok(None);
+    };
+    if connector != Some(RemoteConnector::OpenaiChat) {
+        return Ok(None);
+    }
+    let url = url.trim_end_matches('/');
+    if service.defaults["url"] != url {
+        // Preserve an explicitly selected official workspace. Private gateways
+        // keep their Chat Completions transport and their own credentials.
+        let official = url
+            .strip_suffix("/chat/completions")
+            .map(|base| format!("{base}/responses"))
+            .filter(|candidate| {
+                agent
+                    .workspace_url
+                    .split_once("{workspace_id}")
+                    .is_some_and(|(prefix, suffix)| {
+                        candidate
+                            .strip_prefix(prefix)
+                            .and_then(|s| s.strip_suffix(suffix))
+                            .is_some_and(valid_workspace)
+                    })
+            });
+        return Ok(official.map(|endpoint| (agent.api, endpoint)));
+    }
+    let endpoint = if workspace.is_empty() {
+        agent.url.clone()
+    } else if valid_workspace(workspace) {
+        agent.workspace_url.replace("{workspace_id}", workspace)
+    } else {
+        return Err("Invalid Agent workspace ID".into());
+    };
+    Ok(Some((agent.api, endpoint)))
+}
+
 /// Validated online synthesis selection. Credentials stay in runtime settings.
 pub struct RemoteTtsConfig {
     pub endpoint: String,
@@ -57,12 +110,7 @@ impl crate::AppConfig {
         let mut endpoint = field("url").to_owned();
         if endpoint.contains("{workspace_id}") {
             let workspace = field("workspace_id");
-            if workspace.is_empty()
-                || workspace.len() > 63
-                || !workspace
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            {
+            if !valid_workspace(workspace) {
                 return Err("Enter a valid workspace ID for the selected TTS provider.".into());
             }
             endpoint = endpoint.replace("{workspace_id}", workspace);

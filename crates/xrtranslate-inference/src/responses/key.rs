@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
+use xrtranslate_assets::remote::AgentApi;
 use xrtranslate_prompt::{PromptMessage, PromptMessageRole};
 use xrtranslate_protocol::AgentTurn;
 
@@ -24,6 +25,7 @@ struct Connection {
 
 #[derive(Clone)]
 pub(crate) struct KeyResponses {
+    api: AgentApi,
     pub(super) endpoint: String,
     pub(super) authorization: HeaderValue,
     pub(super) http: ReqwestClient,
@@ -40,6 +42,10 @@ impl std::fmt::Debug for KeyResponses {
 
 impl KeyResponses {
     pub fn new(endpoint: &str, key: &str) -> Result<Self, InferenceError> {
+        Self::for_api(AgentApi::OpenaiResponses, endpoint, key)
+    }
+
+    pub fn for_api(api: AgentApi, endpoint: &str, key: &str) -> Result<Self, InferenceError> {
         let error = |field, message: &str| InferenceError::InvalidConfiguration {
             field,
             message: message.into(),
@@ -50,7 +56,7 @@ impl KeyResponses {
             return Err(error("endpoint", "Expected an HTTP(S) Responses URL"));
         }
         if key.trim().is_empty() {
-            return Err(error("api_key", "OpenAI API key is missing"));
+            return Err(error("api_key", "The model provider API key is missing"));
         }
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", key.trim()))
             .map_err(|_| error("api_key", "Invalid API key"))?;
@@ -60,6 +66,7 @@ impl KeyResponses {
             source,
         })?;
         Ok(Self {
+            api,
             endpoint: endpoint.into(),
             authorization,
             http,
@@ -67,7 +74,7 @@ impl KeyResponses {
         })
     }
 
-    async fn sse<F, Fut>(
+    pub(super) async fn sse<F, Fut>(
         &self,
         mut payload: Value,
         stream: &mut ResponseStream,
@@ -79,15 +86,15 @@ impl KeyResponses {
     {
         payload["stream"] = json!(true);
         let authorization = self.authorization.to_str().expect("validated bearer");
-        let response = super::sse(
-            &self.http,
-            &self.endpoint,
-            authorization.to_owned(),
-            payload,
-            stream,
-            &mut update,
-        )
-        .await?;
+        let session_cache = self.api == AgentApi::DashscopeResponses
+            && payload.get("prompt_cache_options").is_none();
+        let mut request = super::sse_request(&self.endpoint, authorization.to_owned(), payload);
+        if session_cache {
+            request
+                .headers
+                .push(("x-dashscope-session-cache".into(), "enable".into()));
+        }
+        let response = super::sse(&self.http, request, stream, &mut update).await?;
         if !(200..300).contains(&response.status) {
             return Err(InferenceError::HttpStatus {
                 endpoint: self.endpoint.clone(),
@@ -104,6 +111,15 @@ impl KeyResponses {
             });
         }
         Ok(())
+    }
+
+    pub(super) async fn native_sse(&self, payload: Value) -> Result<Value, InferenceError> {
+        let mut stream = ResponseStream::native();
+        self.sse(payload, &mut stream, |_| std::future::ready(()))
+            .await?;
+        stream.response.take().ok_or_else(|| {
+            self.transport("response_body", "Stream ended before response.completed")
+        })
     }
 
     pub async fn complete<F, Fut>(
@@ -135,7 +151,7 @@ impl KeyResponses {
     pub async fn agent(
         &self,
         model: &str,
-        effort: &str,
+        effort: Option<&str>,
         messages: &[PromptMessage],
         turn: &AgentTurn,
         window: u32,
@@ -146,32 +162,44 @@ impl KeyResponses {
                 message: "A session, transcript and scoped tool catalogue are required".into(),
             });
         }
-        let catalogue = Catalogue::new(turn);
+        let catalogue = Catalogue::for_api(turn, self.api);
         let mut state = self.connection.lock().await;
         let delta = state
             .previous
             .as_ref()
             .and_then(|p| p.delta(messages, turn, &catalogue));
         let continuation = delta.is_some();
-        let (input_limit, output_limit) = xrtranslate_assets::remote::openai_agent_limits(window);
-        let input = delta.unwrap_or_else(|| messages.iter().map(input_item).collect());
+        let (input_limit, output_limit) = self.api.limits(window);
+        let mut input = delta.unwrap_or_else(|| messages.iter().map(input_item).collect());
+        if self.api == AgentApi::DashscopeResponses {
+            for item in &mut input {
+                if let Some(fields) = item.as_object_mut() {
+                    fields.remove("phase");
+                }
+            }
+        }
         let mut payload = json!({
             "model": model,
             "input": input,
-            "tools": catalogue.definitions,
+            "tools": catalogue.wire_tools(),
             "parallel_tool_calls": false,
-            "reasoning": {"effort": effort},
-            "store": false,
-            "max_output_tokens": output_limit,
-            "prompt_cache_options": {"ttl": "30m"},
-            "include": ["reasoning.encrypted_content"]
+            "max_output_tokens": output_limit
         });
-        // OpenAI's auto-compaction example uses 200K; always leave headroom
-        // inside a smaller user-selected window. API minimum is 1,000 tokens.
-        let threshold = 200_000.min(input_limit.saturating_mul(3) / 4);
-        if threshold >= 1000 {
-            payload["context_management"] =
-                json!([{"type":"compaction","compact_threshold":threshold}]);
+        match self.api {
+            AgentApi::OpenaiResponses => {
+                payload["reasoning"] = json!({"effort":effort.unwrap_or("medium")});
+                payload["store"] = json!(false);
+                payload["prompt_cache_options"] = json!({"ttl":"30m"});
+                payload["include"] = json!(["reasoning.encrypted_content"]);
+                let threshold = 200_000.min(input_limit.saturating_mul(3) / 4);
+                if threshold >= 1000 {
+                    payload["context_management"] =
+                        json!([{"type":"compaction","compact_threshold":threshold}]);
+                }
+            }
+            AgentApi::DashscopeResponses => {
+                super::dashscope::configure(&mut payload, model, effort)
+            }
         }
         let started = Instant::now();
         let mut record = crate::diagnostics::RequestRecord::start("Agent", &payload, Vec::new());
@@ -200,7 +228,7 @@ impl KeyResponses {
             tracing::info!(
                 model, transport, incremental = reply.incremental, compacted = compaction.is_some(),
                 elapsed_ms = started.elapsed().as_millis(), usage = ?completion.usage,
-                "OpenAI Agent turn completed"
+                api = ?self.api, "Agent Responses turn completed"
             );
             // Only stateless recovery uses this copy. A live response ID retains its chain.
             let replay = if let Some(index) = compaction {
@@ -212,7 +240,15 @@ impl KeyResponses {
                     .filter(|_| continuation)
                     .map_or_else(Vec::new, |previous| previous.replay);
                 retained.extend(input);
-                retained.extend(output.iter().cloned());
+                retained.extend(
+                    output
+                        .iter()
+                        .filter(|item| {
+                            self.api == AgentApi::OpenaiResponses
+                                || super::dashscope::replayable(item)
+                        })
+                        .cloned(),
+                );
                 retained
             };
             let mut expected = messages.to_vec();
@@ -272,8 +308,17 @@ impl Connection {
         continuation: bool,
     ) -> Result<Reply, InferenceError> {
         // Taking ownership before I/O also drops an in-flight socket on cancellation.
-        let mut socket = self.socket.take();
         let previous = self.previous.as_ref().filter(|_| continuation);
+        if client.api == AgentApi::DashscopeResponses {
+            let (response, incremental) =
+                client.dashscope_request(payload, input, previous).await?;
+            return Ok(Reply {
+                response,
+                incremental,
+                socket: None,
+            });
+        }
+        let mut socket = self.socket.take();
         if let (Some(active), Some(previous)) = (&mut socket, previous) {
             let mut delta = payload.clone();
             delta["previous_response_id"] = json!(previous.id);
@@ -312,13 +357,7 @@ impl Connection {
         let response = if let Some(active) = &mut socket {
             client.exchange(active, payload).await?
         } else {
-            let mut stream = ResponseStream::native();
-            client
-                .sse(payload, &mut stream, |_| std::future::ready(()))
-                .await?;
-            stream.response.take().ok_or_else(|| {
-                client.transport("response_body", "Stream ended before response.completed")
-            })?
+            client.native_sse(payload).await?
         };
         Ok(Reply {
             response,

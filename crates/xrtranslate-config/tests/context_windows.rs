@@ -54,7 +54,7 @@ fn each_model_remembers_its_own_value_and_default() {
             "qwen",
             &chat.raw["translation"]["providers"]["qwen"]
         ),
-        32768
+        1_000_000
     );
     assert_eq!(context(&selected(&chat, "qwen", "qwen-mt-lite")), 8192);
 }
@@ -179,7 +179,7 @@ fn legacy_value_belongs_only_to_the_previously_selected_model() {
     raw["translation"]["providers"]["qwen"]["context_window_tokens"] = json!(12345);
     let config = AppConfig::from_value(raw).unwrap();
     assert_eq!(context(&config), 12345);
-    assert_eq!(context(&selected(&config, "qwen", "qwen-plus")), 32768);
+    assert_eq!(context(&selected(&config, "qwen", "qwen-plus")), 1_000_000);
     assert_eq!(
         context(&selected(
             &selected(&config, "qwen", "qwen-plus"),
@@ -212,5 +212,5 @@ fn an_old_base_value_cannot_override_a_different_model_selected_by_the_user() {
     )
     .unwrap();
     let config = AppConfig::from_path_with_user_config(path, directory.path()).unwrap();
-    assert_eq!(context(&config), 32768);
+    assert_eq!(context(&config), 1_000_000);
 }

@@ -40,6 +40,29 @@ caching. The HTTPS streaming fallback replays retained native items, including
 encrypted reasoning. The local transcript is authoritative when the scope or
 catalogue changes. [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) · [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
+## Qwen API key for the built-in Agent
+
+Select Qwen (Beijing) or Qwen International (Singapore) on the Agent card.
+The first choice is `qwen3.8-flash` with medium reasoning. The catalogue also
+offers `qwen3.8-max`, `qwen4-max`, and `qwen-plus`. These Qwen models use a
+1,000,000-token default window with a 16,384-token reasoning and answer budget
+for Agent work. A per-model window override takes precedence. [Qwen3.8-Flash specification](https://help.aliyun.com/zh/model-studio/qwen3-8-flash)
+
+The Agent uses the selected region's DashScope Responses endpoint. Entering a
+workspace ID selects the dedicated workspace domain. Regular translation uses
+the configured Chat Completions route. The Agent streams HTTPS responses and
+returns local function results by `call_id`. It sends only new input with
+`previous_response_id` for an accepted continuation. This uses `store: true`.
+Alibaba documents a seven-day response ID lifetime. When an ID expires, the
+backend can replay accepted calls and their actual results from local history.
+[DashScope Responses reference](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)
+
+Qwen3.8 and Qwen Plus use the `x-dashscope-session-cache: enable` header.
+Qwen4-Max uses its implicit breakpoint mode with a five-minute TTL. Tool schemas
+stay in a stable order. Above 64 operations, the model can discover schemas by
+name or namespace through the local Director. Cache hits are measured from
+returned token usage. [Session caching](https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api) · [Qwen4 cache settings](https://help.aliyun.com/zh/model-studio/explicit-cache-qwen4)
+
 ## Free-tier translation presets
 
 The following API options were checked against official documentation on

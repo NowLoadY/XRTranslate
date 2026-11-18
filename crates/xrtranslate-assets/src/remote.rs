@@ -34,6 +34,37 @@ pub enum ConnectionChannel {
 
 pub use xrtranslate_connections::AccountProvider;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentApi {
+    OpenaiResponses,
+    DashscopeResponses,
+}
+
+impl AgentApi {
+    pub fn limits(self, window: u32) -> (u32, u32) {
+        match self {
+            Self::OpenaiResponses => openai_agent_limits(window),
+            Self::DashscopeResponses => {
+                // Reserve space for reasoning, the answer and message framing.
+                let output = 16_384.min(window / 4);
+                (
+                    983_616.min(window.saturating_sub(output).saturating_sub(256)),
+                    output,
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAgentService {
+    pub api: AgentApi,
+    pub url: String,
+    pub workspace_url: String,
+}
+
 /// GPT-6.2 counts visible output and reasoning against one allowance.
 pub fn openai_agent_limits(window: u32) -> (u32, u32) {
     let output = 25_000.min(window / 4);
@@ -243,6 +274,9 @@ pub struct RemoteServiceManifest {
     pub capability: ModelCapability,
     pub defaults: serde_json::Map<String, serde_json::Value>,
     pub models: Vec<String>,
+    /// Optional Agent transport for a service whose regular text endpoint uses Chat Completions.
+    #[serde(default)]
+    pub agent: Option<RemoteAgentService>,
     /// Former provider IDs folded into this provider at the configuration boundary.
     #[serde(default)]
     pub provider_aliases: Vec<String>,
