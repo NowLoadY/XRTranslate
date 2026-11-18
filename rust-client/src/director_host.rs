@@ -48,6 +48,13 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn call_director_tool(&mut self, call: &ToolCall) -> ToolResult {
+        if !matches!(
+            call.name.as_str(),
+            "agent.environment" | "agent.status" | "media.operation" | "plugins.operation"
+        ) && call.arguments.get("job").is_none()
+        {
+            ui_director::egui::feedback::tool_started(&call.name);
+        }
         let result = ui_director::dispatch(&mut crate::plugins::tool_providers(self), call);
         if let Err(error) = &result {
             log::warn!("Director tool {} failed: {error}", call.name);

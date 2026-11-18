@@ -132,9 +132,12 @@ impl Speech {
                 (delay < 0.15 && !letter.trim().is_empty()).then_some(self.next_letter);
             self.next_letter += delay * self.letter_scale.unwrap_or(1.0);
             if self.end == page_end {
-                let reading_time =
-                    (self.text[self.page_start..self.end].graphemes(true).count() as f64 * 0.035)
-                        .clamp(2.2, 4.0);
+                let count = self.text[self.page_start..self.end].graphemes(true).count() as f64;
+                let reading_time = if self.end == self.text.len() {
+                    (count * 0.028).clamp(1.6, 3.0)
+                } else {
+                    (count * 0.012).clamp(0.45, 0.95)
+                };
                 // Keep a completed page readable even after a delayed frame.
                 self.next_letter = self.next_letter.max(now) + reading_time;
                 if self.end == self.text.len() {
@@ -426,16 +429,16 @@ fn bubble_direction(
 
 fn letter_delay(letter: &str) -> f64 {
     match letter.chars().next().unwrap_or(' ') {
-        '.' | '!' | '?' | '。' | '！' | '？' | '؟' | '।' | '॥' | '\n' => 0.46,
-        '…' | '—' => 0.55,
-        ',' | ';' | ':' | '，' | '、' | '；' | '：' | '،' | '؛' => 0.24,
+        '.' | '!' | '?' | '。' | '！' | '？' | '؟' | '।' | '॥' | '\n' => 0.17,
+        '…' | '—' => 0.20,
+        ',' | ';' | ':' | '，' | '、' | '；' | '：' | '،' | '؛' => 0.095,
         c if c.is_whitespace() => 0.025,
         c if c.is_ascii_punctuation()
             || matches!(c, '\u{2000}'..='\u{206f}' | '\u{3001}'..='\u{303f}'
                 | '\u{ff01}'..='\u{ff0f}' | '\u{ff1a}'..='\u{ff20}'
                 | '\u{ff3b}'..='\u{ff40}' | '\u{ff5b}'..='\u{ff65}') =>
         {
-            0.16
+            0.065
         }
         // CJK syllables/ideographs carry more information per character.
         '\u{3040}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' => 0.075,
@@ -506,7 +509,10 @@ mod tests {
             speech.advance(now);
             let current = &speech.text[speech.page_start..speech.end];
             if speech.page_start != previous_start {
-                assert!(now - last_change >= 2.2, "leave time to read the page");
+                assert!(
+                    (0.44..1.25).contains(&(now - last_change)),
+                    "a short pause between pages"
+                );
                 assert!(current.is_empty(), "clear before continuing to type");
                 pages.push(std::mem::take(&mut visible));
                 // Native and VR surfaces receive the same page and clock state.

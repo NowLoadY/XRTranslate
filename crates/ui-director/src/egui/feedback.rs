@@ -21,6 +21,83 @@ fn key() -> Id {
     Id::unique("director_feedback")
 }
 
+/// Keep short calls visible for one glance. Long-running Agent calls also supply their live name.
+pub fn tool_started(name: &str) {
+    if let Some(ctx) = super::driver().context() {
+        let until = ctx.input(|i| i.time) + 0.85;
+        ctx.data_mut(|d| d.insert_temp(key().with("tool"), (name.to_owned(), until)));
+        ctx.request_repaint();
+    }
+}
+
+pub fn paint_tool(
+    painter: &egui::Painter,
+    head: Pos2,
+    radius: f32,
+    active: Option<&str>,
+) -> Option<Rect> {
+    let ctx = painter.ctx();
+    let recent = ctx.data(|d| d.get_temp::<(String, f64)>(key().with("tool")));
+    let now = ctx.input(|i| i.time);
+    let name = active.or_else(|| {
+        recent
+            .as_ref()
+            .filter(|(_, until)| now < *until)
+            .map(|(s, _)| s.as_str())
+    })?;
+    let style = ctx.global_style();
+    let ink = style.visuals.text_color();
+    let font = egui::FontId::proportional(11.5);
+    let bounds = painter.clip_rect().shrink(2.);
+    if bounds.width() < 45. || bounds.height() < 23. {
+        return None;
+    }
+    let mut job = egui::text::LayoutJob::simple_singleline(name.into(), font, ink);
+    job.wrap.max_width = (bounds.width() - 29.).min(200.);
+    job.wrap.max_rows = 1;
+    let label = painter.layout_job(job);
+    let size = egui::vec2(label.size().x + 28., 21.);
+    let pos = egui::pos2(
+        (head.x - size.x / 2.).clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left())),
+        (head.y - radius - size.y - 5.).clamp(bounds.top(), bounds.bottom() - size.y),
+    );
+    let capsule = Rect::from_min_size(pos, size);
+    painter.rect(
+        capsule,
+        10.,
+        style.visuals.window_fill(),
+        Stroke::new(1., style.visuals.widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    let center = capsule.left_center() + egui::vec2(11., 0.);
+    let point = |x, y| center + egui::vec2(x, y);
+    let metal = Color32::from_gray(if style.visuals.dark_mode { 185 } else { 106 });
+    painter.line_segment([point(-4.2, 4.2), point(1., -1.)], Stroke::new(3.7, metal));
+    painter.circle_filled(point(-4.2, 4.2), 1.9, metal);
+    painter.circle_filled(point(-4.2, 4.2), 0.7, style.visuals.window_fill());
+    painter.add(egui::Shape::line(
+        vec![
+            point(0., -5.5),
+            point(-1.4, -2.5),
+            point(1., 0.),
+            point(4., -0.9),
+            point(5.3, -3.1),
+        ],
+        Stroke::new(2.5, metal),
+    ));
+    painter.galley(
+        capsule.left_center() + egui::vec2(21., -label.size().y / 2.),
+        label,
+        ink,
+    );
+    if let Some((_, until)) = recent
+        && until > now
+    {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(until - now));
+    }
+    Some(capsule)
+}
+
 /// Show one bounded batch of actual operations; no additional tool/model messages.
 pub fn show(items: impl IntoIterator<Item = Feedback>) {
     if let Some(ctx) = super::driver().context() {

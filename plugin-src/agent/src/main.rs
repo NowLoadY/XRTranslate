@@ -175,7 +175,9 @@ impl Agent {
             context.event("message", json!(message));
         }
         let mut status = core.status();
-        if let Some((_, call)) = &self.operation {
+        if status["operation"].is_null()
+            && let Some((_, call)) = &self.operation
+        {
             status["operation"] = json!(call);
         }
         if status != self.status {

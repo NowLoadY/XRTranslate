@@ -754,6 +754,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     };
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
+    let mut tool_badge = None;
     if state.opacity > 0.0 {
         if touring {
             super::tutorial::paint(
@@ -767,11 +768,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
                 Some((anchor, size)),
                 crate::ui::theme::primary(),
             );
+            let operation = app.plugin_host.state("agent")["operation"]["name"].as_str();
+            tool_badge = ui_director::egui::feedback::paint_tool(&painter, anchor, size, operation);
         }
         app.avatar_appearance
             .model()
             .paint(&painter, state_id(), anchor, size, pose);
     }
+    let mut occupied = if touring {
+        tutorial_panel.as_slice().to_vec()
+    } else {
+        state.parking.occupied().to_vec()
+    };
+    occupied.extend(tool_badge);
     let talking = !state.composer.open
         && state.speech.paint_avoiding(
             &painter,
@@ -788,11 +797,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             size,
             state.clock,
             visual_dt,
-            if touring {
-                tutorial_panel.as_slice()
-            } else {
-                state.parking.occupied()
-            },
+            &occupied,
             speed < 12.0
                 && target.is_none_or(|target| anchor.distance(target) < 2.0)
                 && !response.dragged(),

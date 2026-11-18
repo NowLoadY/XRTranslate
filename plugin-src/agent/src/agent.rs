@@ -42,7 +42,8 @@ struct Run {
     tools: Vec<Tool>,
     // Message count identifies the exact history used by the in-flight inference.
     reply: Option<(Reply, usize)>,
-    waiting: Option<ToolCall>,
+    // Preserve the requested operation while the provider supplies its own polling calls.
+    waiting: Option<(ToolCall, ToolCall)>,
     cleanup: Option<ToolCall>,
     next_poll: Instant,
     started: Instant,
@@ -324,7 +325,7 @@ impl AgentPlugin {
             |run| {
                 json!({
                     "running": true, "scope": run.scope, "goal": run.goal,
-                    "steps": run.steps, "operation": run.waiting,
+                    "steps": run.steps, "operation": run.waiting.as_ref().map(|(requested, _)| requested),
                 })
             },
         );
@@ -349,7 +350,7 @@ impl AgentPlugin {
             |run| {
                 json!({
                     "running": true, "scope": run.scope, "steps": run.steps,
-                    "step_target": MAX_STEPS, "operation": run.waiting,
+                    "step_target": MAX_STEPS, "operation": run.waiting.as_ref().map(|(requested, _)| requested),
                     "elapsed_seconds": run.started.elapsed().as_secs(),
                 })
             },
@@ -499,6 +500,8 @@ impl AgentPlugin {
         let Some(run) = &mut self.run else {
             return;
         };
+        let waiting = run.waiting.take();
+        let call = waiting.as_ref().map_or(call, |(requested, _)| requested);
         match result {
             Ok(value) => {
                 if let Some(pending) = value.get("pending") {
@@ -518,8 +521,8 @@ impl AgentPlugin {
                         );
                         return;
                     }
-                    let started_waiting = run.waiting.is_none();
-                    run.waiting = Some(pending);
+                    let started_waiting = waiting.is_none();
+                    run.waiting = Some((call.clone(), pending));
                     run.cleanup = Some(cancel);
                     run.next_poll = Instant::now() + Duration::from_millis(250);
                     if started_waiting {
@@ -527,7 +530,6 @@ impl AgentPlugin {
                     }
                     return;
                 }
-                run.waiting = None;
                 run.cleanup = None;
                 if value.get("changed") == Some(&Value::Bool(false)) {
                     run.errors += 1;
@@ -557,7 +559,6 @@ impl AgentPlugin {
                 run.review_jpeg = image;
             }
             Err(error) => {
-                run.waiting = None;
                 self.cleanup.extend(run.cleanup.take());
                 run.errors += 1;
                 run.feedback(&mut self.context, json!({"tool":call,"error":error}));
@@ -578,7 +579,7 @@ impl AgentPlugin {
         if let Some(reason) = reason {
             return self.stop(reason).map(|_| Action::Finished);
         }
-        if let Some(call) = &run.waiting {
+        if let Some((_, call)) = &run.waiting {
             return (Instant::now() >= run.next_poll).then(|| Action::Call(call.clone()));
         }
         if let Some((reply, message_count)) = &run.reply {
