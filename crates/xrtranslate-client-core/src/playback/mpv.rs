@@ -8,7 +8,8 @@ mod inspection;
 mod tracks;
 pub use encoding::{
     VideoAudio, VideoEncoding, decode_rgb_samples, encode_audio, encode_audio_review,
-    encode_audio_volume, encode_still_tile, encode_video, encode_video_edit,
+    encode_audio_volume, encode_material_audio, encode_material_picture, encode_still_tile,
+    encode_video, encode_video_edit,
 };
 pub use inspection::{
     VideoProbe, capture_displayed_frame, extract_filtered_frame, extract_video_frame,

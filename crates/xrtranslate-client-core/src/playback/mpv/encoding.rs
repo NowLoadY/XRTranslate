@@ -181,6 +181,59 @@ pub fn encode_still_tile(source: &str, output: &Path) -> Result<(), String> {
     )
 }
 
+/// Cache a fitted picture stream; the material reel provides its audio tracks separately.
+pub fn encode_material_picture(
+    source: &str,
+    output: &Path,
+    video_filter: &str,
+) -> Result<(), String> {
+    encode_mp4(
+        source,
+        output,
+        VideoEncoding {
+            subtitles: None,
+            style: &Default::default(),
+            audio: VideoAudio::Mix(Vec::new()),
+        },
+        Some(video_filter),
+        &AtomicU32::new(0),
+        &AtomicBool::new(false),
+        "preset=ultrafast,crf=16",
+    )
+}
+
+/// Normalize an individual material track for gapless concatenation across source formats.
+pub fn encode_material_audio(source: &str, output: &Path, track: i64) -> Result<(), String> {
+    let mpv = MpvHandle::create()?;
+    for (key, value) in [
+        ("config", "no"),
+        ("load-scripts", "no"),
+        ("terminal", "no"),
+        ("vo", "null"),
+        ("vid", "no"),
+        ("ao", "lavc"),
+        ("o", output.to_str().ok_or("Invalid material audio path")?),
+        ("of", "wav"),
+        ("oac", "pcm_s16le"),
+        ("audio-channels", "stereo"),
+        ("audio-samplerate", "48000"),
+        ("keep-open", "no"),
+        ("idle", "yes"),
+        ("audio-file-auto", "no"),
+    ] {
+        mpv.set_option_string(key, value)?;
+    }
+    encode_with_audio(
+        mpv,
+        source,
+        output,
+        &VideoAudio::Original(Some(track)),
+        None,
+        &AtomicBool::new(false),
+        None,
+    )
+}
+
 fn encode_mp4(
     source: &str,
     output: &Path,
@@ -422,11 +475,7 @@ fn set_files(mpv: &MpvHandle, name: &std::ffi::CStr, paths: &[&str]) -> Result<(
     Ok(())
 }
 
-fn select_export_audio(
-    mpv: &MpvHandle,
-    audio: &VideoAudio,
-    review: Option<ReviewRange>,
-) -> Result<(), String> {
+pub(super) fn read_audio_tracks(mpv: &MpvHandle) -> Result<Vec<super::super::AudioTrack>, String> {
     let mut node: libmpv_sys::mpv_node = unsafe { std::mem::zeroed() };
     let error = unsafe {
         libmpv_sys::mpv_get_property(
@@ -439,8 +488,17 @@ fn select_export_audio(
     if error < 0 {
         return Err("Cannot read export audio tracks".into());
     }
-    let mut tracks = unsafe { super::tracks::read(&node) };
+    let tracks = unsafe { super::tracks::read(&node) };
     unsafe { libmpv_sys::mpv_free_node_contents(&mut node) };
+    Ok(tracks)
+}
+
+fn select_export_audio(
+    mpv: &MpvHandle,
+    audio: &VideoAudio,
+    review: Option<ReviewRange>,
+) -> Result<(), String> {
+    let mut tracks = read_audio_tracks(mpv)?;
     let mut silent_clock = None;
     if review.is_some_and(|r| r.clock_only) {
         silent_clock = tracks.iter().find(|t| t.external.is_none()).map(|t| t.id);

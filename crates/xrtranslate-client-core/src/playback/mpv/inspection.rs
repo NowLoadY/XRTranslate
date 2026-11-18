@@ -5,11 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VideoProbe {
     pub duration_ms: i64,
     pub width: u32,
     pub height: u32,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub audio_tracks: Vec<super::super::AudioTrack>,
 }
 
 fn probe_handle() -> Result<MpvHandle, String> {
@@ -48,8 +51,15 @@ pub fn inspect_media(source: &str) -> Result<VideoProbe, String> {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(15) {
         let event = unsafe { &*libmpv_sys::mpv_wait_event(mpv.handle, 0.05) };
-        if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_FILE_LOADED {
+        // Dimensions, display aspect and default track selection are negotiated after FILE_LOADED.
+        if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_PLAYBACK_RESTART {
             return Ok(VideoProbe {
+                audio_tracks: super::encoding::read_audio_tracks(&mpv)?
+                    .into_iter()
+                    .filter(|t| t.external.is_none())
+                    .collect(),
+                display_width: mpv.get_property_f64("dwidth").unwrap_or(0.) as u32,
+                display_height: mpv.get_property_f64("dheight").unwrap_or(0.) as u32,
                 duration_ms: (mpv
                     .get_property_f64("duration")
                     .ok_or("Unknown media duration")?
