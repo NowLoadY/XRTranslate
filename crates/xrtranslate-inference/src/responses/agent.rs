@@ -2,10 +2,12 @@
 use crate::{ChatCompletion, InferenceError, TokenUsage};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use xrtranslate_assets::remote::AgentApi;
 use xrtranslate_prompt::{PromptMessage, PromptMessageRole};
 use xrtranslate_protocol::AgentTurn;
 
 pub(super) struct Catalogue {
+    api: AgentApi,
     pub definitions: Vec<Value>,
     local_discovery: bool,
     // A wire name always maps back to exactly one declared local operation.
@@ -26,10 +28,10 @@ fn identifier(name: &str) -> String {
 }
 
 impl Catalogue {
-    pub fn for_api(turn: &AgentTurn, api: xrtranslate_assets::remote::AgentApi) -> Self {
+    pub fn for_api(turn: &AgentTurn, api: AgentApi) -> Self {
         let mut tools: Vec<_> = turn.tools.iter().collect();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
-        let hosted_search = api == xrtranslate_assets::remote::AgentApi::OpenaiResponses;
+        let hosted_search = api == AgentApi::OpenaiResponses;
         let deferred = hosted_search && tools.len() > 16;
         let local_discovery = !hosted_search && tools.len() > 64;
         let mut names = BTreeMap::new();
@@ -91,6 +93,7 @@ impl Catalogue {
             definitions.push(json!({"type":"tool_search"}));
         }
         Self {
+            api,
             definitions,
             names,
             local_discovery,
@@ -125,13 +128,13 @@ impl Catalogue {
     pub fn decision(
         &self,
         response: &Value,
-    ) -> Result<(ChatCompletion, Option<String>), InferenceError> {
+    ) -> Result<(ChatCompletion, Vec<String>), InferenceError> {
         let invalid = |reason| InferenceError::RejectedOutput {
             operation: "Agent",
             reason,
         };
         let mut action = None;
-        let mut call_id = None;
+        let mut call_ids = Vec::new();
         let mut memory = String::new();
         let mut commentary = String::new();
         let mut final_text = String::new();
@@ -141,7 +144,20 @@ impl Catalogue {
         {
             match item["type"].as_str() {
                 Some("function_call") => {
+                    let id = item["call_id"]
+                        .as_str()
+                        .filter(|id| {
+                            !id.is_empty()
+                                && !call_ids.iter().any(|known: &String| known.as_str() == *id)
+                        })
+                        .ok_or_else(|| invalid("Missing or duplicate function call ID"))?;
+                    call_ids.push(id.to_owned());
                     if action.is_some() {
+                        // DeepSeek always enables parallel proposals. The Director
+                        // accepts one action and reports the others as not executed.
+                        if self.api == AgentApi::DeepseekResponses {
+                            continue;
+                        }
                         return Err(invalid("Expected a single local operation"));
                     }
                     let wire = item["name"].as_str().unwrap_or("");
@@ -161,11 +177,6 @@ impl Catalogue {
                     if !parameters["arguments"].is_object() {
                         return Err(invalid("Expected operation arguments"));
                     }
-                    let id = item["call_id"]
-                        .as_str()
-                        .filter(|id| !id.is_empty())
-                        .ok_or_else(|| invalid("Missing function call ID"))?;
-                    call_id = Some(id.to_owned());
                     memory = parameters["memory"].as_str().unwrap_or("").into();
                     action =
                         Some(json!({"tool":{"name":name,"arguments":parameters["arguments"]}}));
@@ -194,7 +205,7 @@ impl Catalogue {
         } else {
             return Err(invalid("No function call or final answer"));
         };
-        if call_id.is_some() && !commentary.trim().is_empty() {
+        if !call_ids.is_empty() && !commentary.trim().is_empty() {
             decision["message"] = json!(commentary);
         }
         Ok((
@@ -202,15 +213,26 @@ impl Catalogue {
                 text: decision.to_string(),
                 usage: TokenUsage::from_json(response.get("usage")),
             },
-            call_id,
+            call_ids,
         ))
     }
 }
 
-pub(super) fn input_item(message: &PromptMessage) -> Value {
+pub(super) fn input_item(message: &PromptMessage, api: AgentApi) -> Value {
     match message.role {
+        PromptMessageRole::System if api == AgentApi::DeepseekResponses => {
+            json!({"role":"system","content":message.content})
+        }
         PromptMessageRole::System => json!({"role":"developer","content":message.content}),
         PromptMessageRole::User => json!({"role":"user","content":message.content}),
+        // After a restart, scope change or compaction we have the local record,
+        // but no matching DeepSeek reasoning item for a native assistant turn.
+        PromptMessageRole::Assistant if api == AgentApi::DeepseekResponses => {
+            json!({"role":"user","content":format!("Earlier Agent response from the local record:\n{}", message.content)})
+        }
+        PromptMessageRole::Assistant if api == AgentApi::DashscopeResponses => {
+            json!({"role":"assistant","content":message.content})
+        }
         PromptMessageRole::Assistant => {
             json!({"role":"assistant","phase":"final_answer","content":message.content})
         }
@@ -223,11 +245,25 @@ pub(super) struct Previous {
     pub definitions: Vec<Value>,
     pub expected: Vec<PromptMessage>,
     pub id: String,
-    pub call_id: Option<String>,
+    pub call_ids: Vec<String>,
+    pub total_tokens: Option<u64>,
     pub replay: Vec<Value>,
 }
 
 impl Previous {
+    /// A stateless API also replays model reasoning and schemas that the plugin's
+    /// visible transcript cannot count. Prefer the server's measured token usage.
+    pub fn replay_fits(&self, delta: &[Value], limit: u32) -> bool {
+        let estimate = |items: &[Value]| -> u64 {
+            items
+                .iter()
+                .map(|item| xrtranslate_prompt::estimated_tokens(&item.to_string()) as u64 + 8)
+                .sum()
+        };
+        let previous = self.total_tokens.unwrap_or_else(|| estimate(&self.replay));
+        previous.saturating_add(estimate(delta)) <= u64::from(limit)
+    }
+
     /// Continue only when the accepted local reply is still an exact prefix.
     /// User additions stay in order and only a confirmed receipt answers a tool call.
     pub fn delta(
@@ -245,8 +281,11 @@ impl Previous {
             return None;
         }
         let start = self.expected.len();
-        let mut delta: Vec<_> = messages[start..].iter().map(input_item).collect();
-        if let Some(id) = &self.call_id {
+        let mut delta: Vec<_> = messages[start..]
+            .iter()
+            .map(|m| input_item(m, catalogue.api))
+            .collect();
+        if let Some((id, deferred)) = self.call_ids.split_first() {
             let index = turn.feedback_index?.checked_sub(start)?;
             let receipt = messages.get(start + index)?;
             if receipt.role != PromptMessageRole::User {
@@ -254,6 +293,15 @@ impl Previous {
             }
             delta[index] =
                 json!({"type":"function_call_output","call_id":id,"output":receipt.content});
+            if catalogue.api == AgentApi::DeepseekResponses {
+                // Close the whole native call group before any intervening user
+                // messages. Only the selected action has a Director receipt.
+                delta[..=index].rotate_right(1);
+                delta.splice(1..1, deferred.iter().map(|id| json!({
+                    "type":"function_call_output", "call_id":id,
+                    "output":"Not executed. The Director accepts one operation per step. Inspect the first result and request this operation again if needed."
+                })));
+            }
         }
         Some(delta)
     }
@@ -319,7 +367,8 @@ mod tests {
             definitions: catalogue.definitions.clone(),
             expected: accepted.clone(),
             id: "r1".into(),
-            call_id: Some("call1".into()),
+            call_ids: vec!["call1".into()],
+            total_tokens: None,
             replay: Vec::new(),
         };
         let mut transcript = accepted;
@@ -368,7 +417,7 @@ mod tests {
             let (answer, id) = catalogue.decision(&json!({"output":[call(i)]})).unwrap();
             let decision: Value = serde_json::from_str(&answer.text).unwrap();
             assert_eq!(decision["action"]["tool"]["name"], *local);
-            assert_eq!(id.as_deref(), Some("c1"));
+            assert_eq!(id, ["c1"]);
         }
         assert!(
             catalogue

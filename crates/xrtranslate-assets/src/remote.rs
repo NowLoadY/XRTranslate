@@ -39,12 +39,18 @@ pub use xrtranslate_connections::AccountProvider;
 pub enum AgentApi {
     OpenaiResponses,
     DashscopeResponses,
+    DeepseekResponses,
 }
 
 impl AgentApi {
     pub fn limits(self, window: u32) -> (u32, u32) {
         match self {
             Self::OpenaiResponses => openai_agent_limits(window),
+            Self::DeepseekResponses => {
+                let window = window.min(1_048_576);
+                let output = 65_536.min(window / 4);
+                (window.saturating_sub(output).saturating_sub(256), output)
+            }
             Self::DashscopeResponses => {
                 // Reserve space for reasoning, the answer and message framing.
                 let output = 16_384.min(window / 4);
@@ -62,7 +68,7 @@ impl AgentApi {
 pub struct RemoteAgentService {
     pub api: AgentApi,
     pub url: String,
-    pub workspace_url: String,
+    pub workspace_url: Option<String>,
 }
 
 /// GPT-6.2 counts visible output and reasoning against one allowance.
@@ -225,6 +231,8 @@ pub struct RemoteCapabilities {
     pub single_user_message: bool,
     /// Optional reasoning level; each connector maps it to its wire format.
     pub reasoning_effort: Option<String>,
+    /// Optional override for native Agent turns, independently of live translation.
+    pub agent_reasoning_effort: Option<String>,
 }
 
 /// Synthesis capabilities shared by catalogue, configuration and connectors.

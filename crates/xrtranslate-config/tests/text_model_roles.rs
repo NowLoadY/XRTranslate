@@ -163,6 +163,69 @@ fn openai_agent_prefers_responses_and_honors_per_model_window_overrides() {
 }
 
 #[test]
+fn deepseek_selects_stateless_agent_tools_and_keeps_translation_and_gateway_credentials_separate() {
+    use xrtranslate_assets::remote::AgentApi;
+    let mut raw = config().raw;
+    raw["translation"]["providers"]["deepseek"]["api_key"] = json!("deepseek-fixture");
+    for model in ["deepseek-flash", "deepseek-v4-pro"] {
+        raw["agent"]["model"] = json!(selection("deepseek", model));
+        let config = AppConfig::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            config.native_model_route().unwrap().translation.provider,
+            "qwen"
+        );
+        assert_eq!(
+            config
+                .chat_model_selections()
+                .iter()
+                .find(|s| s.provider == "deepseek"),
+            Some(&selection("deepseek", "deepseek-flash"))
+        );
+        let agent = config.agent_provider().unwrap();
+        assert_eq!(agent.api_key.as_deref(), Some("deepseek-fixture"));
+        assert_eq!(agent.url, "https://api.deepseek.com/chat/completions");
+        assert_eq!(
+            agent.agent_endpoint,
+            Some((
+                AgentApi::DeepseekResponses,
+                "https://api.deepseek.com/responses".into()
+            ))
+        );
+        assert_eq!(agent.runtime.context_window_tokens, 1_048_576);
+        assert_eq!(agent.capabilities.reasoning_effort.as_deref(), Some("none"));
+        assert_eq!(
+            agent.capabilities.agent_reasoning_effort.as_deref(),
+            Some("high")
+        );
+    }
+    let configured = &mut raw["translation"]["providers"]["deepseek"];
+    configured["url"] = json!("https://api.deepseek.com/v1/chat/completions");
+    configured["context_windows"]["deepseek-v4-pro"] = json!(8192);
+    let agent = AppConfig::from_value(raw.clone())
+        .unwrap()
+        .agent_provider()
+        .unwrap();
+    assert!(matches!(
+        agent.agent_endpoint,
+        Some((AgentApi::DeepseekResponses, _))
+    ));
+    assert_eq!(
+        AgentApi::DeepseekResponses.limits(agent.runtime.context_window_tokens),
+        (5888, 2048)
+    );
+    raw["translation"]["providers"]["deepseek"]["url"] =
+        json!("https://private.invalid/v1/chat/completions");
+    assert!(
+        AppConfig::from_value(raw)
+            .unwrap()
+            .agent_provider()
+            .unwrap()
+            .agent_endpoint
+            .is_none()
+    );
+}
+
+#[test]
 fn qwen_agent_uses_the_selected_regional_service_and_respects_custom_gateways() {
     use xrtranslate_assets::remote::AgentApi;
     let mut raw = config().raw;

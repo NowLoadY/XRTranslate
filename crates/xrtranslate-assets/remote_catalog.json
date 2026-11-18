@@ -44,6 +44,31 @@
       ]
     },
     {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "guide_url": "https://platform.deepseek.com/api_keys",
+      "default_agent_model": "deepseek-flash",
+      "services": [
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "connector": "openai-chat",
+            "url": "https://api.deepseek.com/chat/completions",
+            "model": "deepseek-flash",
+            "context_window_tokens": 1048576,
+            "max_tokens": 2048,
+            "parallel_slots": 2
+          },
+          "models": ["deepseek-flash", "deepseek-v4-pro"],
+          "agent": {
+            "api": "deepseek-responses",
+            "url": "https://api.deepseek.com/responses"
+          }
+        }
+      ]
+    },
+    {
       "id": "siliconflow",
       "label": "SiliconFlow",
       "guide_url": "https://docs.siliconflow.cn/docs/userguide/quickstart",
@@ -377,6 +402,30 @@
     }
   ],
   "models": [
+    {
+      "model": "deepseek-flash",
+      "connector": "openai-chat",
+      "default_context_window_tokens": 1048576,
+      "capabilities": {
+        "supports_chat": true,
+        "supports_context": true,
+        "streaming": "delta",
+        "reasoning_effort": "none",
+        "agent_reasoning_effort": "high"
+      }
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "connector": "openai-chat",
+      "default_context_window_tokens": 1048576,
+      "capabilities": {
+        "supports_chat": true,
+        "supports_context": true,
+        "streaming": "delta",
+        "reasoning_effort": "none",
+        "agent_reasoning_effort": "high"
+      }
+    },
     {
       "model": "qwen-plus",
       "connector": "openai-chat",

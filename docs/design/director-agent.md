@@ -81,6 +81,13 @@ Qwen 使用百炼 Responses 的 HTTPS 流。服务端保存响应后，Agent 用
 百炼通用模型默认窗口为 1,000,000 token，Agent 每轮为推理及回答预留 16,384 token。输入接近本地预算时，插件通过累计摘要保留任务进度和最近的工具结果。
 [百炼 Responses 指南](https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api)
 
+DeepSeek Agent 通过 HTTPS 流式调用无状态 Responses API，每轮按原顺序提交已接受的推理项和函数调用，
+用原始 `call_id` 配对本地执行结果。固定系统指令和工具顺序使前缀可被官方硬盘缓存复用。
+模型一次提出多个操作时，Director 执行第一个，并向模型明确回报其余操作尚未执行。
+Flash 和 Pro 的默认窗口均为 1,048,576 token，日常 Agent 使用 `high` 推理强度。
+后端通过服务端报告的 token 用量计算原始推理历史占用，接近输入预算时从本地可见记录继续。
+[DeepSeek Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) · [上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)
+
 其他模型继续使用有序文本消息，翻译和账号连接各自沿用对应的推理通道。
 
 Sol 和 Astra 默认总窗口为 1,050,000 token，Agent 最多可使用约 922,000 token 输入。

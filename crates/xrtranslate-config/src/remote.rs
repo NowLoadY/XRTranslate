@@ -30,16 +30,25 @@ pub(crate) fn agent_endpoint(
         return Ok(None);
     }
     let url = url.trim_end_matches('/');
-    if service.defaults["url"] != url {
+    let workspace_url = agent.workspace_url.as_deref();
+    let deepseek_v1 = agent.api == remote::AgentApi::DeepseekResponses
+        && url
+            .strip_suffix("/v1/chat/completions")
+            .is_some_and(|base| {
+                service.defaults["url"]
+                    .as_str()
+                    .and_then(|s| s.strip_suffix("/chat/completions"))
+                    == Some(base)
+            });
+    if service.defaults["url"] != url && !deepseek_v1 {
         // Preserve an explicitly selected official workspace. Private gateways
         // keep their Chat Completions transport and their own credentials.
         let official = url
             .strip_suffix("/chat/completions")
             .map(|base| format!("{base}/responses"))
             .filter(|candidate| {
-                agent
-                    .workspace_url
-                    .split_once("{workspace_id}")
+                workspace_url
+                    .and_then(|template| template.split_once("{workspace_id}"))
                     .is_some_and(|(prefix, suffix)| {
                         candidate
                             .strip_prefix(prefix)
@@ -49,12 +58,12 @@ pub(crate) fn agent_endpoint(
             });
         return Ok(official.map(|endpoint| (agent.api, endpoint)));
     }
-    let endpoint = if workspace.is_empty() {
-        agent.url.clone()
-    } else if valid_workspace(workspace) {
-        agent.workspace_url.replace("{workspace_id}", workspace)
-    } else {
-        return Err("Invalid Agent workspace ID".into());
+    let endpoint = match workspace_url.filter(|_| !workspace.is_empty()) {
+        Some(template) if valid_workspace(workspace) => {
+            template.replace("{workspace_id}", workspace)
+        }
+        Some(_) => return Err("Invalid Agent workspace ID".into()),
+        None => agent.url.clone(),
     };
     Ok(Some((agent.api, endpoint)))
 }
@@ -352,6 +361,7 @@ pub(crate) fn resolve(
                 .unwrap_or(false),
             single_user_message: false,
             reasoning_effort: None,
+            agent_reasoning_effort: None,
         }
     };
     // Explicit neutral overrides support private deployments and unknown revisions.
@@ -399,7 +409,7 @@ pub(crate) fn resolve(
             "{path}.capabilities.asr_response_format requires the openai-transcription connector"
         ));
     }
-    if capabilities.reasoning_effort.is_some()
+    if (capabilities.reasoning_effort.is_some() || capabilities.agent_reasoning_effort.is_some())
         && !matches!(
             connector,
             Some(

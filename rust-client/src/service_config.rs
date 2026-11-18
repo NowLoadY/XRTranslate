@@ -693,7 +693,13 @@ impl ServiceConfigEditor {
                 &selected.name,
                 xrtranslate_assets::ModelCapability::Translation,
             )
-            .any(|service| service.agent.is_some() && service.models.contains(&model));
+            .any(|service| {
+                service.models.contains(&model)
+                    && service
+                        .agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.workspace_url.is_some())
+            });
         Some(OnboardingProviderState {
             follow_translation: is_agent.then_some(selection.is_none()),
             selected: selected.name.clone(),
@@ -1713,6 +1719,19 @@ mod tests {
         assert_eq!(editor.document["translation"], expected);
         editor.select_agent_model("gpt-4o-mini".into());
         assert!(!editor.agent_native_tools());
+
+        editor.select_onboarding_provider("agent", "deepseek");
+        let deepseek = editor.onboarding_provider_state("agent").unwrap();
+        assert_eq!(deepseek.models, ["deepseek-flash", "deepseek-v4-pro"]);
+        assert_eq!(deepseek.model, "deepseek-flash");
+        assert_eq!(deepseek.workspace_id, None);
+        editor.set_onboarding_remote_fields(
+            "agent", "deepseek-v4-pro".into(), "fixture-key".into(), None,
+        );
+        ServiceConfigEditor::sync_categories(&mut editor.document, &editor.categories).unwrap();
+        assert!(editor.agent_native_tools());
+        assert_eq!(editor.agent_input_budget(), 982_784);
+        assert_eq!(editor.document["translation"]["provider"], "qwen");
 
         editor.set_agent_follows_translation(true);
         assert!(!editor.agent_available());

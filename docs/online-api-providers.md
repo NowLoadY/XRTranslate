@@ -63,6 +63,27 @@ stay in a stable order. Above 64 operations, the model can discover schemas by
 name or namespace through the local Director. Cache hits are measured from
 returned token usage. [Session caching](https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api) · [Qwen4 cache settings](https://help.aliyun.com/zh/model-studio/explicit-cache-qwen4)
 
+## DeepSeek API key for the built-in Agent
+
+In Welcome, select **DeepSeek** on the Agent Model card and enter a DeepSeek API
+key. The development configuration stores it under `translation.providers.deepseek.api_key`.
+The default is `deepseek-flash` (V4.1 Flash). The same key can select `deepseek-v4-pro`.
+Both models have a 1,048,576-token context window. Agent turns use `high` reasoning
+and reserve up to 65,536 tokens for reasoning and output. Live translation uses
+Chat Completions with reasoning disabled. [Model specifications](https://api-docs.deepseek.com/zh-cn/api/list-models/) · [Agent reasoning guidance](https://api-docs.deepseek.com/zh-cn/news/news260813/)
+
+The Agent streams `POST https://api.deepseek.com/responses` over HTTPS. DeepSeek
+is stateless. Each continuation sends the accepted native history, including the
+model's reasoning items, function calls, and local results paired by `call_id`.
+The Director runs one operation per step. If the model proposes several at once,
+the others receive an explicit unexecuted result and can be requested again
+after the model reads the first result. A changed scope or a full replay budget
+starts a fresh request from the local transcript. [Responses API guide](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)
+
+System instructions and the sorted tool catalogue form a stable prefix for
+DeepSeek's automatic disk cache. Each completed turn reports actual cache hits
+using `usage.input_tokens_details.cached_tokens`. [Context caching](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)
+
 ## Free-tier translation presets
 
 The following API options were checked against official documentation on

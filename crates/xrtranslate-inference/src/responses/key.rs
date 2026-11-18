@@ -164,27 +164,30 @@ impl KeyResponses {
         }
         let catalogue = Catalogue::for_api(turn, self.api);
         let mut state = self.connection.lock().await;
-        let delta = state
-            .previous
-            .as_ref()
-            .and_then(|p| p.delta(messages, turn, &catalogue));
-        let continuation = delta.is_some();
         let (input_limit, output_limit) = self.api.limits(window);
-        let mut input = delta.unwrap_or_else(|| messages.iter().map(input_item).collect());
-        if self.api == AgentApi::DashscopeResponses {
-            for item in &mut input {
-                if let Some(fields) = item.as_object_mut() {
-                    fields.remove("phase");
-                }
+        let delta = state.previous.as_ref().and_then(|previous| {
+            previous.delta(messages, turn, &catalogue).filter(|delta| {
+                self.api != AgentApi::DeepseekResponses || previous.replay_fits(delta, input_limit)
+            })
+        });
+        let continuation = delta.is_some();
+        let input =
+            delta.unwrap_or_else(|| messages.iter().map(|m| input_item(m, self.api)).collect());
+        let wire_input = match state.previous.as_ref() {
+            Some(previous) if continuation && self.api == AgentApi::DeepseekResponses => {
+                Value::Array(previous.replay.iter().chain(&input).cloned().collect())
             }
-        }
+            _ => json!(input),
+        };
         let mut payload = json!({
             "model": model,
-            "input": input,
             "tools": catalogue.wire_tools(),
-            "parallel_tool_calls": false,
             "max_output_tokens": output_limit
         });
+        payload["input"] = wire_input;
+        if self.api != AgentApi::DeepseekResponses {
+            payload["parallel_tool_calls"] = json!(false);
+        }
         match self.api {
             AgentApi::OpenaiResponses => {
                 payload["reasoning"] = json!({"effort":effort.unwrap_or("medium")});
@@ -200,6 +203,9 @@ impl KeyResponses {
             AgentApi::DashscopeResponses => {
                 super::dashscope::configure(&mut payload, model, effort)
             }
+            AgentApi::DeepseekResponses => {
+                payload["reasoning"] = json!({"effort":effort.unwrap_or("high")});
+            }
         }
         let started = Instant::now();
         let mut record = crate::diagnostics::RequestRecord::start("Agent", &payload, Vec::new());
@@ -210,7 +216,7 @@ impl KeyResponses {
         .await
         .unwrap_or_else(|_| Err(self.transport("timeout", "Responses turn deadline reached")));
         let result = exchange.and_then(|reply| {
-            let (completion, call_id) = catalogue.decision(&reply.response)?;
+            let (completion, call_ids) = catalogue.decision(&reply.response)?;
             let output = reply.response["output"]
                 .as_array()
                 .expect("validated response output");
@@ -230,7 +236,8 @@ impl KeyResponses {
                 elapsed_ms = started.elapsed().as_millis(), usage = ?completion.usage,
                 api = ?self.api, "Agent Responses turn completed"
             );
-            // Only stateless recovery uses this copy. A live response ID retains its chain.
+            // Stateless APIs replay this prefix every turn. Other transports keep
+            // it as a fallback when a live response ID can no longer be resumed.
             let replay = if let Some(index) = compaction {
                 output[index..].to_vec()
             } else {
@@ -243,9 +250,13 @@ impl KeyResponses {
                 retained.extend(
                     output
                         .iter()
-                        .filter(|item| {
-                            self.api == AgentApi::OpenaiResponses
-                                || super::dashscope::replayable(item)
+                        .filter(|item| match self.api {
+                            AgentApi::OpenaiResponses => true,
+                            AgentApi::DashscopeResponses => super::dashscope::replayable(item),
+                            AgentApi::DeepseekResponses => matches!(
+                                item["type"].as_str(),
+                                Some("reasoning" | "function_call" | "message")
+                            ),
                         })
                         .cloned(),
                 );
@@ -262,7 +273,11 @@ impl KeyResponses {
                 definitions: catalogue.definitions,
                 expected,
                 id,
-                call_id,
+                call_ids,
+                total_tokens: completion
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.total_tokens),
                 replay,
             });
             state.socket = reply.socket;
@@ -309,6 +324,13 @@ impl Connection {
     ) -> Result<Reply, InferenceError> {
         // Taking ownership before I/O also drops an in-flight socket on cancellation.
         let previous = self.previous.as_ref().filter(|_| continuation);
+        if client.api == AgentApi::DeepseekResponses {
+            return Ok(Reply {
+                response: client.native_sse(payload).await?,
+                socket: None,
+                incremental: false,
+            });
+        }
         if client.api == AgentApi::DashscopeResponses {
             let (response, incremental) =
                 client.dashscope_request(payload, input, previous).await?;

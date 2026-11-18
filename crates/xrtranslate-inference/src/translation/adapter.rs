@@ -1,7 +1,7 @@
 use crate::{
     AsyncHttpClient, InferenceError, OpenAiCompatibleClient, openai::non_streaming_chat_payload,
 };
-use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector, RemoteStreaming};
+use xrtranslate_assets::remote::{AgentApi, RemoteCapabilities, RemoteConnector, RemoteStreaming};
 use xrtranslate_prompt::{PromptExecutionTrace, PromptMessage};
 
 use super::{
@@ -25,6 +25,7 @@ pub struct TranslationAdapter<C> {
     streaming: RemoteStreaming,
     request_format: RequestFormat,
     reasoning_effort: Option<String>,
+    agent_reasoning_effort: Option<String>,
     supports_json_output: bool,
     history: HistoryBudget,
 }
@@ -45,6 +46,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            agent_reasoning_effort: None,
             supports_json_output: false,
             history: HistoryBudget::default(),
         })
@@ -70,6 +72,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            agent_reasoning_effort: None,
             supports_json_output: false,
             history: HistoryBudget::default(),
         })
@@ -84,6 +87,8 @@ impl<C> TranslationAdapter<C> {
         self.request_format = RequestFormat::from_remote(connector, capabilities);
         self.reasoning_effort
             .clone_from(&capabilities.reasoning_effort);
+        self.agent_reasoning_effort
+            .clone_from(&capabilities.agent_reasoning_effort);
         self.supports_json_output = capabilities.supports_json_output;
         self
     }
@@ -102,21 +107,23 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            agent_reasoning_effort: None,
             supports_json_output: true,
             history: HistoryBudget::default(),
         })
     }
 
-    pub fn with_dashscope_agent(
+    pub fn with_dashscope_agent(self, endpoint: &str, key: &str) -> Result<Self, InferenceError> {
+        self.with_agent_endpoint(AgentApi::DashscopeResponses, endpoint, key)
+    }
+
+    pub fn with_agent_endpoint(
         mut self,
+        api: AgentApi,
         endpoint: &str,
         key: &str,
     ) -> Result<Self, InferenceError> {
-        self.agent = Some(crate::responses::KeyResponses::for_api(
-            xrtranslate_assets::remote::AgentApi::DashscopeResponses,
-            endpoint,
-            key,
-        )?);
+        self.agent = Some(crate::responses::KeyResponses::for_api(api, endpoint, key)?);
         Ok(self)
     }
 
@@ -133,6 +140,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            agent_reasoning_effort: None,
             supports_json_output: false,
             history: HistoryBudget::default(),
         })
@@ -165,7 +173,9 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         client
             .agent(
                 &self.model,
-                self.reasoning_effort.as_deref(),
+                self.agent_reasoning_effort
+                    .as_deref()
+                    .or(self.reasoning_effort.as_deref()),
                 messages,
                 turn,
                 window,

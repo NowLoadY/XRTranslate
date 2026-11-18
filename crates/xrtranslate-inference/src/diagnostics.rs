@@ -170,24 +170,27 @@ fn excerpt(text: &str) -> String {
     result
 }
 
-/// Authentication headers are never passed here; omit credentials and binary
-/// media from payloads without shortening any textual prompt.
+/// Keep user prompts and tool receipts inspectable while omitting credentials,
+/// private model reasoning, and binary media.
 fn inspectable(value: &Value) -> Value {
     match value {
         Value::Object(fields) => Value::Object(
             fields
                 .iter()
                 .map(|(key, value)| {
-                    let hidden = matches!(
-                        key.to_ascii_lowercase().as_str(),
-                        "authorization"
-                            | "api_key"
-                            | "access_token"
-                            | "refresh_token"
-                            | "encrypted_content"
-                            | "cookie"
-                            | "password"
-                    );
+                    let reasoning = fields.get("type").and_then(Value::as_str) == Some("reasoning")
+                        && matches!(key.as_str(), "content" | "summary");
+                    let hidden = reasoning
+                        || matches!(
+                            key.to_ascii_lowercase().as_str(),
+                            "authorization"
+                                | "api_key"
+                                | "access_token"
+                                | "refresh_token"
+                                | "encrypted_content"
+                                | "cookie"
+                                | "password"
+                        );
                     let media = matches!(key.as_str(), "input_audio" | "image_url" | "audio_url");
                     (
                         key.clone(),
@@ -263,9 +266,14 @@ mod tests {
         let text = "Full style.\n完整输入。".repeat(100);
         let request = json!({"api_key":"private", "messages":[{"role":"user","content":[
             {"type":"input_text","text":text}, {"type":"input_audio","input_audio":{"data":"binary payload"}}
-        ]}]});
+        ]}], "reasoning":{"effort":"high"},"input":[
+            {"type":"reasoning","content":[{"type":"reasoning_text","text":"private deliberation"}],"summary":[]},
+            {"type":"function_call_output","call_id":"call_1","output":"actual receipt"}
+        ]});
         let captured = inspectable(&request);
         assert_eq!(captured["messages"][0]["content"][0]["text"], text);
+        assert_eq!(captured["reasoning"]["effort"], "high");
+        assert_eq!(captured["input"][1]["output"], "actual receipt");
         assert!(!captured.to_string().contains("private"));
         assert!(!captured.to_string().contains("binary payload"));
     }

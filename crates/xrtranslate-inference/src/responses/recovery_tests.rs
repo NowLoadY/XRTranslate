@@ -130,9 +130,40 @@ async fn reconnects_with_only_the_retained_history_after_compaction() {
     check_replay(true, true).await;
 }
 
+fn read_http_request(socket: &std::net::TcpStream) -> (Value, bool) {
+    use std::io::{BufRead, BufReader, Read};
+    let mut reader = BufReader::new(socket);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("POST /responses "));
+    let mut len = 0;
+    let mut session_cache = false;
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if line.trim().is_empty() {
+            break;
+        }
+        let (name, value) = line.split_once(':').unwrap();
+        if name.eq_ignore_ascii_case("content-length") {
+            len = value.trim().parse().unwrap();
+        }
+        if name.eq_ignore_ascii_case("x-dashscope-session-cache") {
+            session_cache = value.trim() == "enable";
+        }
+    }
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body).unwrap();
+    (serde_json::from_slice(&body).unwrap(), session_cache)
+}
+
+fn send_http(mut socket: std::net::TcpStream, status: &str, mime: &str, body: &str) {
+    use std::io::Write;
+    write!(socket,"HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+}
+
 #[tokio::test]
 async fn dashscope_retries_only_an_expired_parent_with_the_accepted_receipt() {
-    use std::io::{BufRead, BufReader, Read, Write};
     use xrtranslate_assets::remote::AgentApi;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
@@ -142,30 +173,8 @@ async fn dashscope_retries_only_an_expired_parent_with_the_accepted_receipt() {
         let receipt =
             json!({"type":"function_call_output","call_id":"call_1","output":"actual receipt"});
         for step in 0..3 {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(&socket);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            assert!(line.starts_with("POST "), "DashScope Agent uses HTTPS/SSE");
-            let mut len = 0;
-            let mut cache = false;
-            loop {
-                line.clear();
-                reader.read_line(&mut line).unwrap();
-                if line.trim().is_empty() {
-                    break;
-                }
-                let (name, value) = line.split_once(':').unwrap();
-                if name.eq_ignore_ascii_case("content-length") {
-                    len = value.trim().parse().unwrap();
-                }
-                if name.eq_ignore_ascii_case("x-dashscope-session-cache") {
-                    cache = value.trim() == "enable";
-                }
-            }
-            let mut body = vec![0; len];
-            reader.read_exact(&mut body).unwrap();
-            let req: Value = serde_json::from_slice(&body).unwrap();
+            let (socket, _) = listener.accept().unwrap();
+            let (req, cache) = read_http_request(&socket);
             assert!(cache);
             assert_eq!(req["stream"], true);
             assert_eq!(req["store"], true);
@@ -190,7 +199,7 @@ async fn dashscope_retries_only_an_expired_parent_with_the_accepted_receipt() {
                 let event = json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","output":output}});
                 ("200 OK", "text/event-stream", format!("data: {event}\n\n"))
             };
-            write!(socket,"HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            send_http(socket, status, mime, &body);
         }
     });
     let client = KeyResponses::for_api(AgentApi::DashscopeResponses, &endpoint, "fixture").unwrap();
@@ -226,6 +235,143 @@ async fn dashscope_retries_only_an_expired_parent_with_the_accepted_receipt() {
     assert_eq!(
         serde_json::from_str::<Value>(&answer.text).unwrap()["action"]["done"],
         "verified"
+    );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn deepseek_replays_reasoning_and_pairs_every_call_then_rebases_at_the_window_limit() {
+    use xrtranslate_assets::remote::AgentApi;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let reasoning = json!({"type":"reasoning","content":[{"type":"reasoning_text","text":"private fixture reasoning"}]});
+        let call = |id, name| json!({"type":"function_call","call_id":id,"name":name,"arguments":r#"{"arguments":{},"memory":"checking"}"#});
+        let batch = json!([
+            reasoning,
+            call("fc1", "document_read"),
+            call("fc2", "document_write")
+        ]);
+        let initial = json!([{"role":"system","content":"stable rules"},{"role":"user","content":"read the document"}]);
+        let mut tools = Value::Null;
+        for step in 0..3 {
+            let (socket, _) = listener.accept().unwrap();
+            let (req, session_cache) = read_http_request(&socket);
+            assert!(!session_cache);
+            assert_eq!(req["model"], "deepseek-v4-pro");
+            assert_eq!(req["stream"], true);
+            assert_eq!(req["reasoning"], json!({"effort":"high"}));
+            assert_eq!(req["max_output_tokens"], 65_536);
+            for unsupported in [
+                "previous_response_id",
+                "store",
+                "parallel_tool_calls",
+                "include",
+                "context_management",
+                "prompt_cache_options",
+                "prompt_cache_key",
+            ] {
+                assert!(req.get(unsupported).is_none(), "{unsupported}");
+            }
+            let input = req["input"].as_array().unwrap();
+            if step == 0 {
+                assert_eq!(req["input"], initial);
+                tools = req["tools"].clone();
+                assert_eq!(tools[0]["name"], "document_read");
+            } else {
+                assert_eq!(req["tools"], tools);
+                assert_eq!(input[..2], initial.as_array().unwrap()[..]);
+            }
+            if step == 1 {
+                assert_eq!(input[2..5], batch.as_array().unwrap()[..]);
+                assert_eq!(
+                    input[5],
+                    json!({"type":"function_call_output","call_id":"fc1","output":"actual receipt 73"})
+                );
+                assert_eq!(input[6]["call_id"], "fc2");
+                assert_eq!(input[6]["type"], "function_call_output");
+                assert!(
+                    input[6]["output"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Not executed.")
+                );
+                assert_eq!(
+                    input[7],
+                    json!({"role":"user","content":"also check the title"})
+                );
+            }
+            if step == 2 {
+                assert!(
+                    input
+                        .iter()
+                        .all(|item| matches!(item["role"].as_str(), Some("system" | "user")))
+                );
+                assert!(
+                    input
+                        .iter()
+                        .any(|item| item["content"] == "actual receipt 73")
+                );
+                assert!(
+                    !req["input"]
+                        .to_string()
+                        .contains("private fixture reasoning")
+                );
+            }
+            let output = if step == 0 {
+                batch.clone()
+            } else {
+                json!([{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"73 confirmed"}]}])
+            };
+            let total = if step == 1 { 982_782 } else { 613 };
+            let event = json!({"type":"response.completed","response":{"id":format!("r{step}"),"status":"completed","output":output,
+                "usage":{"total_tokens":total,"input_tokens_details":{"cached_tokens":256}}}});
+            send_http(
+                socket,
+                "200 OK",
+                "text/event-stream",
+                &format!("event: response.completed\ndata: {event}\n\n"),
+            );
+        }
+    });
+    let client = KeyResponses::for_api(AgentApi::DeepseekResponses, &endpoint, "fixture").unwrap();
+    let mut turn: AgentTurn = serde_json::from_value(json!({"session":"test","scope":{},"tools":[
+        {"name":"document.write","description":"Write the document","read_only":false,"inputSchema":{"type":"object"}},
+        {"name":"document.read","description":"Read the document","read_only":true,"inputSchema":{"type":"object"}}]})).unwrap();
+    let msg = |role, text: &str| PromptMessage {
+        role,
+        content: text.into(),
+    };
+    let mut transcript = vec![
+        msg(PromptMessageRole::System, "stable rules"),
+        msg(PromptMessageRole::User, "read the document"),
+    ];
+    let first = client
+        .agent("deepseek-v4-pro", None, &transcript, &turn, 1_048_576)
+        .await
+        .unwrap();
+    let accepted: Value = serde_json::from_str(&first.text).unwrap();
+    assert_eq!(accepted["action"]["tool"]["name"], "document.read");
+    assert!(!first.text.contains("private fixture reasoning"));
+    transcript.push(msg(PromptMessageRole::Assistant, &first.text));
+    transcript.push(msg(PromptMessageRole::User, "also check the title"));
+    turn.feedback_index = Some(transcript.len());
+    transcript.push(msg(PromptMessageRole::User, "actual receipt 73"));
+    let second = client
+        .agent("deepseek-v4-pro", None, &transcript, &turn, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(second.usage.unwrap().cached_input_tokens, Some(256));
+    transcript.push(msg(PromptMessageRole::Assistant, &second.text));
+    transcript.push(msg(PromptMessageRole::User, "repeat the reading"));
+    turn.feedback_index = None;
+    let third = client
+        .agent("deepseek-v4-pro", None, &transcript, &turn, 1_048_576)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&third.text).unwrap()["action"]["done"],
+        "73 confirmed"
     );
     server.join().unwrap();
 }

@@ -487,6 +487,7 @@
       "openai": {},
       "qwen": {},
       "qwen-intl": {},
+      "deepseek": {},
       "siliconflow": {},
       "google": {},
       "groq": {},
