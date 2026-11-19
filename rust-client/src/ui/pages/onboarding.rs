@@ -1377,7 +1377,9 @@ fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             2 => render_onboarding_ocr(app, ui),
             _ => {
                 if let Some(id) = plugin_cards.get(index - builtin_count) {
-                    app.plugin_host.model_card(ui, id, app.ui_language);
+                    app.plugin_host.model_card(ui, id, app.ui_language, |res| {
+                        app.model_task_manager.is_model_ready(res)
+                    });
                 }
             }
         },

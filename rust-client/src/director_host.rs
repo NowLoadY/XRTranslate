@@ -41,20 +41,28 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn director_tools(&mut self) -> Vec<Tool> {
-        crate::plugins::tool_providers(self)
+        let mut tools: Vec<Tool> = crate::plugins::tool_providers(self)
             .into_iter()
             .flat_map(|provider| provider.tools())
-            .collect()
+            .collect();
+        tools.extend(self.plugin_model_tools());
+        tools
     }
 
     pub(crate) fn call_director_tool(&mut self, call: &ToolCall) -> ToolResult {
-        if !matches!(call.name.as_str(), "agent.environment" | "agent.status")
-            && !call.name.ends_with(".operation")
+        if !matches!(
+            call.name.as_str(),
+            "agent.environment" | "agent.status" | "models.status"
+        ) && !call.name.ends_with(".operation")
             && call.arguments.get("job").is_none()
         {
             ui_director::egui::feedback::tool_started(&call.name);
         }
-        let result = ui_director::dispatch(&mut crate::plugins::tool_providers(self), call);
+        let result = if let Some(result) = self.call_plugin_model_tool(call) {
+            result
+        } else {
+            ui_director::dispatch(&mut crate::plugins::tool_providers(self), call)
+        };
         if let Err(error) = &result {
             log::warn!("Director tool {} failed: {error}", call.name);
         }

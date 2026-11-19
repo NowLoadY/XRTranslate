@@ -3,6 +3,7 @@ mod datagram;
 #[cfg(not(target_os = "android"))]
 mod import;
 mod io;
+mod model_tools;
 mod models;
 mod operations;
 mod osc;
@@ -79,7 +80,11 @@ struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     package: Option<String>,
     enabled: bool,
+    /// Legacy single-model selection, migrated into `models` on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    models: std::collections::BTreeSet<String>,
     config: Value,
 }
 impl Default for Settings {
@@ -88,8 +93,57 @@ impl Default for Settings {
             enabled: true,
             package: None,
             model: None,
+            models: std::collections::BTreeSet::new(),
             config: Value::Null,
         }
+    }
+}
+impl Settings {
+    fn normalize(&mut self) {
+        if let Some(legacy) = self.model.take()
+            && !legacy.is_empty()
+        {
+            self.models.insert(legacy);
+        }
+    }
+
+    fn has_model(&self, id: &str) -> bool {
+        self.models.contains(id) || self.model.as_deref() == Some(id)
+    }
+
+    fn selected_models<'a>(&self, manifest: &'a Manifest) -> Vec<&'a xrtranslate_plugin::Model> {
+        manifest
+            .models
+            .iter()
+            .filter(|model| self.has_model(&model.id))
+            .collect()
+    }
+
+    fn set_model_selected(&mut self, manifest: &Manifest, model_id: &str, selected: bool) -> bool {
+        self.normalize();
+        let Some(target) = manifest.models.iter().find(|m| m.id == model_id) else {
+            return false;
+        };
+        let mut changed = false;
+        if selected {
+            if let Some(group) = target.group.as_deref() {
+                for sibling in manifest
+                    .models
+                    .iter()
+                    .filter(|m| m.id != model_id && m.group.as_deref() == Some(group))
+                {
+                    if self.models.remove(&sibling.id) {
+                        changed = true;
+                    }
+                }
+            }
+            if self.models.insert(model_id.to_owned()) {
+                changed = true;
+            }
+        } else if self.models.remove(model_id) {
+            changed = true;
+        }
+        changed
     }
 }
 struct Installed {
@@ -100,6 +154,7 @@ struct Installed {
     executable: PathBuf,
     manifest: Manifest,
     settings: Settings,
+    environment_dirty: bool,
     process: Option<Process>,
     starting: Option<std::sync::mpsc::Receiver<Result<Process, String>>>,
     error: Option<String>,
@@ -287,7 +342,7 @@ impl Host {
         self.root.join("data").join(id)
     }
     fn load_settings(&self, provider: &str) -> Settings {
-        std::fs::read(self.data(provider).join("settings.json"))
+        let mut settings: Settings = std::fs::read(self.data(provider).join("settings.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_else(|| {
@@ -305,7 +360,9 @@ impl Host {
                     enabled,
                     ..Default::default()
                 }
-            })
+            });
+        settings.normalize();
+        settings
     }
 
     fn sync_package(&mut self, id: &str) -> Result<(), String> {
@@ -396,6 +453,7 @@ impl Host {
                 directory,
                 manifest,
                 settings,
+                environment_dirty: false,
                 process: None,
                 starting: None,
                 page: ui::PageState::default(),
@@ -429,9 +487,8 @@ impl Host {
             .is_none_or(|(lang, paths)| lang != locale(language) || paths != runtimes)
             || self.installed.values().any(|p| {
                 p.settings.enabled
-                    && p.process.is_none()
-                    && p.starting.is_none()
                     && p.error.is_none()
+                    && (p.environment_dirty || (p.process.is_none() && p.starting.is_none()))
             })
     }
     pub fn available(&self, id: &str) -> bool {
@@ -576,6 +633,7 @@ impl Host {
             }
             if ((entry.process.is_none() && entry.starting.is_none())
                 || resources_changed
+                || entry.environment_dirty
                 || started)
                 && entry.error.is_none()
             {
@@ -593,23 +651,26 @@ impl Host {
                     ));
                     continue;
                 }
+                let selected_models = entry.settings.selected_models(&entry.manifest);
+                let model_directories: BTreeMap<String, PathBuf> = selected_models
+                    .iter()
+                    .map(|model| (model.id.clone(), models_root.join(&model.directory)))
+                    .collect();
+                let model_directory = selected_models
+                    .first()
+                    .map(|model| models_root.join(&model.directory));
                 let environment = Environment {
                     host_executable: std::env::current_exe().unwrap_or_default(),
                     language: language.into(),
                     data_directory: base.join("data").join(&entry.manifest.id),
-                    model_directory: entry
-                        .settings
-                        .model
-                        .as_ref()
-                        .and_then(|selected| {
-                            entry.manifest.models.iter().find(|m| &m.id == selected)
-                        })
-                        .map(|model| models_root.join(&model.directory)),
+                    model_directory,
+                    model_directories,
                     runtimes: runtimes.clone(),
                     config: entry.settings.config.clone(),
                     capabilities: capabilities.clone(),
                 };
                 if let Some(process) = &entry.process {
+                    entry.environment_dirty = false;
                     if let Err(error) = process.initialize(environment) {
                         entry.error = Some(error);
                     }
@@ -1024,6 +1085,93 @@ mod edition_tests {
         let host = load();
         assert_eq!(host.installed["sample"].manifest.id, "sample");
         assert!(host.installed["sample"].settings.enabled);
+    }
+
+    #[test]
+    fn multi_model_selection_migrates_legacy_and_respects_groups() {
+        let root = tempfile::tempdir().unwrap();
+        let plugins = root.path().join("plugins");
+        let directory = plugins.join("vision");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("plugin"), []).unwrap();
+        std::fs::write(
+            directory.join("plugin.json"),
+            json!({
+                "id": "vision",
+                "min_host_version": "0.4.0",
+                "title": {"en": "Vision"},
+                "executable": "plugin",
+                "models": [
+                    {
+                        "id": "matting-small",
+                        "label": "Matting Small",
+                        "directory": "vision/small",
+                        "revision": "1",
+                        "runtime": "onnx",
+                        "group": "matting",
+                        "files": [{"path": "a.onnx", "url": "https://example.com/a.onnx", "bytes": 100}]
+                    },
+                    {
+                        "id": "matting-large",
+                        "label": "Matting Large",
+                        "directory": "vision/large",
+                        "revision": "1",
+                        "runtime": "onnx",
+                        "group": "matting",
+                        "files": [{"path": "b.onnx", "url": "https://example.com/b.onnx", "bytes": 200}]
+                    },
+                    {
+                        "id": "audio-sep",
+                        "label": "Audio Sep",
+                        "directory": "vision/sep",
+                        "revision": "1",
+                        "runtime": "onnx",
+                        "files": [{"path": "c.onnx", "url": "https://example.com/c.onnx", "bytes": 300}]
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Seed a legacy single-model settings.json file in the host's data path.
+        let data_dir = Host::load(root.path().to_owned()).data("vision");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("settings.json"),
+            json!({"enabled": true, "model": "matting-small"}).to_string(),
+        )
+        .unwrap();
+
+        let load = || {
+            let mut host = Host::load(root.path().to_owned());
+            host.catalog =
+                xrtranslate_plugin::directory::discover_packages(&plugins, None, None).unwrap();
+            host.sync_package("vision").unwrap();
+            host
+        };
+
+        let mut host = load();
+        assert!(host.installed["vision"].settings.has_model("matting-small"));
+        assert!(!host.installed["vision"].settings.has_model("audio-sep"));
+
+        // Selecting an ungrouped model keeps the existing model selected (multi-select).
+        assert!(host.set_model_selected("vision", "audio-sep", true).unwrap());
+        assert!(host.installed["vision"].settings.has_model("matting-small"));
+        assert!(host.installed["vision"].settings.has_model("audio-sep"));
+        assert!(host.installed["vision"].environment_dirty);
+
+        // Selecting another model in the same group swaps within the group while keeping ungrouped models.
+        assert!(host.set_model_selected("vision", "matting-large", true).unwrap());
+        assert!(!host.installed["vision"].settings.has_model("matting-small"));
+        assert!(host.installed["vision"].settings.has_model("matting-large"));
+        assert!(host.installed["vision"].settings.has_model("audio-sep"));
+
+        drop(host);
+        let host = load();
+        assert!(!host.installed["vision"].settings.has_model("matting-small"));
+        assert!(host.installed["vision"].settings.has_model("matting-large"));
+        assert!(host.installed["vision"].settings.has_model("audio-sep"));
     }
 }
 

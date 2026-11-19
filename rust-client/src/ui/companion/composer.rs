@@ -123,7 +123,14 @@ impl Composer {
                                     .add_enabled_ui(can_send, |ui| {
                                         components::icon_button(
                                             ui,
-                                            tr(language, "Send"),
+                                            tr(
+                                                language,
+                                                if running {
+                                                    "Add note (keep running)"
+                                                } else {
+                                                    "Send"
+                                                },
+                                            ),
                                             egui::include_image!(
                                                 "../../../../crates/xrtranslate-client-core/resources/icons/chevron-right.svg"
                                             ),
@@ -134,7 +141,7 @@ impl Composer {
                                 if running {
                                     if components::icon_button(
                                         ui,
-                                        tr(language, "Stop"),
+                                        tr(language, "Interrupt"),
                                         egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/stop.svg"),
                                     )
                                     .clicked()

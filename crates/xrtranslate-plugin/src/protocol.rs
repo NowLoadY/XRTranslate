@@ -95,6 +95,9 @@ impl Manifest {
         let mut models = std::collections::HashSet::new();
         for model in &self.models {
             identifier(&model.id)?;
+            if let Some(group) = &model.group {
+                identifier(group)?;
+            }
             relative_path(&model.directory)?;
             if !models.insert(&model.id) || model.files.is_empty() {
                 return Err("Invalid model catalogue".into());
@@ -130,6 +133,8 @@ pub struct Model {
     pub revision: String,
     #[serde(default)]
     pub runtime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub files: Vec<ModelFile>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +150,8 @@ pub struct Environment {
     pub language: String,
     pub data_directory: PathBuf,
     pub model_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub model_directories: BTreeMap<String, PathBuf>,
     pub runtimes: BTreeMap<String, PathBuf>,
     pub config: Value,
     pub capabilities: Vec<String>,

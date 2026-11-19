@@ -89,14 +89,9 @@ impl crate::XRTranslateApp {
             .values()
             .filter(|entry| entry.settings.enabled)
         {
-            if let Some(model) = entry
-                .settings
-                .model
-                .as_ref()
-                .and_then(|id| entry.manifest.models.iter().find(|m| &m.id == id))
-            {
+            for model in entry.settings.selected_models(&entry.manifest) {
                 match model.runtime.as_str() {
-                    "onnx-cpu" => requirements.onnx_cpu = true,
+                    "onnx" | "onnx-cpu" => requirements.onnx_cpu = true,
                     "onnx-cuda" => requirements.onnx_cuda = true,
                     "llama.cpp" => requirements.llama_cpp = true,
                     _ => {}
