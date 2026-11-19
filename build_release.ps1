@@ -9,11 +9,16 @@ param(
     # Visual Studio VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
     [string]$VcRuntimeDirectory,
     # Validate existing release inputs without building, downloading, or staging.
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    # Cargo binaries may be built separately from a running development client.
+    [string]$TargetDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
+if (-not $TargetDirectory) { $TargetDirectory = Join-Path $projectRoot 'target' }
+$TargetDirectory = [IO.Path]::GetFullPath($TargetDirectory)
+$releaseBin = Join-Path $TargetDirectory 'release'
 $workspaceManifest = Join-Path $projectRoot 'Cargo.toml'
 $configPath = Join-Path $projectRoot 'config.json'
 $resourceDirectory = Join-Path $projectRoot 'target\release-resources\windows-x86_64'
@@ -21,8 +26,8 @@ $vadModel = Join-Path $resourceDirectory 'models\silero-vad\src\silero_vad\data\
 $speakerModel = Join-Path $resourceDirectory 'models\3D-Speaker-ERes2NetV2\speaker_embedding.onnx'
 $seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
-$packagerPath = Join-Path $projectRoot 'target\release\xrtranslate-packager.exe'
-$installerPath = Join-Path $projectRoot 'target\release\xrtranslate-installer.exe'
+$packagerPath = Join-Path $releaseBin 'xrtranslate-packager.exe'
+$installerPath = Join-Path $releaseBin 'xrtranslate-installer.exe'
 
 $expectedOnnxBytes = 16277856
 $expectedLicenseBytes = 1094
@@ -195,7 +200,7 @@ if (-not $ValidateOnly) {
     . (Join-Path $projectRoot 'scripts/windows-build-env.ps1')
     Initialize-WindowsSpeechLibraries -ProjectRoot $projectRoot
     $buildArguments = @(
-        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
+        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', $TargetDirectory, '--release',
         '--package', 'rust-client',
         '--package', 'xrtranslate-backend',
         '--package', 'xrtranslate-installer',
@@ -212,7 +217,7 @@ if (-not $ValidateOnly) {
         exit $LASTEXITCODE
     }
 
-    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
+    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir $TargetDirectory --release --package xr-corpus-server
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -233,12 +238,12 @@ if (-not (Test-Path -LiteralPath $speakerModel)) {
 }
 
 $packageArguments = @(
-    '--rust-client-bin', (Join-Path $projectRoot 'target\release\rust-client.exe'),
-    '--backend-bin', (Join-Path $projectRoot 'target\release\xrtranslate-backend.exe'),
-    '--corpus-bin', (Join-Path $projectRoot 'target\release\xr-corpus-server.exe'),
-    '--installer-bin', (Join-Path $projectRoot 'target\release\xrtranslate-installer.exe'),
-    '--updater-bin', (Join-Path $projectRoot 'target\release\xrtranslate-updater.exe'),
-    '--account-login-bin', (Join-Path $projectRoot 'target\release\xrtranslate-account-login.exe'),
+    '--rust-client-bin', (Join-Path $releaseBin 'rust-client.exe'),
+    '--backend-bin', (Join-Path $releaseBin 'xrtranslate-backend.exe'),
+    '--corpus-bin', (Join-Path $releaseBin 'xr-corpus-server.exe'),
+    '--installer-bin', (Join-Path $releaseBin 'xrtranslate-installer.exe'),
+    '--updater-bin', (Join-Path $releaseBin 'xrtranslate-updater.exe'),
+    '--account-login-bin', (Join-Path $releaseBin 'xrtranslate-account-login.exe'),
     '--config', $configPath,
     '--resources-dir', (Join-Path $projectRoot 'rust-client\resources'),
     '--seed-database', $seedDatabase,
@@ -262,7 +267,7 @@ if ($ValidateOnly) {
 $pluginPackages = Join-Path ([System.IO.Path]::GetTempPath()) "xrtranslate-release-plugins-$([guid]::NewGuid())"
 $pluginPackages = (New-Item -ItemType Directory -Path $pluginPackages).FullName
 try {
-    & (Join-Path $projectRoot 'plugin-src/build.ps1') -Sdk $projectRoot -Output $pluginPackages -TargetDirectory (Join-Path $projectRoot 'target') -Locked
+    & (Join-Path $projectRoot 'plugin-src/build.ps1') -Sdk $projectRoot -Output $pluginPackages -TargetDirectory $TargetDirectory -Builder (Join-Path $releaseBin 'xrt-plugin.exe') -Locked
     $packages = @(Get-ChildItem -LiteralPath $pluginPackages -Directory | Where-Object {
         Test-Path -LiteralPath (Join-Path $_.FullName 'plugin.json')
     })

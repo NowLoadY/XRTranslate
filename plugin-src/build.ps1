@@ -6,16 +6,19 @@ param(
     [string[]]$Plugin,
     [switch]$DebugBuild,
     [switch]$Offline,
-    [switch]$Locked
+    [switch]$Locked,
+    [string]$Builder
 )
 $ErrorActionPreference = 'Stop'
 $sdkRoot = (Resolve-Path -LiteralPath $Sdk).Path
 $outputRoot = [System.IO.Path]::GetFullPath($Output)
 $profile = if ($DebugBuild) { 'debug' } else { 'release' }
-$builder = @('xrt-plugin.exe', "target/$profile/xrt-plugin.exe", 'target/release/xrt-plugin.exe') |
-    ForEach-Object { Join-Path $sdkRoot $_ } |
-    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-    Select-Object -First 1
+if (-not $Builder) {
+    $builder = @('xrt-plugin.exe', "target/$profile/xrt-plugin.exe", 'target/release/xrt-plugin.exe') |
+        ForEach-Object { Join-Path $sdkRoot $_ } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+}
 if (-not $builder) { throw "SDK build tool not found in: $sdkRoot" }
 $arguments = @('build', $PSScriptRoot, '--sdk', $sdkRoot, '--output', $outputRoot)
 $selected = @(Get-ChildItem -LiteralPath $PSScriptRoot -Directory | Where-Object {
