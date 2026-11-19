@@ -67,6 +67,13 @@ pub(super) fn validate_software_environment() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+pub(super) fn set_opacity(
+    title: &str,
+    opacity: crate::overlay_ipc::OverlayOpacity,
+) -> Result<(), String> {
+    Platform::for_viewport(title)?.set_opacity(opacity.percent())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct InputRect {
     x: i32,
@@ -91,8 +98,11 @@ impl InputRegion {
     /// Immediate viewports do not expose their winit window. Resolve our own
     /// named window once, then keep using the native input mask as it resizes.
     pub fn for_viewport(title: &str) -> Result<Self, String> {
+        let platform = Platform::for_viewport(title)?;
+        #[cfg(windows)]
+        platform.enable_per_pixel();
         Ok(Self {
-            platform: Platform::for_viewport(title)?,
+            platform,
             rectangles: Vec::new(),
         })
     }
@@ -262,9 +272,36 @@ impl Platform {
                     });
                 }
             }
-            Err("Unable to open the OCR window.".into())
+            Err(format!("Floating window '{title}' is unavailable").into())
         };
         find().map_err(|error| error.to_string())
+    }
+
+    fn set_opacity(&self, percent: u8) -> Result<(), String> {
+        use x11rb::{
+            connection::Connection,
+            protocol::xproto::{AtomEnum, ConnectionExt, PropMode},
+            wrapper::ConnectionExt as _,
+        };
+        let atom = self
+            .connection
+            .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
+            .map_err(|e| e.to_string())?
+            .reply()
+            .map_err(|e| e.to_string())?
+            .atom;
+        let alpha = (u64::from(u32::MAX) * u64::from(percent) / 100) as u32;
+        self.connection
+            .change_property32(
+                PropMode::REPLACE,
+                self.window,
+                atom,
+                AtomEnum::CARDINAL,
+                &[alpha],
+            )
+            .map_err(|e| e.to_string())?
+            .check()
+            .map_err(|e| e.to_string())
     }
 
     fn apply(&self, rectangles: &[InputRect]) -> Result<(), String> {
@@ -337,34 +374,57 @@ struct Platform(windows::Win32::Foundation::HWND);
 impl Platform {
     fn for_viewport(title: &str) -> Result<Self, String> {
         use windows::{
-            Win32::UI::WindowsAndMessaging::{
-                FindWindowExW, GWL_EXSTYLE, GetWindowLongPtrW, GetWindowThreadProcessId,
-                SetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
-            },
+            Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId},
             core::PCWSTR,
         };
-        let title: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
+        let wide_title: Vec<_> = title.encode_utf16().chain(Some(0)).collect();
         let mut previous = None;
         unsafe {
             while let Ok(window) =
-                FindWindowExW(None, previous, PCWSTR::null(), PCWSTR(title.as_ptr()))
+                FindWindowExW(None, previous, PCWSTR::null(), PCWSTR(wide_title.as_ptr()))
             {
                 let mut pid = 0;
                 GetWindowThreadProcessId(window, Some(&mut pid));
                 if pid == std::process::id() {
-                    // Match the root overlay's DirectComposition transparency.
-                    let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-                    SetWindowLongPtrW(
-                        window,
-                        GWL_EXSTYLE,
-                        style | WS_EX_NOREDIRECTIONBITMAP.0 as isize,
-                    );
                     return Ok(Self(window));
                 }
                 previous = Some(window);
             }
         }
-        Err("Unable to open the OCR window.".into())
+        Err(format!("Floating window '{title}' is unavailable"))
+    }
+
+    fn enable_per_pixel(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
+        };
+        unsafe {
+            let style = GetWindowLongPtrW(self.0, GWL_EXSTYLE);
+            SetWindowLongPtrW(
+                self.0,
+                GWL_EXSTYLE,
+                style | WS_EX_NOREDIRECTIONBITMAP.0 as isize,
+            );
+        }
+    }
+
+    fn set_opacity(&self, percent: u8) -> Result<(), String> {
+        use windows::Win32::{
+            Foundation::COLORREF,
+            UI::WindowsAndMessaging::{
+                GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes,
+                SetWindowLongPtrW, WS_EX_LAYERED,
+            },
+        };
+        unsafe {
+            let style = GetWindowLongPtrW(self.0, GWL_EXSTYLE);
+            if style & WS_EX_LAYERED.0 as isize == 0 {
+                SetWindowLongPtrW(self.0, GWL_EXSTYLE, style | WS_EX_LAYERED.0 as isize);
+            }
+            let alpha = ((u16::from(percent) * 255 + 50) / 100) as u8;
+            SetLayeredWindowAttributes(self.0, COLORREF(0), alpha, LWA_ALPHA)
+                .map_err(|e| e.to_string())
+        }
     }
 
     fn pointer_position(&self) -> Option<egui::Pos2> {

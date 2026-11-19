@@ -8,12 +8,13 @@ use std::sync::{
 use std::thread;
 
 use crate::overlay_ipc::{
-    OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayState,
+    OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayOpacity, OverlayState,
 };
 use crate::ui::components::avatar::Presentation;
 
 #[derive(Clone, Default)]
 struct Snapshot {
+    opacity: OverlayOpacity,
     language: crate::i18n::UiLanguage,
     controls: OverlayControls,
     composer: Option<crate::overlay_ipc::ComposerState>,
@@ -59,8 +60,16 @@ impl OverlayManager {
         }
     }
 
-    pub fn start(&mut self) {
+    pub fn start(&mut self, opacity: OverlayOpacity) {
         self.check_process();
+        // The controller owns the live dial. Seed it on launch and mirror changes
+        // to a separate quick-translation window while it is running.
+        if self.snapshot.opacity != opacity
+            && (self.child.is_none() || self.snapshot.quick.is_some())
+        {
+            self.snapshot.opacity = opacity;
+            self.publish();
+        }
         if self.restart_blocked || self.child.is_some() {
             return;
         }
@@ -269,6 +278,10 @@ impl Writer {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();
                 let commands = [
+                    previous
+                        .as_ref()
+                        .is_none_or(|p| p.opacity != state.opacity)
+                        .then_some(OverlayCommand::Opacity(state.opacity)),
                     (previous
                         .as_ref()
                         .is_none_or(|p| p.composer != state.composer))

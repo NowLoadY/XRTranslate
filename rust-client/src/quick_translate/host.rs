@@ -232,7 +232,7 @@ impl XRTranslateApp {
         {
             self.quick_translate.overlay.set_language(self.ui_language);
             self.quick_translate.overlay.send_quick_translation(view);
-            self.quick_translate.overlay.start();
+            self.quick_translate.overlay.start(self.floating_opacity);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }

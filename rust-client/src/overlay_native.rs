@@ -8,7 +8,8 @@ pub(crate) use platform::configure_software_environment;
 
 use crate::i18n::{UiLanguage, tr};
 use crate::overlay_ipc::{
-    OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayRegion, OverlayState,
+    OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayOpacity, OverlayRegion,
+    OverlayState,
 };
 use crate::ui::{components, components::avatar, theme};
 use eframe::egui::{self, Color32, Rect, RichText, Stroke, Vec2};
@@ -18,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+const TITLE: &str = "XRTranslate Floating Window";
 const GAP: f32 = 6.0;
 const CORNER: u8 = 16;
 
@@ -26,7 +28,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
     platform::validate_software_environment().map_err(eframe::Error::AppCreation)?;
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("XRTranslate Floating Window")
+            .with_title(TITLE)
             .with_inner_size([460.0, 360.0])
             .with_min_inner_size([360.0, 280.0])
             .with_decorations(false)
@@ -132,6 +134,8 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 input,
                 language: UiLanguage::English,
                 controls: OverlayControls::default(),
+                opacity: OverlayOpacity::default(),
+                wheel_remainder: 0.0,
                 composer: composer::Composer::default(),
                 subtitles: OverlayState {
                     font_size: 14,
@@ -147,7 +151,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 recognition: ocr::OcrWindow::default(),
                 closing: false,
                 shown: false,
-                stacking: WindowStacking::default(),
+                stacking: WindowPresentation::default(),
                 result: ResultWindow::default(),
                 quick: None,
                 ready: false,
@@ -161,6 +165,8 @@ struct OverlayWindow {
     input: platform::InputRegion,
     language: UiLanguage,
     controls: OverlayControls,
+    opacity: OverlayOpacity,
+    wheel_remainder: f32,
     composer: composer::Composer,
     subtitles: OverlayState,
     ocr: Option<OcrOverlayState>,
@@ -170,19 +176,23 @@ struct OverlayWindow {
     recognition: ocr::OcrWindow,
     closing: bool,
     shown: bool,
-    stacking: WindowStacking,
+    stacking: WindowPresentation,
     result: ResultWindow,
     quick: Option<quick::Capsule>,
     ready: bool,
 }
 
 #[derive(Default)]
-struct WindowStacking {
+struct WindowPresentation {
     state: Option<(bool, bool)>,
+    opacity: OverlayOpacity,
 }
 
-impl WindowStacking {
-    fn update(&mut self, ctx: &egui::Context) {
+impl WindowPresentation {
+    fn update(&mut self, ctx: &egui::Context, title: &str, opacity: OverlayOpacity) {
+        if self.opacity != opacity && platform::set_opacity(title, opacity).is_ok() {
+            self.opacity = opacity;
+        }
         let state = ctx.input(|input| {
             let viewport = input.viewport();
             (
@@ -209,7 +219,7 @@ struct ResultWindow {
     pending: Option<(OverlayRegion, Instant)>,
     reported: Option<OverlayRegion>,
     changing: bool,
-    stacking: WindowStacking,
+    stacking: WindowPresentation,
 }
 
 impl ResultWindow {
@@ -257,7 +267,7 @@ impl ResultWindow {
         self.pending = None;
         self.reported = None;
         self.changing = false;
-        self.stacking = WindowStacking::default();
+        self.stacking = WindowPresentation::default();
     }
 }
 
@@ -268,6 +278,70 @@ impl OverlayWindow {
         }
         self.closing = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn opacity_dial(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let dial = ui
+            .interact(
+                rect,
+                ui.make_persistent_id("overlay_opacity"),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(tr(
+                self.language,
+                "Scroll to adjust floating window opacity",
+            ));
+        dial.widget_info(|| {
+            egui::WidgetInfo::slider(
+                true,
+                f64::from(self.opacity.percent()),
+                tr(self.language, "Opacity"),
+            )
+        });
+        if dial.hovered() {
+            let steps = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .map(|event| match event {
+                        egui::Event::MouseWheel { unit, delta, .. } => {
+                            delta.y
+                                * match unit {
+                                    egui::MouseWheelUnit::Line => 5.0,
+                                    egui::MouseWheelUnit::Point => 0.125,
+                                    egui::MouseWheelUnit::Page => 90.0,
+                                }
+                        }
+                        _ => 0.0,
+                    })
+                    .sum::<f32>()
+            });
+            self.wheel_remainder += steps;
+            let whole = self.wheel_remainder.trunc();
+            self.wheel_remainder -= whole;
+            let next = OverlayOpacity::from((f32::from(self.opacity.percent()) + whole) as u8);
+            if self.opacity != next {
+                self.opacity = next;
+                send_event(OverlayEvent::Opacity(next));
+            }
+        } else {
+            self.wheel_remainder = 0.0;
+        }
+        let ink = if dial.hovered() {
+            theme::text_strong()
+        } else {
+            theme::text_weak()
+        };
+        let center = dial.rect.center();
+        ui.painter()
+            .circle_stroke(center, 12.5, Stroke::new(1.2, ink.gamma_multiply(0.7)));
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            self.opacity.percent(),
+            egui::FontId::proportional(11.0),
+            ink,
+        );
     }
 
     fn header(&mut self, ui: &mut egui::Ui) -> Rect {
@@ -374,7 +448,8 @@ impl OverlayWindow {
                     + usize::from(self.controls.ocr_enabled.is_some())
                     + usize::from(self.controls.auto_input_available);
                 let left = bar.left() + 72.0;
-                let right = (bar.right() - 62.0 - inputs as f32 * step).max(left);
+                let close_x = bar.right() - components::INPUT_TOGGLE_SIZE * 0.5;
+                let right = (close_x - (inputs + 2) as f32 * step).max(left);
                 let first = (bar.center().x - inputs as f32 * step * 0.5).clamp(left, right);
                 let translation_x = first
                     + if self.controls.microphone_enabled.is_some() {
@@ -499,9 +574,10 @@ impl OverlayWindow {
                         send_event(OverlayEvent::AutoInputEnabled(!active));
                     }
                 }
+                self.opacity_dial(ui, slot(close_x - step));
                 let close = icon_button(
                     ui,
-                    slot(bar.right() - components::INPUT_TOGGLE_SIZE * 0.5),
+                    slot(close_x),
                     "close",
                     false,
                     tr(self.language, "Close"),
@@ -651,7 +727,9 @@ impl OverlayWindow {
                 if result.shown
                     && let Some(actual) = actual
                 {
-                    result.stacking.update(ui.ctx());
+                    result
+                        .stacking
+                        .update(ui.ctx(), tr(language, "Translation"), self.opacity);
                     result.observe(actual * child_scale);
                 }
             },
@@ -673,6 +751,7 @@ impl eframe::App for OverlayWindow {
             self.ready = true;
             match command {
                 OverlayCommand::Language(language) => self.language = language,
+                OverlayCommand::Opacity(opacity) => self.opacity = opacity,
                 OverlayCommand::Controls(controls) => {
                     if controls.ocr_enabled != self.controls.ocr_enabled {
                         self.recognition.invalidate();
@@ -701,7 +780,8 @@ impl eframe::App for OverlayWindow {
             return;
         }
         if let Some(quick) = &mut self.quick {
-            if let Err(error) = quick.show(ui, frame, &mut self.input, self.language) {
+            if let Err(error) = quick.show(ui, frame, &mut self.input, self.language, self.opacity)
+            {
                 send_event(OverlayEvent::Failed(error));
                 self.closing = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -776,7 +856,7 @@ impl eframe::App for OverlayWindow {
             window.set_visible(true);
             self.shown = true;
         }
-        self.stacking.update(ui.ctx());
+        self.stacking.update(ui.ctx(), TITLE, self.opacity);
         let Ok(position) = window.inner_position() else {
             return;
         };
@@ -803,7 +883,7 @@ impl eframe::App for OverlayWindow {
                 + origin
                 + egui::vec2(0.0, size.y * 0.5 + 8.0 * scale);
             let initial = fit_rect(size.min(work.size()), center, work);
-            if let Err(error) = self.recognition.show(ui.ctx(), initial) {
+            if let Err(error) = self.recognition.show(ui.ctx(), initial, self.opacity) {
                 send_event(OverlayEvent::Failed(error));
                 self.close(ui.ctx());
                 return;

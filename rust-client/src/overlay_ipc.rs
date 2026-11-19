@@ -1,5 +1,24 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "u8")]
+pub struct OverlayOpacity(u8);
+impl OverlayOpacity {
+    pub fn percent(self) -> u8 {
+        self.0
+    }
+}
+impl From<u8> for OverlayOpacity {
+    fn from(percent: u8) -> Self {
+        Self(percent.clamp(10, 100))
+    }
+}
+impl Default for OverlayOpacity {
+    fn default() -> Self {
+        Self(100)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayState {
     pub font_size: u32,
@@ -77,6 +96,7 @@ pub struct OverlayRegion {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OverlayCommand {
+    Opacity(OverlayOpacity),
     Language(crate::i18n::UiLanguage),
     Controls(OverlayControls),
     Composer(ComposerState),
@@ -89,6 +109,7 @@ pub enum OverlayCommand {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OverlayEvent {
+    Opacity(OverlayOpacity),
     TranslationEnabled(bool),
     MicrophoneEnabled(bool),
     SystemAudioEnabled(bool),

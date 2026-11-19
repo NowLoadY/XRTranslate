@@ -88,6 +88,8 @@ pub struct ClientSettings {
     pub usage_guidelines_accepted: bool,
     #[serde(default = "default_true")]
     pub floating_subtitles_enabled: bool,
+    #[serde(default)]
+    pub floating_opacity: crate::overlay_ipc::OverlayOpacity,
     #[serde(default = "default_floating_max_count")]
     pub floating_subtitles_max_count: usize,
     #[serde(default = "default_floating_font_size")]
@@ -163,6 +165,7 @@ impl Default for ClientSettings {
             sidebar_collapsed: false,
             usage_guidelines_accepted: false,
             floating_subtitles_enabled: true,
+            floating_opacity: Default::default(),
             floating_subtitles_max_count: default_floating_max_count(),
             floating_subtitles_font_size: default_floating_font_size(),
             preferred_gpu: None,

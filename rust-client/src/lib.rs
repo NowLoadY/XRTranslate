@@ -739,6 +739,7 @@ struct XRTranslateApp {
     window_transparency: bool,
     microphone_sync_enabled: bool,
     pub floating_subtitles_enabled: bool,
+    floating_opacity: overlay_ipc::OverlayOpacity,
     pub floating_subtitles_max_count: usize,
     pub floating_subtitles_font_size: f64,
     pub overlay_manager: Arc<Mutex<overlay_manager::OverlayManager>>,
@@ -1900,6 +1901,7 @@ impl Default for XRTranslateApp {
             window_transparency: settings.window_transparency,
             microphone_sync_enabled: settings.microphone_sync_enabled,
             floating_subtitles_enabled: settings.floating_subtitles_enabled,
+            floating_opacity: settings.floating_opacity,
             floating_subtitles_max_count: settings.floating_subtitles_max_count,
             floating_subtitles_font_size: settings.floating_subtitles_font_size,
             overlay_manager,
@@ -3106,6 +3108,7 @@ impl XRTranslateApp {
             sidebar_collapsed: self.navigation.collapsed,
             usage_guidelines_accepted: self.usage_guidelines_accepted,
             floating_subtitles_enabled: self.floating_subtitles_enabled,
+            floating_opacity: self.floating_opacity,
             floating_subtitles_max_count: self.floating_subtitles_max_count,
             floating_subtitles_font_size: self.floating_subtitles_font_size,
             preferred_gpu: self.preferred_gpu.clone(),
@@ -4996,7 +4999,7 @@ impl XRTranslateApp {
                     if let Some(state) = overlay_state {
                         manager.send_state(&state);
                     }
-                    manager.start();
+                    manager.start(self.floating_opacity);
                 }
                 events
             } else {
@@ -5006,6 +5009,7 @@ impl XRTranslateApp {
         } else {
             Vec::new()
         };
+        let previous_opacity = self.floating_opacity;
         for event in overlay_events {
             match event {
                 overlay_ipc::OverlayEvent::CloseRequested
@@ -5017,6 +5021,7 @@ impl XRTranslateApp {
                     }
                     break;
                 }
+                overlay_ipc::OverlayEvent::Opacity(opacity) => self.floating_opacity = opacity,
                 overlay_ipc::OverlayEvent::TranslationEnabled(enabled) => {
                     if enabled {
                         self.start(None);
@@ -5045,6 +5050,10 @@ impl XRTranslateApp {
                     let _ = event;
                 }
             }
+        }
+
+        if self.floating_opacity != previous_opacity {
+            self.save_settings();
         }
 
         // Apply window invalidation before accepting recognition from its old area.

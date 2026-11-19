@@ -1,5 +1,5 @@
 //! Shortcut translation uses the floating window's renderer, input mask and placement.
-use super::{WindowStacking, fit_rect, platform::InputRegion, send_event};
+use super::{WindowPresentation, fit_rect, platform::InputRegion, send_event};
 use crate::{
     i18n::{UiLanguage, tr},
     overlay_ipc::{OverlayEvent, QuickTranslationAction as Action, QuickTranslationState},
@@ -33,7 +33,7 @@ pub(super) struct Capsule {
     copied: Option<Instant>,
     expanded_size: Vec2,
     expansion_ready: bool,
-    stacking: WindowStacking,
+    stacking: WindowPresentation,
 }
 impl Default for Capsule {
     fn default() -> Self {
@@ -87,6 +87,7 @@ impl Capsule {
         frame: &eframe::Frame,
         input: &mut InputRegion,
         language: UiLanguage,
+        opacity: crate::overlay_ipc::OverlayOpacity,
     ) -> Result<(), String> {
         let Some(window) = frame.winit_window() else {
             return Ok(());
@@ -494,7 +495,7 @@ impl Capsule {
             window.focus_window();
             self.shown = true;
         }
-        self.stacking.update(&ctx);
+        self.stacking.update(&ctx, super::TITLE, opacity);
         if let Some(action) = action {
             if let Action::Save(folder) = &action {
                 self.saving_to = Some(*folder);
