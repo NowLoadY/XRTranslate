@@ -37,12 +37,14 @@ ASR、翻译与 TTS 模型切换入口只在欢迎流程；设置页保留 provi
 
 ## Provider 需求
 
-| 功能 / provider | 模型资源 | 推理资源 | GPU 策略 | 缺失时行为 |
+桌面端默认优先使用符合要求的 GPU。GPU 模式按设备显存筛选模型，CPU 模式按操作系统报告的可用物理内存筛选。配置模型时可以手动选择 CPU，程序会保存选择。
+
+| 功能 / provider | 模型资源 | 推理资源 | 设备要求 | 缺失时行为 |
 | --- | --- | --- | --- | --- |
-| ASR `qwen3-gguf` small | Qwen3-ASR 0.6B Q8_0 GGUF + mmproj，合计 1,019,141,728 B | llama.cpp server | NVIDIA >= 3 GiB；按平台匹配 CUDA（Windows 13.3/13.1/12.4，Linux 12.8） | 欢迎页下载/修复；未就绪不启动本地 ASR |
-| ASR `qwen3-gguf` normal | Qwen3-ASR 1.7B Q4_K_M GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 7 GiB | 原有默认包保留；欢迎页下载/修复 |
-| 翻译 `hunyuan` small | Hy-MT2 1.8B imatrix Q2_K GGUF，777,483,264 B | 与 ASR 共用 llama.cpp | NVIDIA >= 3 GiB；使用常规 CUDA 支持的 Q2_K，不使用腾讯 STQ 2-bit 文件 | 欢迎页下载/修复 |
-| 翻译 `hunyuan` normal | Hy-MT2 1.8B Q4_K_M GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | NVIDIA >= 7 GiB | 原有默认包保留；欢迎页下载/修复 |
+| ASR `qwen3-gguf` small | Qwen3-ASR 0.6B Q8_0 GGUF + mmproj，合计 1,019,141,728 B | llama.cpp server | CUDA / Vulkan / CPU，至少 3 GiB | 在欢迎页下载或修复 |
+| ASR `qwen3-gguf` normal | Qwen3-ASR 1.7B Q4_K_M GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | CUDA / Vulkan / CPU，至少 7 GiB | 在欢迎页下载或修复 |
+| 翻译 `hunyuan` small | Hy-MT2 1.8B imatrix Q2_K GGUF，777,483,264 B | 与 ASR 共用 llama.cpp | CUDA / Vulkan / CPU，至少 3 GiB | 在欢迎页下载或修复 |
+| 翻译 `hunyuan` normal | Hy-MT2 1.8B Q4_K_M GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | CUDA / Vulkan / CPU，至少 7 GiB | 在欢迎页下载或修复 |
 | 翻译 `hunyuan` 大 | Hy-MT2 7B Q4 GGUF，4,624,648,896 B | 与 ASR 共用 llama.cpp | 同上 | 欢迎页下载/修复 |
 | TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | NVIDIA >= 7 GiB；Auto/CUDA，失败即拒绝，不回退 CPU | TTS 是可选功能，可跳过；启用时下载/修复 |
 | TTS `openvoice` | 可组合语言包：一个 English 变体（v3 EN-Newest，或 v2 五口音）加 Chinese `ZH_MIX_EN` 包；每个包的实时大小来自 manifest | ONNX Runtime 1.28；每个语言包包含 BERT/Melo/converter/reference encoder 四 session | NVIDIA >= 7 GiB；强制 CUDA，任一包/任一 session 失败则 provider 整体未就绪 | TTS 可跳过；最终输出 22,050 Hz；v2 的 US/UK/India/AU/default 是同一包内 preset，不重复下载；只为已激活且支持目标语种的包生成任务 |
@@ -59,7 +61,8 @@ llama.cpp CUDA 12.8、ONNX Runtime 1.28 CUDA 12 及匹配的 cuDNN 9。
 
 | 用户设备 | ONNX 计划 | llama.cpp 计划 | 额外下载 |
 | --- | --- | --- | --- |
-| 无 NVIDIA GPU 或显存 < 3 GiB | release 内小型 ONNX 组件仍可使用 compact CPU core | 本地 ASR/翻译/TTS 选项禁用且运行时拒绝 | 不下载模型或 CUDA/provider/cuDNN，不存在大型模型 CPU fallback |
+| 无可用 GPU，或已手动选择 CPU | CPU ONNX 模型使用 CPU core | 按可用系统内存选择 GGUF 模型，以零 GPU 层运行 | 按需下载 CPU 运行时和所选模型 |
+| 可用 Vulkan GPU，报告显存至少 1 GiB | CPU ONNX 模型使用 CPU core | 按 GPU 报告的显存和各模型门槛选择 | 按需下载 Vulkan 运行时和所选模型 |
 | NVIDIA GPU，报告显存 3 至 < 7 GiB | 按实际启用的功能选择；TTS 仍需 7 GiB | 首次欢迎流程默认 small ASR + small 翻译，normal/big 按各自门槛禁用 | 模型与运行时照常按需下载 |
 | NVIDIA GPU，报告显存 >= 7 GiB | 按实际启用的功能选择 | 首次欢迎流程保持 normal ASR + normal 翻译默认值 | 可手动选择其他满足门槛的模型 |
 | NVIDIA + 驱动支持 CUDA 12 | ORT 1.28 CUDA12 同源核心/provider + cuDNN 9 CUDA12 | CUDA 12.4 server | CUDA 12.4 共享包只下载一次；另下载匹配的 cuDNN12 |

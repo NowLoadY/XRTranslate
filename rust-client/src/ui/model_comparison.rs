@@ -75,9 +75,9 @@ pub(super) fn vram_budget(
         | LocalModelAvailability::InsufficientVram {
             gpu, memory_bytes, ..
         } => (gpu.as_str(), *memory_bytes),
-        #[cfg(target_os = "android")]
         LocalModelAvailability::Cpu {
             available_memory_bytes,
+            ..
         } => ("CPU · RAM", *available_memory_bytes),
         _ => return None,
     };
@@ -95,15 +95,26 @@ pub(super) fn vram_budget(
     let mut selected_gpu_changed = None;
     ui.horizontal_wrapped(|ui| {
         let available_gpus = availability.available_gpus();
-        if available_gpus.len() > 1 {
+        let ram = availability.cpu_memory_bytes();
+        if available_gpus.len() + usize::from(ram > 0) > 1 {
             egui::ComboBox::from_id_salt("vram_budget_gpu_select")
                 .selected_text(RichText::new(gpu).size(11.5).strong())
                 .show_ui(ui, |ui| {
                     for dev in available_gpus {
                         let text = format!("{} · {:.1} GiB", dev.name, dev.memory_bytes as f64 / GIB);
                         let is_selected = dev.name == gpu;
-                        if crate::ui::components::selectable_label(ui, is_selected, text).clicked() && !is_selected {
+                        if crate::ui::components::selectable_label(ui, is_selected, text).clicked()
+                            && !is_selected
+                        {
                             selected_gpu_changed = Some(dev.name.clone());
+                        }
+                    }
+                    if ram > 0 {
+                        let cpu_label = format!("CPU · RAM · {:.1} GiB", ram as f64 / GIB);
+                        if crate::ui::components::selectable_label(ui, availability.is_cpu(), cpu_label).clicked()
+                            && !availability.is_cpu()
+                        {
+                            selected_gpu_changed = Some(crate::runtime_install::CPU_DEVICE.to_owned());
                         }
                     }
                 });

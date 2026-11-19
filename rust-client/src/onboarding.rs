@@ -43,9 +43,9 @@ pub fn has_unmet_prerequisites(
 
     // 3. Runtime binary and acceleration dependencies
     let llama_ready = !requirements.llama_cpp || backend_manager.llama_server_path_is_valid();
-    let onnx_ready =
-        !(requirements.onnx_tts || requirements.onnx_cpu) || runtime_installer.plan_is_ready();
-    if !llama_ready || !onnx_ready {
+    let runtime_ready = !(requirements.llama_cpp || requirements.onnx_tts || requirements.onnx_cpu)
+        || runtime_installer.plan_is_ready();
+    if !llama_ready || !runtime_ready {
         return true;
     }
 
@@ -94,9 +94,10 @@ pub fn evaluate_step_requirement(
 
             let llama_ready =
                 !requirements.llama_cpp || backend_manager.llama_server_path_is_valid();
-            let onnx_ready = !(requirements.onnx_tts || requirements.onnx_cpu)
-                || runtime_installer.plan_is_ready();
-            if !llama_ready || !onnx_ready {
+            let runtime_ready =
+                !(requirements.llama_cpp || requirements.onnx_tts || requirements.onnx_cpu)
+                    || runtime_installer.plan_is_ready();
+            if !llama_ready || !runtime_ready {
                 Some("Install the runtime to continue.")
             } else {
                 None

@@ -1,4 +1,4 @@
-//! Host GPU capabilities. Detection never downloads runtimes or changes drivers.
+//! Local inference devices and their independent memory budgets.
 
 use super::parse_version;
 use std::{path::PathBuf, process::Command};
@@ -6,6 +6,7 @@ use xrtranslate_assets::{ModelAccelerator, ModelHardwareRequirements};
 
 const MIN_CUDA_COMPUTE_CAPABILITY: (u16, u16) = (6, 0);
 const MIN_LOCAL_MODEL_VRAM_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const CPU_DEVICE: &str = "CPU";
 pub(crate) const NVIDIA_APP_URL: &str = "https://www.nvidia.com/en-us/software/nvidia-app/";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,20 +30,22 @@ pub struct AvailableGpu {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalModelAvailability {
     Detecting,
-    #[cfg(target_os = "android")]
     Cpu {
         available_memory_bytes: u64,
+        all_gpus: Vec<AvailableGpu>,
     },
     Available {
         gpu: String,
         memory_bytes: u64,
         cuda_memory_bytes: u64,
+        cpu_memory_bytes: u64,
         all_gpus: Vec<AvailableGpu>,
     },
     InsufficientVram {
         gpu: String,
         memory_bytes: u64,
         required_bytes: u64,
+        cpu_memory_bytes: u64,
         all_gpus: Vec<AvailableGpu>,
     },
     Unavailable(String),
@@ -50,19 +53,15 @@ pub enum LocalModelAvailability {
 
 impl LocalModelAvailability {
     pub fn is_cpu(&self) -> bool {
-        match self {
-            #[cfg(target_os = "android")]
-            Self::Cpu { .. } => true,
-            _ => false,
-        }
+        matches!(self, Self::Cpu { .. })
     }
 
     pub fn available_memory_bytes(&self) -> Option<u64> {
         match self {
             Self::Available { memory_bytes, .. } => Some(*memory_bytes),
-            #[cfg(target_os = "android")]
             Self::Cpu {
                 available_memory_bytes,
+                ..
             } => Some(*available_memory_bytes),
             _ => None,
         }
@@ -71,8 +70,26 @@ impl LocalModelAvailability {
     #[must_use]
     pub fn available_gpus(&self) -> &[AvailableGpu] {
         match self {
-            Self::Available { all_gpus, .. } | Self::InsufficientVram { all_gpus, .. } => all_gpus,
+            Self::Cpu { all_gpus, .. }
+            | Self::Available { all_gpus, .. }
+            | Self::InsufficientVram { all_gpus, .. } => all_gpus,
             _ => &[],
+        }
+    }
+
+    pub fn cpu_memory_bytes(&self) -> u64 {
+        match self {
+            Self::Cpu {
+                available_memory_bytes,
+                ..
+            } => *available_memory_bytes,
+            Self::Available {
+                cpu_memory_bytes, ..
+            }
+            | Self::InsufficientVram {
+                cpu_memory_bytes, ..
+            } => *cpu_memory_bytes,
+            _ => 0,
         }
     }
 
@@ -80,9 +97,9 @@ impl LocalModelAvailability {
         if hardware.accelerator == ModelAccelerator::Cpu {
             return true;
         }
-        #[cfg(target_os = "android")]
         if let Self::Cpu {
             available_memory_bytes,
+            ..
         } = self
         {
             return hardware.accelerator == ModelAccelerator::LlamaGpu
@@ -100,9 +117,9 @@ impl LocalModelAvailability {
 impl std::fmt::Display for LocalModelAvailability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(target_os = "android")]
             Self::Cpu {
                 available_memory_bytes,
+                ..
             } => write!(
                 f,
                 "CPU · {:.1} GiB",
@@ -147,6 +164,7 @@ impl Hardware {
         Self {
             availability: LocalModelAvailability::Cpu {
                 available_memory_bytes: crate::android::available_memory(),
+                all_gpus: Vec::new(),
             },
         }
     }
@@ -158,8 +176,12 @@ impl Hardware {
         let nvidia_list = cuda.as_ref().ok().cloned().unwrap_or_default();
         let vulkan_list = vulkan.as_ref().ok().cloned().unwrap_or_default();
 
-        let (selected_nvidia, selected_vulkan, mut availability) =
-            resolve_hardware_selection(&nvidia_list, &vulkan_list, preferred_gpu);
+        let (selected_nvidia, selected_vulkan, mut availability) = resolve_hardware_selection(
+            &nvidia_list,
+            &vulkan_list,
+            available_system_memory(),
+            preferred_gpu,
+        );
 
         if let LocalModelAvailability::Unavailable(reason) = &mut availability {
             for error in [cuda.err(), vulkan.err()].into_iter().flatten() {
@@ -175,9 +197,47 @@ impl Hardware {
     }
 }
 
+#[cfg(windows)]
+fn available_system_memory() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the initialized buffer has the size required by GlobalMemoryStatusEx.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+        status.ullAvailPhys
+    } else {
+        0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn available_system_memory() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|info| {
+            info.lines().find_map(|line| {
+                line.strip_prefix("MemAvailable:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_mul(1024)
+            })
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
+fn available_system_memory() -> u64 {
+    0
+}
+
 pub(super) fn resolve_hardware_selection(
     nvidia_gpus: &[NvidiaCuda],
     vulkan_gpus: &[VulkanGpu],
+    cpu_memory_bytes: u64,
     preferred_gpu: Option<&str>,
 ) -> (
     Option<NvidiaCuda>,
@@ -206,35 +266,39 @@ pub(super) fn resolve_hardware_selection(
         });
     }
 
-    if all_gpus.is_empty() {
+    let preferred = preferred_gpu.and_then(|pref| {
+        all_gpus.iter().find(|g| {
+            g.name == pref
+                || g.name.eq_ignore_ascii_case(pref)
+                || g.raw_name == pref
+                || g.raw_name.eq_ignore_ascii_case(pref)
+        })
+    });
+    let selected = preferred.or_else(|| {
+        // Priority default:
+        // 1. Dedicated NVIDIA CUDA GPU
+        all_gpus
+            .iter()
+            .filter(|g| g.is_cuda && g.memory_bytes >= MIN_LOCAL_MODEL_VRAM_BYTES)
+            .max_by_key(|g| g.memory_bytes)
+            // 2. Vulkan GPU with largest memory
+            .or_else(|| all_gpus.iter().max_by_key(|g| g.memory_bytes))
+    });
+
+    if cpu_memory_bytes > 0
+        && (preferred_gpu.is_some_and(|name| name.eq_ignore_ascii_case(CPU_DEVICE))
+            || (preferred.is_none()
+                && selected.is_none_or(|gpu| gpu.memory_bytes < MIN_LOCAL_MODEL_VRAM_BYTES)))
+    {
         return (
             None,
             None,
-            LocalModelAvailability::Unavailable(
-                "Local GPU models require NVIDIA CUDA or AMD Vulkan 1.2 with 16-bit storage. CPU ONNX models remain available.".into(),
-            ),
+            LocalModelAvailability::Cpu {
+                available_memory_bytes: cpu_memory_bytes,
+                all_gpus,
+            },
         );
     }
-
-    let selected = preferred_gpu
-        .and_then(|pref| {
-            all_gpus.iter().find(|g| {
-                g.name == pref
-                    || g.name.eq_ignore_ascii_case(pref)
-                    || g.raw_name == pref
-                    || g.raw_name.eq_ignore_ascii_case(pref)
-            })
-        })
-        .or_else(|| {
-            // Priority default:
-            // 1. Dedicated NVIDIA CUDA GPU
-            all_gpus
-                .iter()
-                .filter(|g| g.is_cuda)
-                .max_by_key(|g| g.memory_bytes)
-                // 2. Vulkan GPU with largest memory
-                .or_else(|| all_gpus.iter().max_by_key(|g| g.memory_bytes))
-        });
 
     let Some(selected) = selected else {
         return (
@@ -254,6 +318,7 @@ pub(super) fn resolve_hardware_selection(
                 gpu: selected.name.clone(),
                 memory_bytes: selected.memory_bytes,
                 required_bytes: MIN_LOCAL_MODEL_VRAM_BYTES,
+                cpu_memory_bytes,
                 all_gpus,
             },
         );
@@ -272,6 +337,7 @@ pub(super) fn resolve_hardware_selection(
                 gpu: selected.name.clone(),
                 memory_bytes: selected.memory_bytes,
                 cuda_memory_bytes,
+                cpu_memory_bytes,
                 all_gpus,
             },
         )
@@ -293,9 +359,59 @@ pub(super) fn resolve_hardware_selection(
                 gpu: selected.name.clone(),
                 memory_bytes: selected.memory_bytes,
                 cuda_memory_bytes: 0,
+                cpu_memory_bytes,
                 all_gpus,
             },
         )
+    }
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_prefers_eligible_gpu_and_keeps_cpu_ram_separate() {
+        let gib = 1 << 30;
+        let ram = 16 * gib;
+        let mut gpu = VulkanGpu {
+            gpu: "AMD Radeon 780M Graphics".into(),
+            memory_bytes: gib / 2,
+            index: 0,
+        };
+        let select = |gpu: &VulkanGpu, preference| {
+            resolve_hardware_selection(&[], std::slice::from_ref(gpu), ram, preference).2
+        };
+        let fallback = select(&gpu, None);
+        assert!(fallback.is_cpu());
+        assert_eq!(fallback.available_memory_bytes(), Some(ram));
+        assert_eq!(fallback.available_gpus()[0].memory_bytes, gib / 2);
+        assert!(fallback.supports(xrtranslate_assets::MANAGED_SMALL_MODEL_HARDWARE));
+        assert!(!fallback.supports(xrtranslate_assets::MANAGED_LOCAL_MODEL_HARDWARE));
+        let config =
+            xrtranslate_config::AppConfig::from_json_str(include_str!("../../../config.json"))
+                .unwrap();
+        let assets =
+            super::super::release_assets_from_config(&config.model_manager.llama_cpp).unwrap();
+        let package =
+            super::super::select_llama_assets(&assets, None, None, fallback.is_cpu()).unwrap();
+        assert_eq!(
+            package.backend,
+            xrtranslate_config::NativeRuntimeBackend::Cpu
+        );
+        assert_eq!(
+            package.assets[0].kind,
+            xrtranslate_config::LlamaCppAssetKind::ServerCpu
+        );
+
+        gpu.memory_bytes = 4 * gib;
+        let automatic = select(&gpu, None);
+        assert!(!automatic.is_cpu());
+        assert_eq!(automatic.available_memory_bytes(), Some(4 * gib));
+        assert_eq!(automatic.cpu_memory_bytes(), ram);
+        assert!(select(&gpu, Some(CPU_DEVICE)).is_cpu());
+        assert!(!select(&gpu, Some("AMD Radeon 780M Graphics (Vulkan)")).is_cpu());
+        assert!(resolve_hardware_selection(&[], &[], ram, None).2.is_cpu());
     }
 }
 
@@ -407,9 +523,8 @@ pub(super) fn supported_nvidia_cuda_gpus() -> Result<Vec<NvidiaCuda>, String> {
         ));
     }
     let version_text = String::from_utf8_lossy(&version_output.stdout);
-    let driver_cuda = cuda_version_from_nvidia_smi(&version_text).ok_or_else(|| {
-        "nvidia-smi did not report a parseable CUDA Version or CUDA UMD Version; refusing to silently install the CPU runtime on an NVIDIA system.".to_owned()
-    })?;
+    let driver_cuda = cuda_version_from_nvidia_smi(&version_text)
+        .ok_or_else(|| "nvidia-smi did not report a parseable CUDA driver version.".to_owned())?;
 
     let valid_gpus = gpus
         .into_iter()

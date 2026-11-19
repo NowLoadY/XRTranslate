@@ -2,8 +2,7 @@
 //!
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
 //! CUDA and Vulkan selection follows verified GPU capabilities and the selected
-//! packages' memory requirements. Managed
-//! model packages never fall back to CPU. Bundled small ONNX components remain
+//! packages' memory requirements. CPU llama.cpp uses system RAM. Bundled small ONNX components remain
 //! a separate resource class; their missing files can be repaired here, reusing
 //! a compatible local ONNX core before scheduling any download.
 
@@ -32,7 +31,7 @@ mod bundled_cpu;
 mod hardware;
 use hardware::Hardware;
 pub use hardware::LocalModelAvailability;
-pub(crate) use hardware::NVIDIA_APP_URL;
+pub(crate) use hardware::{CPU_DEVICE, NVIDIA_APP_URL};
 #[cfg(any(not(target_os = "android"), test))]
 use hardware::{NvidiaCuda, VulkanGpu};
 
@@ -1409,7 +1408,8 @@ async fn install(
         &server_required_files,
         &server_required_prefixes,
     )
-    .is_ok();
+    .is_ok()
+        && installed_llama_backend_matches(&layout, selection.backend);
     let cuda_ready = match (cuda_asset, cuda_directory.as_deref()) {
         (Some(asset), Some(directory)) => {
             validate_required_prefixes(directory, &asset.required_file_prefixes).is_ok()
@@ -2232,7 +2232,7 @@ fn configured_runtime_plan(
     let hardware = Hardware::detect(preferred_gpu);
     let local_models = hardware.availability.clone();
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
-    let blocking_error = requires_managed_model
+    let mut blocking_error = requires_managed_model
         .then(|| {
             model_assets
                 .iter()
@@ -2289,9 +2289,18 @@ fn configured_runtime_plan(
             .then(|| release_assets_from_config(&config.model_manager.llama_cpp))
             .transpose()?
             .unwrap_or_default();
-        let llama_cpp = (requirements.llama_cpp && blocking_error.is_none())
-            .then(|| select_llama_assets(&llama_assets, eligible_nvidia, eligible_amd))
-            .transpose()?;
+        let llama_cpp = if requirements.llama_cpp && blocking_error.is_none() {
+            select_llama_assets(
+                &llama_assets,
+                eligible_nvidia,
+                eligible_amd,
+                local_models.is_cpu(),
+            )
+            .map_err(|error| blocking_error = Some(error))
+            .ok()
+        } else {
+            None
+        };
         let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
             let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
             let cuda_dependencies =
@@ -2545,7 +2554,8 @@ fn missing_runtime_downloads(
             &server_files,
             &server_prefixes,
         )
-        .is_ok();
+        .is_ok()
+            && installed_llama_backend_matches(&layout, selection.backend);
         for asset in &selection.assets {
             let ready = if asset.kind == LlamaCppAssetKind::CudaRuntime {
                 asset.cuda_version.as_deref().is_some_and(|version| {
@@ -3033,29 +3043,34 @@ fn select_llama_assets(
     assets: &[ReleaseAsset],
     nvidia: Option<&NvidiaCuda>,
     amd: Option<&VulkanGpu>,
+    cpu: bool,
 ) -> Result<RuntimeSelection, String> {
-    let cuda = select_cuda_assets(assets, nvidia);
-    if cuda.is_ok() || amd.is_none() {
-        return cuda;
-    }
-    let gpu = amd.unwrap();
+    let (kind, backend, vulkan_device) = if cpu {
+        (LlamaCppAssetKind::ServerCpu, RuntimeBackend::Cpu, None)
+    } else if let Some(gpu) = amd {
+        (
+            LlamaCppAssetKind::ServerVulkan,
+            RuntimeBackend::Vulkan,
+            Some(gpu.index),
+        )
+    } else {
+        return select_cuda_assets(assets, nvidia);
+    };
     let asset = assets
         .iter()
-        .find(|asset| {
-            asset.target == current_runtime_target()
-                && asset.kind == LlamaCppAssetKind::ServerVulkan
-        })
+        .find(|asset| asset.target == current_runtime_target() && asset.kind == kind)
         .ok_or_else(|| {
             format!(
-                "No Vulkan llama.cpp runtime is configured for {}.",
+                "No {} llama.cpp runtime is configured for {}.",
+                backend.label(),
                 current_runtime_target()
             )
         })?;
     Ok(RuntimeSelection {
         assets: vec![asset.clone()],
-        backend: RuntimeBackend::Vulkan,
+        backend,
         executable: asset.executable.clone(),
-        vulkan_device: Some(gpu.index),
+        vulkan_device,
         fallback_reason: None,
     })
 }
@@ -3163,10 +3178,7 @@ fn select_cuda_assets(
             fallback_reason,
         });
     }
-    Err(
-        "Managed llama.cpp models require an eligible NVIDIA GPU; CPU fallback is disabled."
-            .to_owned(),
-    )
+    Err("The selected CUDA runtime requires an eligible NVIDIA GPU.".to_owned())
 }
 
 /// Converts persisted runtime metadata into the installer representation.
@@ -3308,6 +3320,19 @@ fn minimum_cuda_for_compute_capability(capability: (u16, u16)) -> (u16, u16) {
         BLACKWELL_MINIMUM_CUDA
     } else {
         (0, 0)
+    }
+}
+
+fn installed_llama_backend_matches(layout: &RuntimeLayout, requested: RuntimeBackend) -> bool {
+    // The CPU package's library names are also present in GPU distributions.
+    // A different distribution must not be relabeled as a verified CPU install.
+    match load_native_runtime_selection(layout) {
+        Ok(marker) => marker
+            .and_then(|m| m.llama_cpp_backend)
+            .map_or(requested != RuntimeBackend::Cpu, |backend| {
+                backend == requested
+            }),
+        Err(_) => false,
     }
 }
 

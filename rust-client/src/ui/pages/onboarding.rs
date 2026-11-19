@@ -880,7 +880,6 @@ fn local_model_warning_icon(
         ),
         crate::runtime_install::LocalModelAvailability::Detecting
         | crate::runtime_install::LocalModelAvailability::Available { .. } => return,
-        #[cfg(target_os = "android")]
         crate::runtime_install::LocalModelAvailability::Cpu { .. } => return,
     };
     let icon = egui::Image::new(egui::include_image!(
@@ -1345,7 +1344,6 @@ fn onboarding_model_config_card(
                         );
                     }
                     crate::runtime_install::LocalModelAvailability::Available { .. } => {}
-                    #[cfg(target_os = "android")]
                     crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
                 }
             }
@@ -1712,7 +1710,6 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         );
                     }
                     crate::runtime_install::LocalModelAvailability::Available { .. } => {}
-                    #[cfg(target_os = "android")]
                     crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
                 }
             } else if let Some(languages) = selected_choice

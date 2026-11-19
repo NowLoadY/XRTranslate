@@ -184,14 +184,16 @@ impl NativeProviderPlan {
         if !uses_llama {
             return Ok(None);
         }
-        if !self.native_runtime.as_ref().is_some_and(|runtime| {
-            matches!(
-                runtime.llama_cpp_backend,
-                Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan)
-            ) || (cfg!(target_os = "android")
-                && runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cpu))
-        }) {
-            return Err("Managed models require a verified CUDA or Vulkan runtime marker; CPU fallback is disabled.".into());
+        if self
+            .native_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.llama_cpp_backend)
+            .is_none()
+        {
+            return Err(
+                "Managed models require a verified llama.cpp runtime. Run model setup again."
+                    .into(),
+            );
         }
         self.managed_server_spec(capability, crate::local_endpoint_port(url)?, runtime)
             .map(Some)
@@ -529,10 +531,12 @@ fn apply_managed_runtime_environment(
     let Some(runtime) = runtime else {
         return Ok(());
     };
-    #[cfg(target_os = "android")]
     if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cpu) {
         spec.gpu_layers = xrtranslate_supervisor::GpuLayers::None;
         spec.extra_args.extend(["--device".into(), "none".into()]);
+        if spec.mmproj.is_some() {
+            spec.extra_args.push("--no-mmproj-offload".into());
+        }
         return Ok(());
     }
     if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Vulkan) {
