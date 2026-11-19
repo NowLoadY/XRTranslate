@@ -73,9 +73,11 @@ impl HostOutputSubscriber for Output {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package: Option<String>,
     enabled: bool,
     model: Option<String>,
     config: Value,
@@ -84,6 +86,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: true,
+            package: None,
             model: None,
             config: Value::Null,
         }
@@ -108,13 +111,9 @@ struct Inference {
     reply: crate::ask::Reply,
     cancel: Arc<AtomicBool>,
 }
-type Scan = Result<
-    Vec<(
-        PathBuf,
-        Result<(Manifest, Option<std::time::SystemTime>), String>,
-    )>,
-    String,
->;
+use xrtranslate_plugin::directory::{Catalog, Package};
+
+type Scan = Result<Catalog, String>;
 
 pub(crate) struct Host {
     datagrams: datagram::Outputs,
@@ -144,6 +143,7 @@ pub(crate) struct Host {
     resources: Option<(String, BTreeMap<String, PathBuf>)>,
     capabilities: Vec<String>,
     context: BTreeMap<String, Value>,
+    catalog: Catalog,
     installed: BTreeMap<String, Installed>,
     pub output: Output,
     inference: Vec<Inference>,
@@ -213,6 +213,7 @@ impl Host {
             resources: None,
             capabilities: Vec::new(),
             context: BTreeMap::new(),
+            catalog: Catalog::default(),
             installed: BTreeMap::new(),
             output: Output::default(),
             inference: Vec::new(),
@@ -235,28 +236,11 @@ impl Host {
             let executables = self.executables.clone();
             self.scan = Some(self.io.submit(
                 move || {
-                    let entries = xrtranslate_plugin::directory::discover_preferred(
+                    xrtranslate_plugin::directory::discover_packages(
                         &directory,
                         packaged_directory.as_deref(),
                         executables.as_deref(),
-                    )?;
-                    Ok(entries
-                        .into_iter()
-                        .map(|(directory, manifest)| {
-                            let entry = manifest.map(|manifest| {
-                                let modified = std::fs::metadata(
-                                    executables
-                                        .as_deref()
-                                        .unwrap_or(&directory)
-                                        .join(&manifest.executable),
-                                )
-                                .ok()
-                                .and_then(|m| m.modified().ok());
-                                (manifest, modified)
-                            });
-                            (directory, entry)
-                        })
-                        .collect())
+                    )
                 },
                 Some(ctx.clone()),
             ));
@@ -266,54 +250,29 @@ impl Host {
         };
         self.scan = None;
         self.next_scan = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        let entries = match result {
-            Ok(entries) => entries,
+        let mut catalog = match result {
+            Ok(catalog) => catalog,
             Err(error) => {
                 self.error = Some(error);
                 return;
             }
         };
-        let mut present = std::collections::HashSet::new();
-        let mut errors = Vec::new();
-        for (directory, manifest) in entries {
-            let (manifest, modified) = match manifest {
-                Ok(entry) => entry,
-                Err(error) => {
-                    errors.push(format!("{}: {error}", directory.display()));
-                    continue;
-                }
-            };
-            let id = manifest.provider_id().to_owned();
-            if !present.insert(id.clone()) {
-                errors.push(format!("Duplicate plugin ID: {id}"));
-                continue;
-            }
-            if self.installed.get(&id).is_some_and(|entry| {
-                entry.directory == directory
-                    && entry.manifest == manifest
-                    && entry.modified == modified
-            }) {
-                continue;
-            }
-            self.stop(&id);
-            self.installed.remove(&id);
-            self.navigation_changed = true;
-            self.context.remove("host.context");
-            if let Err(error) = self.register(directory, manifest, modified) {
+        let mut errors: Vec<_> = std::mem::take(&mut catalog.issues)
+            .into_iter()
+            .map(|(path, error)| format!("{}: {error}", path.display()))
+            .collect();
+        self.catalog = catalog;
+        let providers: std::collections::BTreeSet<_> = self
+            .catalog
+            .providers
+            .keys()
+            .chain(self.installed.keys())
+            .cloned()
+            .collect();
+        for provider in providers {
+            if let Err(error) = self.sync_package(&provider) {
                 errors.push(error);
             }
-        }
-        for id in self
-            .installed
-            .keys()
-            .filter(|id| !present.contains(*id))
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            self.stop(&id);
-            self.installed.remove(&id);
-            self.navigation_changed = true;
-            self.context.remove("host.context");
         }
         let error = (!errors.is_empty()).then(|| errors.join("\n"));
         if error != self.error
@@ -326,18 +285,8 @@ impl Host {
     fn data(&self, id: &str) -> PathBuf {
         self.root.join("data").join(id)
     }
-    fn register(
-        &mut self,
-        directory: PathBuf,
-        manifest: Manifest,
-        modified: Option<std::time::SystemTime>,
-    ) -> Result<(), String> {
-        let provider = manifest.provider_id();
-        PluginId::parse(provider).ok_or("Invalid plugin ID")?;
-        if self.installed.contains_key(provider) {
-            return Err(format!("Plugin ID already registered: {provider}"));
-        }
-        let settings = std::fs::read(self.data(provider).join("settings.json"))
+    fn load_settings(&self, provider: &str) -> Settings {
+        std::fs::read(self.data(provider).join("settings.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_else(|| {
@@ -355,7 +304,69 @@ impl Host {
                     enabled,
                     ..Default::default()
                 }
-            });
+            })
+    }
+
+    fn sync_package(&mut self, id: &str) -> Result<(), String> {
+        let active = self.installed.get(id);
+        let stored;
+        let settings = match active {
+            Some(entry) => &entry.settings,
+            None => {
+                stored = self.load_settings(id);
+                &stored
+            }
+        };
+        let selected = self.catalog.selected(id, settings.package.as_deref());
+        if let (Some(active), Some(package)) = (active, selected)
+            && active.directory == package.directory
+            && active.manifest == package.manifest
+            && active.modified == package.modified
+        {
+            return Ok(());
+        }
+        let replacement = selected.map(|p| (p.clone(), settings.clone()));
+        if active.is_some() {
+            self.stop(id);
+            self.installed.remove(id);
+        }
+        self.navigation_changed = true;
+        self.context.remove("host.context");
+        if let Some((package, settings)) = replacement {
+            self.register(package, settings)?;
+        }
+        Ok(())
+    }
+
+    fn select_package(&mut self, id: &str, choice: &str) -> Result<(), String> {
+        if !self
+            .catalog
+            .providers
+            .get(id)
+            .is_some_and(|packages| packages.iter().any(|p| p.manifest.id == choice))
+        {
+            return Err("Plugin edition is not installed".into());
+        }
+        let mut settings = self
+            .installed
+            .get(id)
+            .ok_or("Plugin is not installed")?
+            .settings
+            .clone();
+        settings.package = Some(choice.to_owned());
+        self.write_settings(id, &settings)?;
+        self.installed.get_mut(id).unwrap().settings = settings;
+        self.sync_package(id)
+    }
+
+    fn register(&mut self, package: Package, settings: Settings) -> Result<(), String> {
+        let Package {
+            directory,
+            manifest,
+            modified,
+        } = package;
+        let provider = manifest.provider_id();
+        PluginId::parse(provider).ok_or("Invalid plugin ID")?;
         self.installed.insert(
             provider.to_owned(),
             Installed {
@@ -391,12 +402,15 @@ impl Host {
     }
     fn save(&self, id: &str) -> Result<(), String> {
         let entry = self.installed.get(id).ok_or("Plugin is not installed")?;
+        self.write_settings(id, &entry.settings)
+    }
+    fn write_settings(&self, id: &str, settings: &Settings) -> Result<(), String> {
         let path = self.data(id);
         std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         let staged = path.join("settings.json.tmp");
         std::fs::write(
             &staged,
-            serde_json::to_vec_pretty(&entry.settings).map_err(|e| e.to_string())?,
+            serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         std::fs::rename(staged, path.join("settings.json")).map_err(|e| e.to_string())
@@ -960,6 +974,53 @@ fn receipt(plugin: &str, id: u64) -> Value {
         "pending":{"name":"plugins.operation","arguments":{"plugin":plugin,"id":id}},
         "cancel":{"name":"plugins.cancel","arguments":{"plugin":plugin,"id":id}},
     })
+}
+
+#[cfg(test)]
+mod edition_tests {
+    use super::*;
+
+    #[test]
+    fn switching_editions_preserves_enablement_and_survives_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let plugins = root.path().join("plugins");
+        for (id, family) in [("sample", None), ("sample_plus", Some("sample"))] {
+            let directory = plugins.join(id);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("plugin"), []).unwrap();
+            std::fs::write(
+                directory.join("plugin.json"),
+                json!({
+                    "id":id, "pro_for":family, "min_host_version":"0.4.0",
+                    "title":{"en":id}, "executable":"plugin"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let load = || {
+            let mut host = Host::load(root.path().to_owned());
+            host.catalog =
+                xrtranslate_plugin::directory::discover_packages(&plugins, None, None).unwrap();
+            host.sync_package("sample").unwrap();
+            host
+        };
+        let mut host = load();
+        assert_eq!(host.installed["sample"].manifest.id, "sample");
+        host.set_enabled("sample", false).unwrap();
+        host.select_package("sample", "sample_plus").unwrap();
+        drop(host);
+        let mut host = load();
+        assert_eq!(host.installed["sample"].manifest.id, "sample_plus");
+        assert!(!host.installed["sample"].settings.enabled);
+        assert!(host.select_package("sample", "missing").is_err());
+        host.select_package("sample", "sample").unwrap();
+        host.set_enabled("sample", true).unwrap();
+        drop(host);
+        let host = load();
+        assert_eq!(host.installed["sample"].manifest.id, "sample");
+        assert!(host.installed["sample"].settings.enabled);
+    }
 }
 
 #[derive(Clone, Default)]

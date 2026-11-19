@@ -122,10 +122,37 @@ impl Host {
             }
         }
         let mut enable = None;
+        let mut edition = None;
         for (id, entry) in &mut self.installed {
             components::card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(entry.manifest.title.get(locale(language)));
+                ui.horizontal_wrapped(|ui| {
+                    let lang = locale(language);
+                    if let Some(packages) = self.catalog.providers.get(id).filter(|p| p.len() > 1) {
+                        for package in packages {
+                            let manifest = &package.manifest;
+                            let title = manifest.title.get(lang);
+                            let label = if packages
+                                .iter()
+                                .filter(|p| p.manifest.title.get(lang) == title)
+                                .count()
+                                > 1
+                            {
+                                format!("{title} ({})", manifest.id)
+                            } else {
+                                title.to_owned()
+                            };
+                            let active = manifest.id == entry.manifest.id;
+                            if components::selectable_label(ui, active, label)
+                                .on_hover_text(&manifest.id)
+                                .clicked()
+                                && !active
+                            {
+                                edition = Some((id.clone(), manifest.id.clone()));
+                            }
+                        }
+                    } else {
+                        ui.label(entry.manifest.title.get(lang));
+                    }
                     let mut enabled = entry.settings.enabled;
                     if components::toggle_with_label(ui, &mut enabled, tr(language, "Enable"))
                         .changed()
@@ -158,6 +185,11 @@ impl Host {
                     }
                 }
             });
+        }
+        if let Some((id, choice)) = edition
+            && let Err(error) = self.select_package(&id, &choice)
+        {
+            self.error = Some(error);
         }
         if let Some((id, enabled)) = enable
             && let Err(error) = self.set_enabled(&id, enabled)

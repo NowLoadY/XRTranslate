@@ -1,6 +1,7 @@
 //! A plugin is present exactly while its manifest and executable are in the directory.
 use crate::Manifest;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -65,45 +66,99 @@ pub fn discover(
         .collect())
 }
 
-/// Discover providers from the user and application plugin directories.
+#[derive(Clone)]
+pub struct Package {
+    pub directory: PathBuf,
+    pub manifest: Manifest,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+#[derive(Default)]
+pub struct Catalog {
+    pub providers: BTreeMap<String, Vec<Package>>,
+    pub issues: Vec<(PathBuf, String)>,
+}
+
+impl Catalog {
+    /// Use the saved edition when installed, otherwise the standard package or first available edition.
+    pub fn selected(&self, provider: &str, preferred: Option<&str>) -> Option<&Package> {
+        let packages = self.providers.get(provider)?;
+        packages
+            .iter()
+            .find(|p| Some(p.manifest.id.as_str()) == preferred)
+            .or_else(|| packages.first())
+    }
+}
+
+pub fn discover_packages(
+    user: &Path,
+    bundled: Option<&Path>,
+    executables: Option<&Path>,
+) -> Result<Catalog, String> {
+    let mut catalog = Catalog::default();
+    let mut seen = BTreeMap::new();
+    for (root, binaries, is_user) in [(Some(user), executables, true), (bundled, None, false)] {
+        let Some(root) = root else { continue };
+        for (directory, entry) in discover(root, binaries)? {
+            let manifest = match entry {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    catalog.issues.push((directory, error));
+                    continue;
+                }
+            };
+            if let Some(previous) = seen.get(&manifest.id) {
+                if *previous == is_user {
+                    catalog.issues.push((
+                        directory,
+                        format!("Duplicate plugin package {}", manifest.id),
+                    ));
+                }
+                continue;
+            }
+            seen.insert(manifest.id.clone(), is_user);
+            let modified = fs::metadata(binaries.unwrap_or(&directory).join(&manifest.executable))
+                .and_then(|m| m.modified())
+                .ok();
+            catalog
+                .providers
+                .entry(manifest.provider_id().to_owned())
+                .or_default()
+                .push(Package {
+                    directory,
+                    manifest,
+                    modified,
+                });
+        }
+    }
+    for packages in catalog.providers.values_mut() {
+        packages.sort_by(|a, b| {
+            (a.manifest.pro_for.is_some(), &a.manifest.id)
+                .cmp(&(b.manifest.pro_for.is_some(), &b.manifest.id))
+        });
+    }
+    Ok(catalog)
+}
+
+/// Discover the default package for each provider when no edition preference is supplied.
 pub fn discover_preferred(
     user: &Path,
     bundled: Option<&Path>,
     executables: Option<&Path>,
 ) -> Result<Vec<(PathBuf, Result<Manifest, String>)>, String> {
-    let mut selected = std::collections::BTreeMap::new();
-    let mut issues = Vec::new();
-    for (root, binaries, user_package) in [(Some(user), executables, true), (bundled, None, false)]
-    {
-        let Some(root) = root else { continue };
-        for (path, entry) in discover(root, binaries)? {
-            let manifest = match entry {
-                Ok(manifest) => manifest,
-                Err(error) => {
-                    issues.push((path, Err(error)));
-                    continue;
-                }
-            };
-            let rank = (manifest.pro_for.is_some(), user_package);
-            let key = manifest.provider_id().to_owned();
-            if let Some((current, _, _)) = selected.get(&key) {
-                if *current == rank {
-                    issues.push((path, Err(format!("Duplicate plugin provider for {key}"))));
-                    continue;
-                }
-                if *current > rank {
-                    continue;
-                }
-            }
-            selected.insert(key, (rank, path, manifest));
-        }
-    }
-    issues.extend(
-        selected
-            .into_values()
-            .map(|(_, path, manifest)| (path, Ok(manifest))),
-    );
-    Ok(issues)
+    let catalog = discover_packages(user, bundled, executables)?;
+    Ok(catalog
+        .issues
+        .into_iter()
+        .map(|(path, error)| (path, Err(error)))
+        .chain(
+            catalog
+                .providers
+                .into_values()
+                .filter_map(|packages| packages.into_iter().next())
+                .map(|p| (p.directory, Ok(p.manifest))),
+        )
+        .collect())
 }
 
 pub fn require_host(manifest: &Manifest, version: &str) -> Result<(), String> {
@@ -123,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pro_owns_the_family_until_its_package_is_removed() {
+    fn edition_selection_respects_user_choice_and_deduplicates_package_copies() {
         let temp = tempfile::tempdir().unwrap();
         let user = temp.path().join("user");
         let bundled = temp.path().join("bundled");
@@ -141,27 +196,54 @@ mod tests {
             fs::write(path.join("plugin.json"), manifest.to_string()).unwrap();
             fs::write(path.join("program"), []).unwrap();
         };
-        let chosen = || {
-            discover_preferred(&user, Some(&bundled), None)
-                .unwrap()
-                .into_iter()
-                .map(|(path, manifest)| (path, manifest.unwrap().id))
-                .collect::<Vec<_>>()
-        };
+        let scan = || discover_packages(&user, Some(&bundled), None).unwrap();
         install(&bundled, "sample", None, "0.4.0");
         install(&user, "sample", None, "0.4.0");
         install(&user, "other", None, "0.4.0");
-        assert!(chosen().contains(&(user.join("sample"), "sample".into())));
         install(&bundled, "sample_plus", Some("sample"), "0.4.8");
-        let pro = chosen();
-        assert_eq!(pro.len(), 2);
-        assert!(pro.contains(&(bundled.join("sample_plus"), "sample_plus".into())));
-        // A present Pro that needs a newer host still reserves its provider.
-        install(&user, "sample_plus", Some("sample"), "9.0.0");
-        assert!(chosen().contains(&(user.join("sample_plus"), "sample_plus".into())));
+        install(&user, "sample_plus", Some("sample"), "0.4.8");
+        let both = scan();
+        assert!(both.issues.is_empty());
+        assert_eq!(both.providers.len(), 2);
+        assert_eq!(both.providers["sample"].len(), 2);
+        assert_eq!(
+            both.selected("sample", None).unwrap().directory,
+            user.join("sample")
+        );
+        assert_eq!(
+            both.selected("sample", Some("sample_plus"))
+                .unwrap()
+                .directory,
+            user.join("sample_plus")
+        );
+        assert_eq!(
+            both.selected("sample", Some("other")).unwrap().manifest.id,
+            "sample"
+        );
         fs::remove_dir_all(user.join("sample_plus")).unwrap();
+        assert_eq!(
+            scan()
+                .selected("sample", Some("sample_plus"))
+                .unwrap()
+                .directory,
+            bundled.join("sample_plus")
+        );
         fs::remove_dir_all(bundled.join("sample_plus")).unwrap();
-        assert!(chosen().contains(&(user.join("sample"), "sample".into())));
+        assert_eq!(
+            scan()
+                .selected("sample", Some("sample_plus"))
+                .unwrap()
+                .manifest
+                .id,
+            "sample"
+        );
+        fs::remove_dir_all(user.join("sample")).unwrap();
+        fs::remove_dir_all(bundled.join("sample")).unwrap();
+        install(&user, "sample_plus", Some("sample"), "0.4.8");
+        assert_eq!(
+            scan().selected("sample", None).unwrap().manifest.id,
+            "sample_plus"
+        );
     }
 
     #[test]
