@@ -264,6 +264,7 @@ impl MediaTask {
                     audio.adjusted(xrtranslate_client_core::playback::AudioMixSettings {
                         volume: self.audio_mix.volume(source),
                         duck_intervals,
+                        ..Default::default()
                     }),
                 )
             })
@@ -588,7 +589,8 @@ mod tests {
             vocal_settings(&task),
             AudioMixSettings {
                 volume: 70,
-                duck_intervals: vec![[400, 1000]]
+                duck_intervals: vec![[400, 1000]],
+                ..Default::default()
             }
         );
         task.speech_track.as_mut().unwrap().clips[0].start_ms = 1000;

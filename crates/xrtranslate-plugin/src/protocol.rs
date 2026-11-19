@@ -28,6 +28,9 @@ impl From<&str> for Text {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
+    /// Optional provider identity for a separately distributed package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pro_for: Option<String>,
     /// Optional release metadata. Compatibility depends only on min_host_version.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
@@ -60,8 +63,19 @@ fn default_navigation_order() -> i32 {
     500
 }
 impl Manifest {
+    /// Stable namespace for navigation, tools, events and translation ownership.
+    pub fn provider_id(&self) -> &str {
+        self.pro_for.as_deref().unwrap_or(&self.id)
+    }
+
     pub fn validate(&self) -> std::result::Result<(), String> {
         identifier(&self.id)?;
+        if let Some(provider) = &self.pro_for {
+            identifier(provider)?;
+            if provider == &self.id {
+                return Err("A Pro package must have its own installation ID".into());
+            }
+        }
         relative_path(&self.executable)?;
         if let Some(icon) = &self.icon {
             relative_path(icon)?;
@@ -72,7 +86,9 @@ impl Manifest {
         }
         let mut names = std::collections::HashSet::new();
         for tool in &self.tools {
-            if !tool.name.starts_with(&format!("{}.", self.id)) || !names.insert(&tool.name) {
+            if !tool.name.starts_with(&format!("{}.", self.provider_id()))
+                || !names.insert(&tool.name)
+            {
                 return Err(format!("Invalid or repeated plugin tool: {}", tool.name));
             }
         }

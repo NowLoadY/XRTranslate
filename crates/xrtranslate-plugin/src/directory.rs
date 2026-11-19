@@ -65,6 +65,47 @@ pub fn discover(
         .collect())
 }
 
+/// Discover providers from the user and application plugin directories.
+pub fn discover_preferred(
+    user: &Path,
+    bundled: Option<&Path>,
+    executables: Option<&Path>,
+) -> Result<Vec<(PathBuf, Result<Manifest, String>)>, String> {
+    let mut selected = std::collections::BTreeMap::new();
+    let mut issues = Vec::new();
+    for (root, binaries, user_package) in [(Some(user), executables, true), (bundled, None, false)]
+    {
+        let Some(root) = root else { continue };
+        for (path, entry) in discover(root, binaries)? {
+            let manifest = match entry {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    issues.push((path, Err(error)));
+                    continue;
+                }
+            };
+            let rank = (manifest.pro_for.is_some(), user_package);
+            let key = manifest.provider_id().to_owned();
+            if let Some((current, _, _)) = selected.get(&key) {
+                if *current == rank {
+                    issues.push((path, Err(format!("Duplicate plugin provider for {key}"))));
+                    continue;
+                }
+                if *current > rank {
+                    continue;
+                }
+            }
+            selected.insert(key, (rank, path, manifest));
+        }
+    }
+    issues.extend(
+        selected
+            .into_values()
+            .map(|(_, path, manifest)| (path, Ok(manifest))),
+    );
+    Ok(issues)
+}
+
 pub fn require_host(manifest: &Manifest, version: &str) -> Result<(), String> {
     let required = semver::Version::parse(&manifest.min_host_version).map_err(|e| e.to_string())?;
     let current = semver::Version::parse(version).map_err(|e| e.to_string())?;
@@ -80,6 +121,48 @@ pub fn require_host(manifest: &Manifest, version: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pro_owns_the_family_until_its_package_is_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let user = temp.path().join("user");
+        let bundled = temp.path().join("bundled");
+        let install = |root: &Path, id: &str, pro_for: Option<&str>, minimum: &str| {
+            let path = root.join(id);
+            fs::create_dir_all(&path).unwrap();
+            let provider = pro_for.unwrap_or(id);
+            let manifest = serde_json::json!({
+                "id":id, "pro_for":pro_for, "min_host_version":minimum,
+                "title":{"en":id}, "executable":"program", "tools":[{
+                    "name":format!("{provider}.read"), "description":"Read",
+                    "inputSchema":{"type":"object","properties":{}}
+                }]
+            });
+            fs::write(path.join("plugin.json"), manifest.to_string()).unwrap();
+            fs::write(path.join("program"), []).unwrap();
+        };
+        let chosen = || {
+            discover_preferred(&user, Some(&bundled), None)
+                .unwrap()
+                .into_iter()
+                .map(|(path, manifest)| (path, manifest.unwrap().id))
+                .collect::<Vec<_>>()
+        };
+        install(&bundled, "sample", None, "0.4.0");
+        install(&user, "sample", None, "0.4.0");
+        install(&user, "other", None, "0.4.0");
+        assert!(chosen().contains(&(user.join("sample"), "sample".into())));
+        install(&bundled, "sample_plus", Some("sample"), "0.4.8");
+        let pro = chosen();
+        assert_eq!(pro.len(), 2);
+        assert!(pro.contains(&(bundled.join("sample_plus"), "sample_plus".into())));
+        // A present Pro that needs a newer host still reserves its provider.
+        install(&user, "sample_plus", Some("sample"), "9.0.0");
+        assert!(chosen().contains(&(user.join("sample_plus"), "sample_plus".into())));
+        fs::remove_dir_all(user.join("sample_plus")).unwrap();
+        fs::remove_dir_all(bundled.join("sample_plus")).unwrap();
+        assert!(chosen().contains(&(user.join("sample"), "sample".into())));
+    }
 
     #[test]
     fn older_plugins_remain_compatible_with_host_updates() {

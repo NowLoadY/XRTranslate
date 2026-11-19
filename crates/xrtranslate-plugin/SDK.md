@@ -46,6 +46,14 @@ the backup location is reported and retained.
 Copy the completed package into the folder opened by Settings → Plugins.
 The application does not compile plugins during startup.
 
+### Agent feedback
+
+A plugin can publish `document_notice` in its state with a workspace ID, revision
+and changed targets. A tool that returns `contact_sheet` can attach a JPEG
+preview to a vision-capable Agent. Write it to
+`<TEMP>/XRTranslate/reviews/<provider>/session-*/review-*/contact-sheet.jpg` and keep it
+under 2 MiB. The caller can also open the returned path directly.
+
 ## Compatibility
 
 The SDK version and application version are separate. A routine application

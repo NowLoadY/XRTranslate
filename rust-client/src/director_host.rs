@@ -48,10 +48,9 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn call_director_tool(&mut self, call: &ToolCall) -> ToolResult {
-        if !matches!(
-            call.name.as_str(),
-            "agent.environment" | "agent.status" | "media.operation" | "plugins.operation"
-        ) && call.arguments.get("job").is_none()
+        if !matches!(call.name.as_str(), "agent.environment" | "agent.status")
+            && !call.name.ends_with(".operation")
+            && call.arguments.get("job").is_none()
         {
             ui_director::egui::feedback::tool_started(&call.name);
         }

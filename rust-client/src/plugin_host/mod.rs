@@ -225,27 +225,11 @@ impl Host {
             let executables = self.executables.clone();
             self.scan = Some(self.io.submit(
                 move || {
-                    let mut entries = xrtranslate_plugin::directory::discover(
+                    let entries = xrtranslate_plugin::directory::discover_preferred(
                         &directory,
+                        packaged_directory.as_deref(),
                         executables.as_deref(),
                     )?;
-                    if let Some(directory) = packaged_directory {
-                        let user_ids: std::collections::HashSet<_> = entries
-                            .iter()
-                            .filter_map(|(_, manifest)| {
-                                manifest.as_ref().ok().map(|manifest| manifest.id.clone())
-                            })
-                            .collect();
-                        entries.extend(
-                            xrtranslate_plugin::directory::discover(&directory, None)?
-                                .into_iter()
-                                .filter(|(_, manifest)| {
-                                    manifest
-                                        .as_ref()
-                                        .map_or(true, |manifest| !user_ids.contains(&manifest.id))
-                                }),
-                        );
-                    }
                     Ok(entries
                         .into_iter()
                         .map(|(directory, manifest)| {
@@ -289,7 +273,7 @@ impl Host {
                     continue;
                 }
             };
-            let id = manifest.id.clone();
+            let id = manifest.provider_id().to_owned();
             if !present.insert(id.clone()) {
                 errors.push(format!("Duplicate plugin ID: {id}"));
                 continue;
@@ -338,11 +322,12 @@ impl Host {
         manifest: Manifest,
         modified: Option<std::time::SystemTime>,
     ) -> Result<(), String> {
-        PluginId::parse(&manifest.id).ok_or("Invalid plugin ID")?;
-        if self.installed.contains_key(&manifest.id) {
-            return Err(format!("Plugin ID already registered: {}", manifest.id));
+        let provider = manifest.provider_id();
+        PluginId::parse(provider).ok_or("Invalid plugin ID")?;
+        if self.installed.contains_key(provider) {
+            return Err(format!("Plugin ID already registered: {provider}"));
         }
-        let settings = std::fs::read(self.data(&manifest.id).join("settings.json"))
+        let settings = std::fs::read(self.data(provider).join("settings.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_else(|| {
@@ -354,7 +339,7 @@ impl Host {
                 )
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|value| legacy_enablement(&value, &manifest.id))
+                .and_then(|value| legacy_enablement(&value, provider))
                 .unwrap_or(true);
                 Settings {
                     enabled,
@@ -362,7 +347,7 @@ impl Host {
                 }
             });
         self.installed.insert(
-            manifest.id.clone(),
+            provider.to_owned(),
             Installed {
                 modified,
                 icon: manifest.icon.as_ref().and_then(|icon| {
@@ -583,7 +568,7 @@ impl Host {
                 let environment = Environment {
                     host_executable: std::env::current_exe().unwrap_or_default(),
                     language: language.into(),
-                    data_directory: base.join("data").join(id),
+                    data_directory: base.join("data").join(&entry.manifest.id),
                     model_directory: entry
                         .settings
                         .model
@@ -885,7 +870,7 @@ impl ui_director::ToolProvider for Host {
             .read_only(),
             Tool::new(
                 "plugins.enable",
-                "Enable or disable an installed plugin.",
+                "Enable or disable the selected provider for a plugin ID.",
                 json!({"id":{"type":"string"},"enabled":{"type":"boolean"}}),
                 &["id", "enabled"],
             ),
@@ -922,7 +907,7 @@ impl ui_director::ToolProvider for Host {
         let string = |key: &str| args[key].as_str().ok_or_else(|| format!("Missing {key}"));
         match call.name.as_str() {
             "plugins.list" => Ok(
-                json!({"directory":self.directory,"plugins":self.installed.iter().map(|(id,p)| json!({"id":id,"title":p.manifest.title,"enabled":p.settings.enabled,"running":p.process.is_some(),"error":p.error})).collect::<Vec<_>>(),"error":self.error}),
+                json!({"directory":self.directory,"plugins":self.installed.iter().map(|(id,p)| json!({"id":id,"package_id":p.manifest.id,"title":p.manifest.title,"enabled":p.settings.enabled,"running":p.process.is_some(),"error":p.error})).collect::<Vec<_>>(),"error":self.error}),
             ),
             "plugins.enable" => {
                 self.set_enabled(

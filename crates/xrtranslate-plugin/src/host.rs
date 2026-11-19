@@ -25,7 +25,6 @@ pub struct Process {
     output: Option<crate::mailbox::Sender>,
     state: Arc<Mutex<State>>,
     threads: Vec<JoinHandle<()>>,
-    next_id: u64,
 }
 impl Process {
     pub fn start(
@@ -187,7 +186,6 @@ impl Process {
             output: Some(tx),
             state,
             threads: vec![writer, reader, stderr],
-            next_id: 0,
         })
     }
     pub fn initialize(&self, environment: Environment) -> std::result::Result<(), String> {
@@ -226,8 +224,10 @@ impl Process {
         if state.replies.len() >= 128 {
             return Err("Too many pending plugin operations".into());
         }
-        self.next_id += 1;
-        let id = self.next_id;
+        // A receipt from a replaced process must never address its successor.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
         state.replies.insert(id, (Instant::now(), None));
         drop(state);
         if let Err(error) = self.send(Message::Call {

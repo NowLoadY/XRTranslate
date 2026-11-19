@@ -65,11 +65,10 @@ impl Plugin for Agent {
     }
 
     fn event(&mut self, name: &str, value: Value, _: &mut Context) {
-        if name == "plugin.state" && value["plugin"] == "media" {
-            self.core
-                .as_mut()
-                .unwrap()
-                .document_changed(value["state"]["editing_notice"].clone());
+        if name == "plugin.state"
+            && let Some(notice) = value["state"].get("document_notice")
+        {
+            self.core.as_mut().unwrap().document_changed(notice.clone());
             return;
         }
         if name != "host.context" {

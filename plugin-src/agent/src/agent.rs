@@ -178,12 +178,16 @@ pub(crate) enum Action {
     Finished,
 }
 
-/// Only read an image produced by the media renderer inside its OS-temp session.
-fn review_jpeg(path: &std::path::Path) -> Option<String> {
+/// Read a bounded JPEG from a plugin review session under the application temp root.
+fn review_jpeg(tool: &str, path: &std::path::Path) -> Option<String> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use std::io::Read;
+    let (provider, _) = tool.split_once('.')?;
+    xrtranslate_plugin::identifier(provider).ok()?;
     let root = std::env::temp_dir()
-        .join("XRTranslate-media")
+        .join("XRTranslate")
+        .join("reviews")
+        .join(provider)
         .canonicalize()
         .ok()?;
     let path = path.canonicalize().ok()?;
@@ -674,12 +678,12 @@ impl AgentPlugin {
                     } else {
                         "text_only"
                     });
-                } else if call.name == "media.render" {
+                } else {
                     let result = &receipt["result"];
                     let output = result.get("tool_output").unwrap_or(result);
                     if let Some(path) = output["contact_sheet"].as_str() {
                         let status = if self.image_input && self.native_tools {
-                            image = review_jpeg(std::path::Path::new(path));
+                            image = review_jpeg(&call.name, std::path::Path::new(path));
                             if image.is_some() {
                                 "attached"
                             } else {
@@ -868,7 +872,10 @@ mod tests {
 
     #[test]
     fn render_pixels_follow_model_capabilities_and_stay_out_of_the_transcript() {
-        let root = std::env::temp_dir().join("XRTranslate-media");
+        let root = std::env::temp_dir()
+            .join("XRTranslate")
+            .join("reviews")
+            .join("sample");
         std::fs::create_dir_all(&root).unwrap();
         let session = tempfile::Builder::new()
             .prefix("session-")
@@ -887,12 +894,12 @@ mod tests {
         agent.configure(
             true,
             8192,
-            vec![Tool::new("media.render", "Review", json!({}), &[])],
+            vec![Tool::new("sample.preview", "Review", json!({}), &[])],
             "English",
         );
         agent.start(json!({}), "Review a frame".into()).unwrap();
         let call = ToolCall {
-            name: "media.render".into(),
+            name: "sample.preview".into(),
             arguments: json!({}),
         };
         for enabled in [true, false] {
@@ -904,7 +911,8 @@ mod tests {
             assert!(!message.contains("/9j/"));
             assert!(message.contains(if enabled { "attached" } else { "text_only" }));
         }
-        assert!(review_jpeg(&std::env::current_exe().unwrap()).is_none());
+        assert!(review_jpeg("another.preview", &path).is_none());
+        assert!(review_jpeg("sample.preview", &std::env::current_exe().unwrap()).is_none());
     }
 
     #[test]

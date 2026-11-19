@@ -10,7 +10,7 @@ Use `image.generate` for each requested bitmap. The application sends prompts an
 ## Choose the input and action
 
 - **New image.** Supply a prompt and omit `images`. To generate a new subject using reference material for style, mood or composition, pass the ordered absolute paths and set `action` to `generate`.
-- **Edit.** Put the existing local image or a previous output's returned path first in `images`. Add supporting images in order and label each one's role in the prompt. Set `action` to `edit`. Say which change to make and which features to preserve. Review provided project media with `media.render(asset_ids)` when its appearance matters. The tool accepts PNG, JPEG and WebP.
+- **Edit.** Put the existing local image or a previous output's returned path first in `images`. Add supporting images in order and label each one's role in the prompt. Set `action` to `edit`. Say which change to make and which features to preserve. Use the active project's preview tool when a visual reference is needed. The tool accepts PNG, JPEG and WebP.
 - **Several assets.** Use one prompt and one call for each asset or variant. Keep the approved image's path when the next shot needs the same character, scene or materials. Each result is a separate file.
 - **Transparent output.** Set `transparent_background` to true and describe the subject's edges. On edits the tool preserves an input target's transparency by default. Check `has_transparency`, the warning if present, and the preview. An opaque result needs correction before use as a cutout. The checkerboard in a review thumbnail helps inspect alpha edges. The stored PNG retains its original pixels.
 
@@ -22,4 +22,4 @@ Use `filename` for a descriptive basename such as `river-at-dawn.png`. Choose th
 
 ## Use the image
 
-For a preview, give the saved path and describe the observed result. For an editing project, read the current revision with `media.assets(view="project")` and import the selected output with `media.assets(revision=revision, paths=[path])`. Use the returned asset ID in the sequence and inspect the imported artwork with `media.render(asset_ids=[id])`. The import copies it into the project's material bin. Report the project asset or saved path plus the prompt or changes made. If the provider refuses a request or returns no image, surface its reason and use existing materials where that meets the brief.
+For a preview, give the saved path and describe the observed result. When the user wants the image in a project, discover the active plugin's import and preview tools. Use the returned asset reference to place and inspect it. Report the project asset or saved path plus the prompt or changes made. If the provider refuses a request or returns no image, surface its reason and use existing materials where that meets the brief.
