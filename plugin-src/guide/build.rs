@@ -5,6 +5,10 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/lessons.json");
     println!("cargo:rerun-if-changed=assets/audio");
     let assets = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets");
+    let audio_root = assets
+        .join("audio")
+        .canonicalize()
+        .expect("Missing guide audio");
     let lessons: Vec<Value> =
         serde_json::from_slice(&fs::read(assets.join("lessons.json")).unwrap()).unwrap();
     let manifest: Value = serde_json::from_slice(
@@ -32,20 +36,21 @@ fn main() {
                         )
                     });
                 let file = clip["file"].as_str().unwrap();
-                let path = assets
-                    .join("audio")
+                let path = audio_root
                     .join(file)
                     .canonicalize()
                     .expect("Missing narration file");
-                assert!(path.starts_with(assets.join("audio").canonicalize().unwrap()));
+                let relative = path
+                    .strip_prefix(&audio_root)
+                    .expect("Narration is outside its asset folder");
                 let duration = clip["duration_ms"]
                     .as_u64()
                     .filter(|ms| *ms > 0)
                     .expect("Missing audio duration");
                 generated.push_str(&format!(
-                    "Clip {{ page: {:?}, topic: {:?}, language: {:?}, text: {:?}, file: {:?}, duration_ms: {duration}, bytes: include_bytes!({:?}) }},\n",
+                    "Clip {{ page: {:?}, topic: {:?}, language: {:?}, text: {:?}, file: {:?}, duration_ms: {duration}, bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/audio/\", {relative:?})) }},\n",
                     page["page"].as_str().unwrap(), step["id"].as_str().unwrap(), language,
-                    step["text"][language].as_str().unwrap(), file, path.to_str().unwrap(),
+                    step["text"][language].as_str().unwrap(), file,
                 ));
             }
         }

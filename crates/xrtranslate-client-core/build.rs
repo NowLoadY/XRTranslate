@@ -14,7 +14,11 @@ fn index_icons() {
     );
     for path in icons {
         let name = path.file_name().unwrap().to_str().unwrap();
-        writeln!(source, "b{name:?} => Some(include_bytes!({path:?})),").unwrap();
+        writeln!(
+            source,
+            "b{name:?} => Some(include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/resources/icons/\", {name:?}))),"
+        )
+        .unwrap();
     }
     source.push_str("_ => None, } }");
     fs::write(

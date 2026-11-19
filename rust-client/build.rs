@@ -38,17 +38,16 @@ fn companion_audio() {
             .join(clip["file"].as_str().unwrap())
             .canonicalize()
             .expect("Missing companion clip");
-        assert!(
-            path.starts_with(&root),
-            "Companion clip is outside its asset folder"
-        );
+        let file = path
+            .strip_prefix(&root)
+            .expect("Companion clip is outside its asset folder");
         let duration = clip["duration_ms"]
             .as_u64()
             .filter(|ms| *ms > 0)
             .expect("Missing companion duration");
         generated.push_str(&format!(
-            "Clip {{ key: {key:?}, language: UiLanguage::{language}, text: {:?}, duration_ms: {duration}, bytes: include_bytes!({:?}) }},\n",
-            clip["text"].as_str().unwrap(), path.to_str().unwrap()
+            "Clip {{ key: {key:?}, language: UiLanguage::{language}, text: {:?}, duration_ms: {duration}, bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/resources/companion/\", {file:?})) }},\n",
+            clip["text"].as_str().unwrap()
         ));
     }
     generated.push_str("];\n");
