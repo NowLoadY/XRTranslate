@@ -364,7 +364,7 @@ pub(super) fn render(
             Node::Domain(d) => {
                 let domain = &snapshot.domains[d];
                 (
-                    tr_dynamic(language, &domain.title).into_owned(),
+                    domain_label(domain, language).into_owned(),
                     Some(
                         controller
                             .term_index

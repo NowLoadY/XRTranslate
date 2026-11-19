@@ -16,6 +16,7 @@ pub(super) fn choices(
     let mut domains: Vec<_> = snapshot
         .domains
         .iter()
+        .filter(|domain| !is_wordbook_id(&domain.id))
         .map(|domain| (domain, domain_path_label(snapshot, &domain.id, language)))
         .filter(|(domain, path)| contains(path, search) || contains(&domain.id, search))
         .collect();

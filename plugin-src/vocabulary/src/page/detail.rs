@@ -71,15 +71,25 @@ impl Page {
                                             ui.set_width(width);
                                             ui.add(
                                                 egui::Label::new(
-                                                    egui::RichText::new(&row.entry.translated)
-                                                        .size(23.0)
-                                                        .color(theme::text_strong()),
+                                                    egui::RichText::new(
+                                                        if row.entry.translated.is_empty() {
+                                                            tr(language, "No translation yet")
+                                                        } else {
+                                                            &row.entry.translated
+                                                        },
+                                                    )
+                                                    .size(23.0)
+                                                    .color(theme::text_strong()),
                                                 )
                                                 .wrap(),
                                             );
                                         },
                                     );
-                                    if components::copy_button(ui, tr(language, "Copy translation"))
+                                    if !row.entry.translated.is_empty()
+                                        && components::copy_button(
+                                            ui,
+                                            tr(language, "Copy translation"),
+                                        )
                                         .clicked()
                                     {
                                         ui.ctx().copy_text(row.entry.translated.clone());
@@ -116,6 +126,33 @@ impl Page {
                                     ui.add_space(18.0);
                                     if let Some(update) = self.show_editor(ui, language, busy) {
                                         action = Some(update);
+                                    }
+                                } else if row.entry.translated.is_empty() {
+                                    let running = self.examples.busy(&row.entry);
+                                    let supported = capabilities
+                                        .select(&row.entry.source_lang, &row.entry.target_lang)
+                                        .is_ok();
+                                    if components::secondary_button_enabled(
+                                        ui,
+                                        tr(language, "Translate word"),
+                                        !busy && !running && supported,
+                                    )
+                                    .on_disabled_hover_text(tr(
+                                        language,
+                                        "The current model does not support this language pair.",
+                                    ))
+                                    .clicked()
+                                    {
+                                        self.examples.start(
+                                            row,
+                                            Step::Word,
+                                            capabilities,
+                                            ask,
+                                            ui.ctx(),
+                                        );
+                                    }
+                                    if running {
+                                        ui.spinner();
                                     }
                                 } else {
                                     self.show_example(ui, row, language, capabilities, ask, busy);
@@ -262,8 +299,7 @@ impl Page {
                     }
                 },
             );
-            let valid =
-                !row.entry.source.trim().is_empty() && !row.entry.translated.trim().is_empty();
+            let valid = !row.entry.source.trim().is_empty();
             if components::secondary_button_enabled(ui, tr(language, "Save"), !busy && valid)
                 .clicked()
             {

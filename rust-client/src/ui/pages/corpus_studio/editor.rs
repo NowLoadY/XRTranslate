@@ -70,7 +70,7 @@ enum Action {
 
 impl CorpusStudioController {
     pub(super) fn edit_trigger(&mut self, snapshot: &GraphSnapshot, source: &str, target: &str) {
-        if self.pending || self.draft_dirty || source == target {
+        if self.pending || self.draft_dirty || source == target || is_wordbook_id(target) {
             return;
         }
         let Some(node) = snapshot.nodes.iter().find(|node| node.id == target) else {
@@ -117,6 +117,22 @@ pub(super) fn render_inspector(
     let Some(mut node) = controller.node_draft.clone() else {
         return;
     };
+    if is_wordbook_id(&node.id) {
+        if components::back_button(ui, tr(language, "Back")).clicked() {
+            close(controller);
+        }
+        ui.heading(&node.title);
+        for (i, value) in node
+            .values
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !v.is_empty())
+        {
+            ui.weak(language_name(language, i));
+            ui.label(value);
+        }
+        return;
+    }
     node.values.resize(LANGUAGE_CODES.len(), String::new());
     let mut form = controller.term_form.clone();
     let mut action = None;
@@ -154,7 +170,7 @@ pub(super) fn render_inspector(
                     .id_salt("new_term_domain").desired_width(ui.available_width())
                     .hint_text(tr(language, "Domain name")).char_limit(256)).changed();
                 let existing = snapshot.domains.iter().find(|existing|
-                    existing.parent_id.is_none() && existing.title.trim().to_lowercase() == domain.title.trim().to_lowercase());
+                    !is_wordbook_id(&existing.id) && existing.parent_id.is_none() && existing.title.trim().to_lowercase() == domain.title.trim().to_lowercase());
                 if let Some(existing) = existing {
                     if components::button(ui, tr(language, "Use existing domain")).clicked() {
                         node.domain_id = existing.id.clone();
@@ -252,10 +268,10 @@ pub(super) fn render_inspector(
                 });
             controller.draft_dirty |= changed;
             let valid_values = node.values.iter().all(|value|
-                !value.contains([',', '\r', '\n']) && value.chars().count() <= 512);
+                !value.contains(['\r', '\n']) && value.chars().count() <= 512);
             if !valid_values {
                 ui.colored_label(graph_style::ERROR_BORDER,
-                    tr(language, "Language values cannot contain commas or newlines, or exceed 512 characters."));
+                    tr(language, "Use one line of up to 512 characters per language."));
             }
             let valid_aliases = aliases::valid(&node);
             if !valid_aliases {
@@ -364,27 +380,9 @@ fn close(controller: &mut CorpusStudioController) {
 }
 
 pub(super) fn language_name(language: UiLanguage, index: usize) -> String {
-    const NAMES: [&str; 16] = [
-        "Chinese",
-        "English",
-        "French",
-        "Portuguese",
-        "Spanish",
-        "Japanese",
-        "Russian",
-        "Korean",
-        "Thai",
-        "Italian",
-        "German",
-        "Vietnamese",
-        "Indonesian",
-        "Polish",
-        "Czech",
-        "Dutch",
-    ];
     format!(
         "{} · {}",
         LANGUAGE_CODES[index].to_uppercase(),
-        tr(language, NAMES[index])
+        crate::language_label(language, LANGUAGE_CODES[index])
     )
 }

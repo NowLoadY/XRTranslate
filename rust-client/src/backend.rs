@@ -575,7 +575,9 @@ impl BackendProcesses {
             .current_dir(&manager.project_root)
             .stdin(Stdio::null())
             .arg("--config")
-            .arg(config_path);
+            .arg(config_path)
+            .arg("--wordbooks")
+            .arg(xrtranslate_config::data_root(&manager.project_root).join("runtime/translation-history.sqlite3"));
         let mirror_to_console = std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some();
         let capture_output = fs::create_dir_all(&manager.corpus_log_policy.directory).is_ok();
         if capture_output {

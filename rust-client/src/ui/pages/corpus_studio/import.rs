@@ -51,9 +51,9 @@ impl Draft {
             .iter()
             .filter(|node| node.promptable && node.domain_id == self.domain)
         {
-            let word = node.values[a].trim().to_lowercase();
+            let word = node.values.get(a).map_or("", String::as_str).trim().to_lowercase();
             words.insert(word.clone());
-            pairs.insert((word, node.values[b].trim().to_lowercase()));
+            pairs.insert((word, node.values.get(b).map_or("", String::as_str).trim().to_lowercase()));
         }
         for (line, text) in self.text.lines().enumerate() {
             if text.trim().is_empty() {
@@ -64,7 +64,7 @@ impl Draft {
                 || columns[0].is_empty()
                 || columns
                     .iter()
-                    .any(|s| s.contains(',') || s.chars().count() > 512)
+                    .any(|s| s.contains('\r') || s.chars().count() > 512)
             {
                 self.invalid_lines.push(line + 1);
                 continue;
@@ -140,7 +140,7 @@ pub(super) fn render(
                     draft.duplicates, tr(language, "Duplicates skipped")));
                 if !draft.invalid_lines.is_empty() {
                     ui.colored_label(graph_style::ERROR_BORDER, format!("{}: {}",
-                        tr(language, "Check these lines (one or two columns, no commas)"),
+                        tr(language, "Check these lines (one or two columns, up to 512 characters each)"),
                         draft.invalid_lines.iter().take(8).map(usize::to_string).collect::<Vec<_>>().join(", ")));
                 }
                 ui.weak(tr(language, "All imported terms follow the domain rules. Existing translations are kept."));

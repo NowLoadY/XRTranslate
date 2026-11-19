@@ -12,6 +12,7 @@ use xrtranslate_engine::language::{LanguageCapabilities, SupportedLanguage};
 
 #[derive(Clone, Copy)]
 pub(super) enum Step {
+    Word,
     Sentence,
     Translation,
 }
@@ -56,7 +57,14 @@ impl Requests {
         ask: &mut crate::Inference,
         ctx: &egui::Context,
     ) {
-        if self.busy(&row.entry) || !supported(&row.entry, capabilities) {
+        let supported = match step {
+            Step::Word => capabilities
+                .for_text()
+                .select(&row.entry.source_lang, &row.entry.target_lang)
+                .is_ok(),
+            _ => supported(&row.entry, capabilities),
+        };
+        if self.busy(&row.entry) || !supported {
             return;
         }
         let Some(prompt) = prompt(row, step) else {
@@ -88,6 +96,18 @@ impl Requests {
                     }
                     Ok(Ok(text)) => {
                         match job.step {
+                            Step::Word => {
+                                let mut entry = job.translation.entry.clone();
+                                entry.translated = text.trim().to_owned();
+                                job.pending = Pending::Save(archive.vocabulary(
+                                    Action::FillTranslation {
+                                        id: job.translation.id,
+                                        entry,
+                                    },
+                                    ctx,
+                                ));
+                                return true;
+                            }
                             Step::Sentence => {
                                 if job.translation.example.sentence != text
                                     || job.translation.example.sentence_lang
@@ -123,6 +143,7 @@ impl Requests {
             if let Some(result) = result {
                 if let Err(error) = result {
                     let message = match job.step {
+                        Step::Word => "Could not translate the word.",
                         Step::Sentence => "Could not generate an example.",
                         Step::Translation => "Could not translate the example.",
                     };
@@ -141,6 +162,12 @@ fn prompt(row: &Translation, step: Step) -> Option<String> {
     let source = SupportedLanguage::parse(&row.entry.source_lang)?;
     let target = SupportedLanguage::parse(&row.entry.target_lang)?;
     match step {
+        Step::Word => Some(format!(
+            "Translate this {} word or phrase into {}. Output only the translation.\n\n{}",
+            source.name(),
+            target.name(),
+            row.entry.source
+        )),
         Step::Sentence => Some(format!(
             "Write one natural sentence in {} using <word> naturally, adapting its form as needed, with the meaning of <meaning> ({}). Output only the sentence.\n\n<word>{}</word>\n<meaning>{}</meaning>",
             target.name(),

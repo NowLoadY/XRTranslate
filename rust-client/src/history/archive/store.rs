@@ -54,6 +54,9 @@ pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
         CREATE INDEX IF NOT EXISTS translations_recent ON translations(saved_at DESC);
         CREATE TABLE IF NOT EXISTS vocabulary_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE);
+        CREATE TABLE IF NOT EXISTS vocabulary_revision (
+            id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
+        INSERT OR IGNORE INTO vocabulary_revision VALUES(1,0);
         INSERT OR IGNORE INTO vocabulary_folders(id,name) VALUES (1,'');
         CREATE TABLE IF NOT EXISTS vocabulary (
             id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES vocabulary_folders(id),
@@ -216,6 +219,70 @@ pub(super) fn remove(database: &mut Connection, ids: &[RecordId]) -> rusqlite::R
 mod tests {
     use super::*;
     use crate::history::archive::vocabulary::{self, Action, Entry, Example, Output};
+
+    #[test]
+    fn wordbook_import_is_atomic_and_preserves_saved_translations() {
+        let mut db = open_database(Path::new(":memory:")).unwrap();
+        let import = |text: &str| Action::Import {
+            folder: 1,
+            source_lang: "English".into(),
+            target_lang: "zh".into(),
+            text: text.into(),
+        };
+        let count = |db: &Connection| {
+            db.query_row("SELECT count(*) FROM vocabulary", [], |row| {
+                row.get::<_, usize>(0)
+            })
+            .unwrap()
+        };
+        let saved = vocabulary::execute(
+            &mut db,
+            &import("\u{feff}Quorvex\r\n\nQuorvex\nportal\t传送门"),
+        )
+        .unwrap();
+        assert!(matches!(
+            saved,
+            Output::Imported {
+                added: 2,
+                skipped: 1
+            }
+        ));
+        assert!(vocabulary::execute(&mut db, &import("first\n\tmissing word")).is_err());
+        assert_eq!(count(&db), 2);
+        let get = Action::Detail {
+            folder: 1,
+            source: "Quorvex".into(),
+            source_lang: "en".into(),
+        };
+        let Output::Detail(rows) = vocabulary::execute(&mut db, &get).unwrap() else {
+            panic!()
+        };
+        let mut pending = rows[0].clone();
+        assert!(pending.entry.translated.is_empty());
+        let saved = vocabulary::execute(&mut db, &import("portal\nQuorvex\t先驱")).unwrap();
+        assert!(matches!(
+            saved,
+            Output::Imported {
+                added: 1,
+                skipped: 1
+            }
+        ));
+        pending.entry.translated = "late reply".into();
+        vocabulary::execute(
+            &mut db,
+            &Action::FillTranslation {
+                id: pending.id,
+                entry: pending.entry,
+            },
+        )
+        .unwrap();
+        let Output::Detail(rows) = vocabulary::execute(&mut db, &get).unwrap() else {
+            panic!()
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.translated, "先驱");
+        assert_eq!(count(&db), 2);
+    }
 
     #[test]
     fn vocabulary_example_migration_preserves_old_content_and_new_direction() {

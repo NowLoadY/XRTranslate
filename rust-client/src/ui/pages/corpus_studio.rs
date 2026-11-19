@@ -8,6 +8,7 @@ mod import;
 mod network;
 mod rules;
 mod term_index;
+mod wordbooks;
 use editor::{TermForm, render_inspector};
 
 use std::{
@@ -24,7 +25,7 @@ use xr_corpus_client::{
     protocol::{
         CORPUS_LANGUAGE_ORDER as LANGUAGE_CODES, CorpusActivation, GraphDomain, GraphDomainEdit,
         GraphEdge, GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphSnapshot,
-        GraphTermEdit, VRCX_DOMAIN_ID,
+        GraphTermEdit, VRCX_DOMAIN_ID, WORDBOOK_DOMAIN_ID, is_wordbook_id,
     },
 };
 
@@ -202,6 +203,7 @@ pub(crate) struct CorpusStudioController {
     next_service_check: Option<Instant>,
     worker_tx: Option<Sender<Command>>,
     worker_rx: Option<Receiver<Result<GraphSnapshot, String>>>,
+    wordbook_revision: u64,
 }
 
 impl Default for CorpusStudioController {
@@ -252,6 +254,7 @@ impl Default for CorpusStudioController {
             next_service_check: None,
             worker_tx: None,
             worker_rx: None,
+            wordbook_revision: 0,
         }
     }
 }
@@ -585,13 +588,22 @@ impl CorpusStudioController {
 pub(crate) fn render(
     controller: &mut CorpusStudioController,
     backend: &mut BackendManager,
+    wordbook_revision: u64,
     ui: &mut egui::Ui,
     language: UiLanguage,
 ) {
     controller.poll();
     controller.ensure_service(backend, ui.ctx());
+    if controller.wordbook_revision != wordbook_revision
+        && controller.service_ready
+        && !controller.pending
+        && !controller.draft_dirty
+    {
+        controller.wordbook_revision = wordbook_revision;
+        controller.send(Command::Refresh);
+    }
     ui.scope(|ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.heading(tr(language, "Terminology library"));
             ui.label(format!(
                 "{} · {}",
@@ -604,6 +616,18 @@ pub(crate) fn render(
             ));
             if controller.pending {
                 ui.spinner();
+            }
+            if let Some(snapshot) = controller.snapshot.clone()
+                && let Some(root) = snapshot.domains.iter().find(|d| d.id == WORDBOOK_DOMAIN_ID)
+                && components::secondary_button_enabled(
+                    ui,
+                    tr(language, "Vocabulary"),
+                    !controller.draft_dirty,
+                )
+                .clicked()
+            {
+                controller.select_domain(Some(root));
+                controller.node_search.clear();
             }
             if ui
                 .add_enabled_ui(!controller.pending, |ui| {
@@ -796,7 +820,7 @@ fn render_domain_branch(
                     components::selectable_label(
                         ui,
                         controller.selected_domain.as_deref() == Some(&domain.id),
-                        RichText::new(tr_dynamic(language, &domain.title).into_owned()).color(
+                        RichText::new(domain_label(domain, language).into_owned()).color(
                             if domain_effective_enabled(controller, snapshot, &domain.id) {
                                 ui.visuals().text_color()
                             } else {
@@ -813,6 +837,7 @@ fn render_domain_branch(
                 ui.close();
             }
             if domain.id != VRCX_DOMAIN_ID
+                && !is_wordbook_id(&domain.id)
                 && controller.selected_domain.as_deref() == Some(&domain.id)
                 && !controller.draft_dirty
             {
@@ -873,7 +898,7 @@ fn render_browser(
         for domain in snapshot.domains.iter().filter(|domain| {
             contains(&domain.id, search)
                 || contains(&domain.title, search)
-                || contains(tr_dynamic(language, &domain.title).as_ref(), search)
+                || contains(domain_label(domain, language).as_ref(), search)
         }) {
             visible.extend(
                 domain_path(snapshot, &domain.id)
@@ -1181,13 +1206,24 @@ fn domain_path<'a>(snapshot: &'a GraphSnapshot, id: &str) -> Vec<&'a GraphDomain
     path
 }
 
+fn domain_label(domain: &GraphDomain, language: UiLanguage) -> std::borrow::Cow<'_, str> {
+    if is_wordbook_id(&domain.id)
+        && domain.id != WORDBOOK_DOMAIN_ID
+        && !(domain.id.strip_prefix(WORDBOOK_DOMAIN_ID) == Some(".1")
+            && domain.title == "Default wordbook")
+    {
+        return std::borrow::Cow::Borrowed(&domain.title);
+    }
+    tr_dynamic(language, &domain.title)
+}
+
 fn domain_path_label(snapshot: &GraphSnapshot, id: &str, language: UiLanguage) -> String {
     let path = domain_path(snapshot, id);
     if path.is_empty() {
         id.to_owned()
     } else {
         path.iter()
-            .map(|domain| tr_dynamic(language, &domain.title).into_owned())
+            .map(|domain| domain_label(domain, language).into_owned())
             .collect::<Vec<_>>()
             .join(" › ")
     }
@@ -1473,6 +1509,15 @@ fn render_workspace(
     language: UiLanguage,
     height: f32,
 ) {
+    if let Some(domain) = controller
+        .selected_domain
+        .as_deref()
+        .filter(|id| is_wordbook_id(id))
+        .and_then(|id| snapshot.domains.iter().find(|d| d.id == id))
+    {
+        wordbooks::render(controller, snapshot, domain, ui, language);
+        return;
+    }
     let top = ui.cursor().top();
     let mut zoom_step = 0.0;
     ui.horizontal_wrapped(|ui| {
@@ -1488,7 +1533,7 @@ fn render_workspace(
             ui.label("›");
             for ancestor in path.iter().take(path.len() - 1) {
                 if ui
-                    .small_button(tr_dynamic(language, &ancestor.title).into_owned())
+                    .small_button(domain_label(ancestor, language).into_owned())
                     .clicked()
                 {
                     controller.select_domain(Some(ancestor));
@@ -1498,7 +1543,7 @@ fn render_workspace(
         }
         let current = path.last().map_or_else(
             || tr(language, "All domains").to_owned(),
-            |domain| tr_dynamic(language, &domain.title).into_owned(),
+            |domain| domain_label(domain, language).into_owned(),
         );
         egui::menu::MenuButton::new(current)
             .config(
@@ -2123,7 +2168,7 @@ fn render_workspace(
                     }
                     let domain = &snapshot.domains[i];
                     let mut job = egui::text::LayoutJob::simple(
-                        tr_dynamic(language, &domain.title).into_owned(),
+                        domain_label(domain, language).into_owned(),
                         egui::FontId::proportional(11.0),
                         domain_color(&domain.id),
                         label.width(),
@@ -2282,10 +2327,14 @@ fn render_list(
             && !controller.row_selection.is_empty()
             && indices
                 .iter()
+                .filter(|&&i| !is_wordbook_id(&snapshot.nodes[i].id))
                 .all(|&i| controller.row_selection.contains(&snapshot.nodes[i].id));
         if ui.checkbox(&mut all, tr(language, "Select all")).changed() {
             for &index in indices.iter() {
                 let node = &snapshot.nodes[index];
+                if is_wordbook_id(&node.id) {
+                    continue;
+                }
                 if all {
                     controller.row_selection.insert(node.id.clone());
                 } else {
@@ -2350,7 +2399,13 @@ fn render_list(
                     ui.push_id(&node.id, |ui| {
                         ui.horizontal(|ui| {
                             let mut checked = controller.row_selection.contains(&node.id);
-                            if ui.checkbox(&mut checked, "").changed() {
+                            if ui
+                                .add_enabled(
+                                    !is_wordbook_id(&node.id),
+                                    egui::Checkbox::without_text(&mut checked),
+                                )
+                                .changed()
+                            {
                                 if checked {
                                     controller.row_selection.insert(node.id.clone());
                                 } else {
@@ -2380,7 +2435,9 @@ fn render_list(
                             let mut enabled = controller.displayed_node_enabled(node);
                             if ui
                                 .add_enabled_ui(
-                                    !controller.pending && !controller.draft_dirty,
+                                    !is_wordbook_id(&node.id)
+                                        && !controller.pending
+                                        && !controller.draft_dirty,
                                     |ui| components::pill_toggle(ui, &mut enabled),
                                 )
                                 .inner
@@ -2440,7 +2497,13 @@ fn render_list(
                         let node = &snapshot.nodes[indices[row.index()]];
                         row.col(|ui| {
                             let mut checked = controller.row_selection.contains(&node.id);
-                            if ui.checkbox(&mut checked, "").changed() {
+                            if ui
+                                .add_enabled(
+                                    !is_wordbook_id(&node.id),
+                                    egui::Checkbox::without_text(&mut checked),
+                                )
+                                .changed()
+                            {
                                 if checked {
                                     controller.row_selection.insert(node.id.clone());
                                 } else {
@@ -2485,7 +2548,9 @@ fn render_list(
                             let mut enabled = controller.displayed_node_enabled(node);
                             if ui
                                 .add_enabled_ui(
-                                    !controller.pending && !controller.draft_dirty,
+                                    !is_wordbook_id(&node.id)
+                                        && !controller.pending
+                                        && !controller.draft_dirty,
                                     |ui| components::pill_toggle(ui, &mut enabled),
                                 )
                                 .inner

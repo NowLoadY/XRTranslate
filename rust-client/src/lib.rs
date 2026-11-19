@@ -5743,6 +5743,7 @@ impl eframe::App for XRTranslateApp {
                             ui::pages::corpus_studio::render(
                                 &mut self.corpus_studio,
                                 &mut self.backend_manager,
+                                self.history_archive.vocabulary_revision(),
                                 ui,
                                 self.ui_language,
                             )

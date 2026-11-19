@@ -89,13 +89,7 @@ impl surface::UiPlugin for App {
         if let (Some(archive), Some(inference), Some(cap)) =
             (&self.archive, &mut self.inference, &self.capabilities)
         {
-            self.page.show(
-                ui,
-                archive,
-                cap.language,
-                cap.languages.for_text(),
-                inference,
-            );
+            self.page.show(ui, archive, cap, inference);
         } else {
             ui.spinner();
         }

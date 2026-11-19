@@ -1,6 +1,7 @@
 //! Vocabulary browsing and editing; bookmarks remain independent of plugin enablement.
 mod detail;
 mod examples;
+mod import;
 use crate::{
     archive::{
         Archive, PAGE_SIZE,
@@ -10,7 +11,7 @@ use crate::{
     ui::{components, theme},
 };
 use eframe::egui;
-use xrtranslate_engine::language::LanguageCapabilities;
+use xrtranslate_client_core::services::Capabilities;
 
 struct Detail {
     source: String,
@@ -31,6 +32,8 @@ pub(crate) struct Page {
     pending: Option<(bool, Reply)>,
     error: Option<String>,
     folder_edit: Option<(Option<i64>, String)>,
+    import: Option<import::Draft>,
+    import_result: Option<(usize, usize)>,
     detail: Option<Detail>,
     word_edit: Option<(Translation, i64)>,
     examples: examples::Requests,
@@ -49,6 +52,8 @@ impl Default for Page {
             pending: None,
             error: None,
             folder_edit: None,
+            import: None,
+            import_result: None,
             detail: None,
             word_edit: None,
             examples: Default::default(),
@@ -62,6 +67,12 @@ impl Page {
             if self.pending.is_none() {
                 self.word_edit = None;
                 self.folder_edit = None;
+            }
+            return true;
+        }
+        if self.import.is_some() {
+            if self.pending.is_none() {
+                self.import = None;
             }
             return true;
         }
@@ -148,11 +159,19 @@ impl Page {
                     }
                 }
                 Ok(Output::CreatedFolder(id)) => {
+                    self.import_result = None;
                     self.query.clear();
                     self.folder = id;
                     self.offset = 0;
                     self.folder_edit = None;
                     self.back();
+                }
+                Ok(Output::Imported { added, skipped }) => {
+                    self.import = None;
+                    self.import_result = Some((added, skipped));
+                    self.query.clear();
+                    self.offset = 0;
+                    self.reload = true;
                 }
                 Ok(Output::Updated { folder, entry }) => {
                     self.folder = folder;
@@ -212,10 +231,10 @@ impl Page {
         &mut self,
         ui: &mut egui::Ui,
         archive: &Archive,
-        language: UiLanguage,
-        capabilities: LanguageCapabilities,
+        cap: &Capabilities,
         ask: &mut crate::Inference,
     ) {
+        let language = cap.language;
         self.poll(archive, ui.ctx());
         let width = ui
             .available_width()
@@ -226,9 +245,9 @@ impl Page {
             ui.vertical(|ui| {
                 ui.set_width(width);
                 if self.detail.is_some() {
-                    self.show_detail(ui, archive, language, capabilities, ask);
+                    self.show_detail(ui, archive, language, cap.languages.for_text(), ask);
                 } else {
-                    self.show_list(ui, archive, language);
+                    self.show_list(ui, archive, cap);
                 }
                 if let Some(error) = &self.error {
                     ui.add_space(12.0);
@@ -236,11 +255,13 @@ impl Page {
                 }
             });
         });
+        self.show_import(ui.ctx(), archive, language);
         if self.reload {
             ui.ctx().request_repaint();
         }
     }
-    fn show_list(&mut self, ui: &mut egui::Ui, archive: &Archive, language: UiLanguage) {
+    fn show_list(&mut self, ui: &mut egui::Ui, archive: &Archive, cap: &Capabilities) {
+        let language = cap.language;
         let busy = self.pending.is_some();
         let mut action = None;
         ui.label(
@@ -274,6 +295,7 @@ impl Page {
                 },
             );
             if self.folder != old {
+                self.import_result = None;
                 self.offset = 0;
                 self.records.clear();
                 self.folder_edit = None;
@@ -282,6 +304,12 @@ impl Page {
             ui.add_enabled_ui(!busy, |ui| {
                 if components::add_button(ui, tr(language, "New wordbook")).clicked() {
                     self.folder_edit = Some((None, String::new()));
+                }
+                if components::secondary_button(ui, tr(language, "Import words")).clicked() {
+                    self.folder_edit = None;
+                    self.import_result = None;
+                    self.error = None;
+                    self.import = Some(import::Draft::new(cap));
                 }
                 let more = more_button(ui, language);
                 egui::Popup::menu(&more).show(|ui| {
@@ -307,6 +335,13 @@ impl Page {
                 });
             });
         });
+        if let Some((added, skipped)) = self.import_result {
+            ui.weak(format!(
+                "{} {added} · {} {skipped}",
+                tr(language, "Added"),
+                tr(language, "Duplicates skipped")
+            ));
+        }
         if let Some((id, name)) = &mut self.folder_edit {
             let mut cancel = false;
             ui.add_space(8.0);
@@ -410,7 +445,9 @@ impl Page {
                                                 )
                                                 .wrap(),
                                             );
-                                            let preview = if record.languages > 1 {
+                                            let preview = if record.entry.translated.is_empty() {
+                                                tr(language, "No translation yet").to_owned()
+                                            } else if record.languages > 1 {
                                                 format!(
                                                     "{}  ·  +{}",
                                                     record.entry.translated,
@@ -446,7 +483,11 @@ impl Page {
                                     {
                                         open = Some((record.entry.clone(), None));
                                     }
-                                    if components::copy_button(ui, tr(language, "Copy translation"))
+                                    if !record.entry.translated.is_empty()
+                                        && components::copy_button(
+                                            ui,
+                                            tr(language, "Copy translation"),
+                                        )
                                         .clicked()
                                     {
                                         ui.ctx().copy_text(record.entry.translated.clone());

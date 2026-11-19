@@ -77,6 +77,12 @@ pub enum Action {
         folder: i64,
         entry: Entry,
     },
+    Import {
+        folder: i64,
+        source_lang: String,
+        target_lang: String,
+        text: String,
+    },
     Detail {
         folder: i64,
         source: String,
@@ -85,6 +91,10 @@ pub enum Action {
     SaveExample {
         entry: Entry,
         example: Example,
+    },
+    FillTranslation {
+        id: i64,
+        entry: Entry,
     },
     RemoveWord {
         folder: i64,
@@ -121,6 +131,10 @@ pub enum Output {
         records: Vec<Record>,
     },
     CreatedFolder(i64),
+    Imported {
+        added: usize,
+        skipped: usize,
+    },
     Updated {
         folder: i64,
         entry: Entry,
@@ -130,3 +144,22 @@ pub enum Output {
 }
 
 pub use crate::can_lookup as can_save;
+
+/// A word list or a pair of columns copied from a spreadsheet.
+pub fn import_rows(text: &str) -> impl Iterator<Item = Result<(&str, &str), usize>> {
+    text.trim_start_matches('\u{feff}')
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if line.trim().is_empty() {
+                return None;
+            }
+            let (word, translation) = line.split_once('\t').unwrap_or((line, ""));
+            let word = word.trim();
+            Some(if can_save(word) && !translation.contains('\t') {
+                Ok((word, translation.trim()))
+            } else {
+                Err(index + 1)
+            })
+        })
+}

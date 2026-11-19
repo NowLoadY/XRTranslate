@@ -290,6 +290,7 @@ impl Archive {
             vocabulary::Action::Folders(entry)
             | vocabulary::Action::Add { entry, .. }
             | vocabulary::Action::Update { entry, .. }
+            | vocabulary::Action::FillTranslation { entry, .. }
             | vocabulary::Action::SaveExample { entry, .. } => Some(entry),
             _ => None,
         };

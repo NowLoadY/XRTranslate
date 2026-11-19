@@ -4,11 +4,48 @@ pub(crate) use xrtranslate_client_core::bookmarks::*;
 
 fn folders(db: &Connection) -> rusqlite::Result<Vec<Folder>> {
     db.prepare_cached("SELECT f.id,f.name,COUNT(v.id) FROM vocabulary_folders f
-        LEFT JOIN vocabulary v ON f.id=v.folder_id GROUP BY f.id ORDER BY f.id=1 DESC,f.name COLLATE NOCASE")?
+        LEFT JOIN (SELECT MIN(id) AS id,folder_id FROM vocabulary GROUP BY folder_id,source,source_lang) v
+        ON f.id=v.folder_id GROUP BY f.id ORDER BY f.id=1 DESC,f.name COLLATE NOCASE")?
         .query_map([], |row| Ok(Folder { id: row.get(0)?, name: row.get(1)?, count: row.get(2)?, saved: false }))?.collect()
 }
 
+fn insert_entry(db: &Connection, folder: i64, entry: &Entry) -> rusqlite::Result<usize> {
+    let added = db.prepare_cached("INSERT INTO vocabulary(folder_id,source,translated,source_lang,target_lang,search,saved_at)
+        SELECT ?1,?2,?3,?4,?5,?6,unixepoch() WHERE ?3<>'' OR NOT EXISTS(
+            SELECT 1 FROM vocabulary WHERE folder_id=?1 AND source=?2 AND source_lang=?4)
+        ON CONFLICT(folder_id,source,translated,source_lang,target_lang) DO NOTHING")?
+        .execute(params![folder, entry.source, entry.translated, entry.source_lang, entry.target_lang,
+            format!("{}\n{}", entry.source, entry.translated).to_lowercase()])?;
+    prune_placeholder(db, folder, entry)?;
+    Ok(added)
+}
+
+fn prune_placeholder(db: &Connection, folder: i64, entry: &Entry) -> rusqlite::Result<()> {
+    if !entry.translated.is_empty() {
+        db.prepare_cached("DELETE FROM vocabulary WHERE folder_id=?1 AND source=?2 AND source_lang=?3 AND translated=''")?
+            .execute(params![folder, entry.source, entry.source_lang])?;
+    }
+    Ok(())
+}
+
 pub(super) fn execute(db: &mut Connection, action: &Action) -> rusqlite::Result<Output> {
+    if !action.mutates() {
+        return execute_action(db, action);
+    }
+    let tx = db.transaction()?;
+    let before = tx.total_changes();
+    let result = execute_action(&tx, action)?;
+    if tx.total_changes() != before && !matches!(action, Action::SaveExample { .. }) {
+        tx.execute(
+            "UPDATE vocabulary_revision SET revision=revision+1 WHERE id=1",
+            [],
+        )?;
+    }
+    tx.commit()?;
+    Ok(result)
+}
+
+fn execute_action(db: &Connection, action: &Action) -> rusqlite::Result<Output> {
     match action {
         Action::Folders(entry) => {
             let mut rows = folders(db)?;
@@ -64,6 +101,21 @@ pub(super) fn execute(db: &mut Connection, action: &Action) -> rusqlite::Result<
                     sentence_lang=excluded.sentence_lang",
                 params![entry.source, entry.source_lang, entry.target_lang, entry.translated, example.sentence, example.back_translation, example.sentence_lang])?;
         }
+        Action::FillTranslation { id, entry } => {
+            // A late reply can only fill the original, still-empty record.
+            db.execute(
+                "UPDATE vocabulary SET translated=?2,search=?3 WHERE id=?1 AND translated=''
+                AND source=?4 AND source_lang=?5 AND target_lang=?6 AND ?2<>''",
+                params![
+                    id,
+                    entry.translated,
+                    format!("{}\n{}", entry.source, entry.translated).to_lowercase(),
+                    entry.source,
+                    entry.source_lang,
+                    entry.target_lang
+                ],
+            )?;
+        }
         Action::RemoveWord {
             folder,
             source,
@@ -75,25 +127,54 @@ pub(super) fn execute(db: &mut Connection, action: &Action) -> rusqlite::Result<
             )?;
         }
         Action::Add { folder, entry } => {
-            db.execute("INSERT INTO vocabulary(folder_id,source,translated,source_lang,target_lang,search,saved_at)
-                VALUES (?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT(folder_id,source,translated,source_lang,target_lang) DO NOTHING",
-                params![folder, entry.source, entry.translated, entry.source_lang, entry.target_lang,
-                    format!("{}\n{}", entry.source, entry.translated).to_lowercase()])?;
-            return execute(db, &Action::Folders(entry.clone()));
+            insert_entry(db, *folder, entry)?;
+            return execute_action(db, &Action::Folders(entry.clone()));
+        }
+        Action::Import {
+            folder,
+            source_lang,
+            target_lang,
+            text,
+        } => {
+            let mut entry = Entry {
+                source: String::new(),
+                translated: String::new(),
+                source_lang: source_lang.clone(),
+                target_lang: target_lang.clone(),
+            }
+            .canonical()
+            .map_err(rusqlite::Error::InvalidParameterName)?;
+            let mut added = 0;
+            let mut skipped = 0;
+            for row in import_rows(text) {
+                let (word, translation) = row.map_err(|line| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Invalid word list at line {line}"
+                    ))
+                })?;
+                entry.source = word.to_owned();
+                entry.translated = translation.to_owned();
+                if insert_entry(db, *folder, &entry)? == 0 {
+                    skipped += 1
+                } else {
+                    added += 1
+                }
+            }
+            return Ok(Output::Imported { added, skipped });
         }
         Action::Update { id, folder, entry } => {
-            db.execute(
-                "UPDATE vocabulary SET folder_id=?1,source=?2,translated=?3,search=?4,source_lang=?5,target_lang=?6 WHERE id=?7",
-                params![
-                    folder,
-                    entry.source,
-                    entry.translated,
-                    format!("{}\n{}", entry.source, entry.translated).to_lowercase(),
-                    entry.source_lang,
-                    entry.target_lang,
-                    id
-                ],
-            )?;
+            let merged = db.execute("DELETE FROM vocabulary WHERE id=?1 AND EXISTS(
+                SELECT 1 FROM vocabulary AS other WHERE other.id<>?1 AND other.folder_id=?2
+                AND other.source=?3 AND other.source_lang=?4 AND (?5='' OR (other.translated=?5 AND other.target_lang=?6)))",
+                params![id, folder, entry.source, entry.source_lang, entry.translated, entry.target_lang])?;
+            if merged == 0 {
+                let updated = db.execute("UPDATE vocabulary SET folder_id=?1,source=?2,translated=?3,search=?4,source_lang=?5,target_lang=?6 WHERE id=?7",
+                    params![folder, entry.source, entry.translated, format!("{}\n{}", entry.source, entry.translated).to_lowercase(),
+                        entry.source_lang, entry.target_lang, id])?;
+                if updated != 0 {
+                    prune_placeholder(db, *folder, entry)?;
+                }
+            }
         }
         Action::Remove(id) => {
             db.execute("DELETE FROM vocabulary WHERE id=?1", [id])?;
@@ -113,12 +194,13 @@ pub(super) fn execute(db: &mut Connection, action: &Action) -> rusqlite::Result<
         }
         Action::DeleteFolder(id) if *id != DEFAULT_FOLDER => {
             // Keep words when deleting a folder; identical snapshots merge into the default folder.
-            let tx = db.transaction()?;
-            tx.execute("INSERT OR IGNORE INTO vocabulary(folder_id,source,translated,source_lang,target_lang,search,saved_at)
+            db.execute("INSERT OR IGNORE INTO vocabulary(folder_id,source,translated,source_lang,target_lang,search,saved_at)
                 SELECT 1,source,translated,source_lang,target_lang,search,saved_at FROM vocabulary WHERE folder_id=?1", [id])?;
-            tx.execute("DELETE FROM vocabulary WHERE folder_id=?1", [id])?;
-            tx.execute("DELETE FROM vocabulary_folders WHERE id=?1", [id])?;
-            tx.commit()?;
+            db.execute("DELETE FROM vocabulary AS empty WHERE folder_id=1 AND translated=''
+                AND EXISTS(SELECT 1 FROM vocabulary v WHERE v.folder_id=1 AND v.source=empty.source
+                AND v.source_lang=empty.source_lang AND (v.translated<>'' OR v.id<empty.id))", [])?;
+            db.execute("DELETE FROM vocabulary WHERE folder_id=?1", [id])?;
+            db.execute("DELETE FROM vocabulary_folders WHERE id=?1", [id])?;
         }
         Action::DeleteFolder(_) => {}
     }
