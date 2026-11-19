@@ -12,6 +12,7 @@ pub struct VideoProbe {
     pub height: u32,
     pub display_width: u32,
     pub display_height: u32,
+    pub rotation: i32,
     pub audio_tracks: Vec<super::super::AudioTrack>,
 }
 
@@ -60,6 +61,10 @@ pub fn inspect_media(source: &str) -> Result<VideoProbe, String> {
                     .collect(),
                 display_width: mpv.get_property_f64("dwidth").unwrap_or(0.) as u32,
                 display_height: mpv.get_property_f64("dheight").unwrap_or(0.) as u32,
+                rotation: mpv
+                    .get_property_f64("video-params/rotate")
+                    .unwrap_or(0.)
+                    .round() as i32,
                 duration_ms: (mpv
                     .get_property_f64("duration")
                     .ok_or("Unknown media duration")?
