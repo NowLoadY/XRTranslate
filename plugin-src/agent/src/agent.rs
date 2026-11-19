@@ -536,7 +536,7 @@ impl AgentPlugin {
                 } else {
                     run.errors = 0;
                 }
-                let mut receipt = json!({"tool":call,"result":value});
+                let mut receipt = json!({"tool":{"name":call.name},"result":value});
                 let mut image = None;
                 if call.name == "media.render" {
                     let result = &receipt["result"];
@@ -561,7 +561,10 @@ impl AgentPlugin {
             Err(error) => {
                 self.cleanup.extend(run.cleanup.take());
                 run.errors += 1;
-                run.feedback(&mut self.context, json!({"tool":call,"error":error}));
+                run.feedback(
+                    &mut self.context,
+                    json!({"tool":{"name":call.name},"error":error}),
+                );
             }
         }
         self.checkpoint();
