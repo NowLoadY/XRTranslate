@@ -64,6 +64,8 @@ pub struct ClientSettings {
     pub ui_language: UiLanguage,
     #[serde(default)]
     pub ui_theme: UiTheme,
+    #[serde(default = "default_true")]
+    pub window_transparency: bool,
     #[serde(default)]
     pub background_settings: crate::ui::background::BackgroundSettings,
     #[serde(default)]
@@ -149,6 +151,7 @@ impl Default for ClientSettings {
             microphone_sync_enabled: false,
             ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
+            window_transparency: true,
             background_settings: crate::ui::background::BackgroundSettings::default(),
             avatar_appearance: crate::ui::components::avatar::Appearance::default(),
             first_run: true,

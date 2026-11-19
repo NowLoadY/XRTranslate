@@ -1,5 +1,6 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Window transparency", "窗口半透明", "ウィンドウの半透明表示", "창 반투명 효과", "Полупрозрачность окна"),
     ("Import words", "批量导入", "単語を一括追加", "단어 일괄 가져오기", "Импорт слов"),
     ("Open TXT or TSV…", "打开 TXT / TSV…", "TXT / TSV を開く…", "TXT / TSV 열기…", "Открыть TXT / TSV…"),
     ("One word per line. A second column can contain a translation.", "每行一个词。可从表格粘贴两列，第二列为译文。", "1 行に 1 語。表から訳を含む 2 列を貼り付けることもできます。", "한 줄에 단어 하나를 입력하세요. 표의 두 번째 열에 번역을 넣을 수도 있습니다.", "По одному слову на строку. Во втором столбце можно указать перевод."),

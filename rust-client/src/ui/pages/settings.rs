@@ -291,6 +291,19 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                     background_image_controls(app, ui);
                 });
             }
+            if app.window_backdrop.uses_transparent_surface() {
+                ui.add_space(6.0);
+                if components::toggle_with_label(
+                    ui,
+                    &mut app.window_transparency,
+                    crate::i18n::tr(app.ui_language, "Window transparency"),
+                )
+                .changed()
+                {
+                    app.save_settings();
+                    ui.ctx().request_repaint();
+                }
+            }
         },
     );
     ui.add_space(14.0);

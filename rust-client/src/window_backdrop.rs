@@ -21,6 +21,10 @@ impl WindowBackdrop {
         !matches!(self, Self::None)
     }
 
+    pub(crate) fn with_transparency(self, enabled: bool) -> Self {
+        if enabled { self } else { Self::None }
+    }
+
     pub(crate) fn clear_color(self) -> [f32; 4] {
         match self {
             Self::None => eframe::egui::Color32::from_rgb(248, 250, 252),
@@ -69,6 +73,9 @@ pub(crate) fn apply(
 }
 
 #[cfg(windows)]
+pub(crate) use windows_impl::set_material;
+
+#[cfg(windows)]
 mod windows_impl {
     use super::WindowBackdrop;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -109,6 +116,11 @@ mod windows_impl {
             hwnd,
             ex_style & WS_EX_NOREDIRECTIONBITMAP.0 != 0
         );
+        set_material(window, requested);
+        Ok(())
+    }
+
+    pub(crate) fn set_material(window: &winit::window::Window, requested: WindowBackdrop) {
         let backdrop = match requested {
             WindowBackdrop::None | WindowBackdrop::Transparent => BackdropType::None,
             WindowBackdrop::Acrylic => BackdropType::TransientWindow,
@@ -116,6 +128,5 @@ mod windows_impl {
         };
         window.set_system_backdrop(backdrop);
         window.request_redraw();
-        Ok(())
     }
 }

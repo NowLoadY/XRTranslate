@@ -736,6 +736,7 @@ struct XRTranslateApp {
     background_image: ui::background::BackgroundImage,
     navigation: NavigationState,
     window_backdrop: window_backdrop::WindowBackdrop,
+    window_transparency: bool,
     microphone_sync_enabled: bool,
     pub floating_subtitles_enabled: bool,
     pub floating_subtitles_max_count: usize,
@@ -1896,6 +1897,7 @@ impl Default for XRTranslateApp {
             background_image: ui::background::BackgroundImage::default(),
             navigation: NavigationState::new(settings.active_page, settings.sidebar_collapsed),
             window_backdrop: window_backdrop::WindowBackdrop::default(),
+            window_transparency: settings.window_transparency,
             microphone_sync_enabled: settings.microphone_sync_enabled,
             floating_subtitles_enabled: settings.floating_subtitles_enabled,
             floating_subtitles_max_count: settings.floating_subtitles_max_count,
@@ -3092,6 +3094,7 @@ impl XRTranslateApp {
             microphone_sync_enabled: self.microphone_sync_enabled,
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
+            window_transparency: self.window_transparency,
             background_settings: self.background_settings.clone(),
             avatar_appearance: self.avatar_appearance.clone(),
             first_run: self.first_run,
@@ -5285,6 +5288,8 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        let was_transparent = self.window_transparency;
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         self.notifications.install(ui.ctx());
         diagnostics::install(ui.ctx(), self.project_root(), &self.server_url);
@@ -5777,6 +5782,11 @@ impl eframe::App for XRTranslateApp {
                     });
             });
 
+        #[cfg(windows)]
+        if was_transparent != self.window_transparency && let Some(window) = _frame.winit_window() {
+            let backdrop = self.window_backdrop.with_transparency(self.window_transparency);
+            window_backdrop::set_material(window, backdrop);
+        }
         self.render_modal_layer(ui.ctx());
         self.observe_companion_errors();
         ui::tutorial::controls(ui.ctx(), content.response.rect, self.ui_language);
@@ -5795,7 +5805,9 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        self.window_backdrop.clear_color()
+        self.window_backdrop
+            .with_transparency(self.window_transparency)
+            .clear_color()
     }
 }
 
@@ -5991,9 +6003,6 @@ pub fn run() -> eframe::Result<()> {
             } else {
                 log::warn!("wgpu render state is unavailable during app creation");
             }
-            if let Err(error) = window_backdrop::apply(cc, window_backdrop) {
-                log::warn!("Unable to configure {window_backdrop:?} window backdrop: {error}");
-            }
             let args: Vec<String> = std::env::args().collect();
             let director_port = if let Some(idx) = args.iter().position(|a| a == "--director-port")
             {
@@ -6008,6 +6017,10 @@ pub fn run() -> eframe::Result<()> {
             ui_director::egui::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
+            let backdrop = window_backdrop.with_transparency(app.window_transparency);
+            if let Err(error) = window_backdrop::apply(cc, backdrop) {
+                log::warn!("Unable to configure {window_backdrop:?} window backdrop: {error}");
+            }
             #[cfg(not(target_os = "android"))]
             {
                 app.restart_requested = restart_signal;
