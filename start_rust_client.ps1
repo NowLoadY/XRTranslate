@@ -89,6 +89,20 @@ Write-Host 'Preparing development plugins...'
 
 $targetSubdir = if ($Release) { 'release' } else { 'debug' }
 $targetBinDir = Join-Path $projectRoot "target\$targetSubdir"
+$pluginSources = Get-ChildItem -LiteralPath (Split-Path $projectRoot -Parent) -Directory -Filter 'XRT-*-Plugin'
+foreach ($source in $pluginSources) {
+    $manifest = Join-Path $source.FullName 'plugin.json'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
+    $package = Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $package.pro_for) { continue }
+    if ($package.id -cnotmatch '^[A-Za-z0-9_-]{1,64}$') { throw "Invalid plugin ID in $manifest" }
+    $arguments = @('build', $source.FullName, '--sdk', $projectRoot,
+        '--output', (Join-Path $projectRoot "plugins\$($package.id)"),
+        '--target-dir', (Join-Path $projectRoot 'target'), '--locked')
+    if (-not $Release) { $arguments += '--debug' }
+    & (Join-Path $targetBinDir 'xrt-plugin.exe') @arguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 $resourceBinDir = Join-Path $projectRoot 'rust-client\resources\bin'
 
 if (Test-Path -LiteralPath $resourceBinDir) {
