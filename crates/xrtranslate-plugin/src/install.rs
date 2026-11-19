@@ -199,6 +199,7 @@ fn replace_contents(
     source: &Path,
     destination: &Path,
     backup: &Path,
+    package_manifest: &Path,
     moves: &mut Vec<(PathBuf, PathBuf)>,
 ) -> io::Result<()> {
     let mut names = BTreeSet::new();
@@ -217,10 +218,17 @@ fn replace_contents(
         let (new_kind, old_kind) = (kind(&new)?, kind(&old)?);
         if let (Some(new_kind), Some(old_kind)) = (new_kind, old_kind) {
             if new_kind.is_dir() && old_kind.is_dir() {
-                replace_contents(&new, &old, &saved, moves)?;
+                replace_contents(&new, &old, &saved, package_manifest, moves)?;
                 continue;
             }
-            if new_kind.is_file() && old_kind.is_file() && same_file(&new, &old)? {
+            // Re-publish the root manifest last on an asset-only update. This
+            // changes the package directory timestamp observed by a running host.
+            let publish_manifest = old == package_manifest && !moves.is_empty();
+            if new_kind.is_file()
+                && old_kind.is_file()
+                && !publish_manifest
+                && same_file(&new, &old)?
+            {
                 continue;
             }
         }
@@ -247,6 +255,7 @@ pub fn publish(temporary: tempfile::TempDir, destination: &Path) -> io::Result<(
         &new,
         destination,
         &temporary.path().join("previous"),
+        &destination.join("plugin.json"),
         &mut moves,
     ) {
         for (source, target) in moves.iter().rev() {
@@ -318,6 +327,51 @@ mod tests {
             .unwrap();
         assert_eq!(fs::read(imported.join("program")).unwrap(), b"second");
         assert!(!root.join("example").exists());
+    }
+
+    #[test]
+    fn nested_resource_updates_publish_once_even_with_the_same_executable_and_manifest() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let root = tempfile::tempdir().unwrap();
+        let installed = root.path().join("sample");
+        let manifest = installed.join("plugin.json");
+        let stage = |text, day: u64| {
+            let temporary = tempfile::tempdir_in(root.path()).unwrap();
+            let new = temporary.path().join("new");
+            package(
+                &new,
+                &[
+                    ("plugin.json", "{}"),
+                    ("program", "binary"),
+                    ("assets/library/title", text),
+                ],
+            );
+            let stamp = UNIX_EPOCH + Duration::from_secs(946684800 + day * 86400);
+            fs::File::options()
+                .write(true)
+                .open(new.join("plugin.json"))
+                .unwrap()
+                .set_modified(stamp)
+                .unwrap();
+            publish(temporary, &installed).unwrap();
+            stamp
+        };
+        stage("first", 0);
+        let updated = stage("second", 1);
+        assert_eq!(
+            fs::metadata(&manifest).unwrap().modified().unwrap(),
+            updated
+        );
+        let directory_stamp = fs::metadata(&installed).unwrap().modified().unwrap();
+        stage("second", 2);
+        assert_eq!(
+            fs::metadata(&manifest).unwrap().modified().unwrap(),
+            updated
+        );
+        assert_eq!(
+            fs::metadata(&installed).unwrap().modified().unwrap(),
+            directory_stamp
+        );
     }
 
     #[test]

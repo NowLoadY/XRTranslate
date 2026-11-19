@@ -94,6 +94,7 @@ impl Default for Settings {
 }
 struct Installed {
     modified: Option<std::time::SystemTime>,
+    directory_modified: Option<std::time::SystemTime>,
     icon: Option<(String, Arc<[u8]>)>,
     directory: PathBuf,
     executable: PathBuf,
@@ -322,6 +323,7 @@ impl Host {
             && active.directory == package.directory
             && active.manifest == package.manifest
             && active.modified == package.modified
+            && active.directory_modified == package.directory_modified
         {
             return Ok(());
         }
@@ -364,6 +366,7 @@ impl Host {
             directory,
             manifest,
             modified,
+            directory_modified,
         } = package;
         let provider = manifest.provider_id();
         PluginId::parse(provider).ok_or("Invalid plugin ID")?;
@@ -371,6 +374,7 @@ impl Host {
             provider.to_owned(),
             Installed {
                 modified,
+                directory_modified,
                 icon: manifest.icon.as_ref().and_then(|icon| {
                     std::fs::read(directory.join(icon)).ok().map(|bytes| {
                         (

@@ -71,6 +71,7 @@ pub struct Package {
     pub directory: PathBuf,
     pub manifest: Manifest,
     pub modified: Option<std::time::SystemTime>,
+    pub directory_modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Default)]
@@ -120,6 +121,7 @@ pub fn discover_packages(
             let modified = fs::metadata(binaries.unwrap_or(&directory).join(&manifest.executable))
                 .and_then(|m| m.modified())
                 .ok();
+            let directory_modified = fs::metadata(&directory).and_then(|m| m.modified()).ok();
             catalog
                 .providers
                 .entry(manifest.provider_id().to_owned())
@@ -128,6 +130,7 @@ pub fn discover_packages(
                     directory,
                     manifest,
                     modified,
+                    directory_modified,
                 });
         }
     }
