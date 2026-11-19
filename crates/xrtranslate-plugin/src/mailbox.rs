@@ -45,18 +45,37 @@ fn snapshot(message: &Message) -> Option<&str> {
     }
 }
 
+// Position is a snapshot per player. A playback error is a one-shot notification.
+fn playback_position(message: &Message) -> Option<u64> {
+    if let Message::Event { name, value } = message
+        && name == "playback.state"
+        && value["snapshot"]["error"].is_null()
+    {
+        return value["id"].as_u64();
+    }
+    None
+}
+
 impl Sender {
     pub(crate) fn try_send(&self, message: Message) -> Result<(), TrySendError<Message>> {
         let mut state = self.0.state.lock().unwrap();
         if state.closed {
             return Err(TrySendError::Disconnected(message));
         }
-        if let Some(topic) = snapshot(&message)
-            && let Some(index) = state
+        let stale = if let Some(topic) = snapshot(&message) {
+            state
                 .messages
                 .iter()
-                .position(|pending| snapshot(pending) == Some(topic))
-        {
+                .position(|m| snapshot(m) == Some(topic))
+        } else {
+            playback_position(&message).and_then(|id| {
+                state
+                    .messages
+                    .iter()
+                    .position(|m| playback_position(m) == Some(id))
+            })
+        };
+        if let Some(index) = stale {
             state.messages.remove(index);
         }
         // Reserve room for the finite snapshot topics even when commands fill their budget.
@@ -125,6 +144,32 @@ impl Drop for Receiver {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn playback_updates_coalesce_per_player_without_swallowing_errors_or_calls() {
+        let (tx, rx) = channel();
+        let position = |id, ms, error: Option<&str>| Message::Event {
+            name: "playback.state".into(),
+            value: json!({"id":id,"snapshot":{"time_ms":ms,"error":error}}),
+        };
+        tx.try_send(position(1, 1, Some("decoder failed"))).unwrap();
+        tx.try_send(Message::Cancel { id: 7 }).unwrap();
+        for ms in 0..1000 {
+            for id in [1, 2] {
+                tx.try_send(position(id, ms, None)).unwrap();
+            }
+        }
+        assert!(
+            matches!(rx.recv().unwrap(), Message::Event { value, .. } if value["snapshot"]["error"] == "decoder failed")
+        );
+        assert!(matches!(rx.recv().unwrap(), Message::Cancel { id: 7 }));
+        for id in [1, 2] {
+            assert!(
+                matches!(rx.recv().unwrap(), Message::Event { value, .. } if value["id"] == id && value["snapshot"]["time_ms"] == 999)
+            );
+        }
+        assert!(rx.recv_timeout(Duration::ZERO).is_err());
+    }
 
     #[test]
     fn stalled_reader_keeps_latest_state_and_every_command_in_order() {
