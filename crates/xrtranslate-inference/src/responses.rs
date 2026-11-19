@@ -1,6 +1,7 @@
 //! Responses API transports for account and API-key authentication.
 mod agent;
 mod dashscope;
+mod image;
 mod key;
 #[cfg(test)]
 mod recovery_tests;

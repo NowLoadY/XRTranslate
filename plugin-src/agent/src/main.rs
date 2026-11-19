@@ -1,4 +1,6 @@
 mod agent;
+mod imagegen;
+mod skills;
 
 use agent::{Action, AgentPlugin};
 use crossbeam_channel::Sender;
@@ -20,12 +22,19 @@ struct Inference {
     cancel: Arc<AtomicBool>,
 }
 
+struct Operation {
+    id: u64,
+    call: ToolCall,
+    image: Option<imagegen::Output>,
+}
+
 #[derive(Default)]
 struct Agent {
     core: Option<AgentPlugin>,
     session: String,
     inference: Option<Inference>,
-    operation: Option<(u64, ToolCall)>,
+    operation: Option<Operation>,
+    image_directory: std::path::PathBuf,
     status: Value,
 }
 
@@ -38,6 +47,9 @@ impl Plugin for Agent {
         // Environment refreshes never replace the application's conversation.
         if self.core.is_none() {
             self.session = uuid::Uuid::new_v4().to_string();
+            self.image_directory = std::env::temp_dir()
+                .join("XRTranslate")
+                .join("generated_images");
             self.core = Some(AgentPlugin::load(environment.data_directory));
         }
         Ok(())
@@ -70,6 +82,7 @@ impl Plugin for Agent {
         }
         core.native_tools = native_tools;
         core.image_input = value["inference"]["image_input"] == true;
+        core.image_generation = value["inference"]["image_generation"] == true;
         core.configure(
             value["inference"]["agent"].as_bool().unwrap_or(false),
             value["inference"]["input_budget"].as_u64().unwrap_or(0) as usize,
@@ -88,25 +101,27 @@ impl Plugin for Agent {
             .is_some_and(|request| request.id == id)
         {
             let request = self.inference.take().unwrap();
-            let result = result.map_err(AskError::from).and_then(|value| {
-                if let Some(error) = value.get("error") {
-                    Err(serde_json::from_value(error.clone())
-                        .unwrap_or_else(|_| "Invalid inference error".into()))
-                } else {
-                    value["text"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| "Inference returned no text".into())
-                }
-            });
-            let _ = request.reply.send(result);
+            let _ = request.reply.send(inference_result(result));
         } else if self
             .operation
             .as_ref()
-            .is_some_and(|(pending, _)| *pending == id)
+            .is_some_and(|pending| pending.id == id)
         {
-            let (_, call) = self.operation.take().unwrap();
-            self.core.as_mut().unwrap().observe(&call, result);
+            let operation = self.operation.take().unwrap();
+            let core = self.core.as_mut().unwrap();
+            if let Some(image) = operation.image {
+                let saved = inference_result(result)
+                    .map_err(|error| error.error)
+                    .and_then(|png| image.save(&png, core.image_input && core.native_tools));
+                match saved {
+                    Ok((receipt, preview)) => {
+                        core.observe_with_image(&operation.call, Ok(receipt), preview)
+                    }
+                    Err(error) => core.observe(&operation.call, Err(error)),
+                }
+            } else {
+                core.observe(&operation.call, result);
+            }
         }
         self.publish(context);
     }
@@ -118,8 +133,8 @@ impl Plugin for Agent {
     ) -> Option<Vec<xrtranslate_plugin::Widget>> {
         let core = self.core.as_mut().unwrap();
         if !core.active() {
-            if let Some((id, _)) = self.operation.take() {
-                context.cancel(id);
+            if let Some(operation) = self.operation.take() {
+                context.cancel(operation.id);
             }
         }
         if self
@@ -154,8 +169,29 @@ impl Plugin for Agent {
             }
             match action {
                 Some(Action::Call(call)) => {
-                    let id = context.call(&call.name, call.arguments.clone());
-                    self.operation = Some((id, call));
+                    if call.name == imagegen::TOOL {
+                        match imagegen::prepare(&call, &self.image_directory) {
+                            Ok((request, output)) => {
+                                let id = context.call(
+                                    "inference.image",
+                                    serde_json::to_value(request).unwrap(),
+                                );
+                                self.operation = Some(Operation {
+                                    id,
+                                    call,
+                                    image: Some(output),
+                                });
+                            }
+                            Err(error) => core.observe(&call, Err(error)),
+                        }
+                    } else {
+                        let id = context.call(&call.name, call.arguments.clone());
+                        self.operation = Some(Operation {
+                            id,
+                            call,
+                            image: None,
+                        });
+                    }
                 }
                 Some(Action::Finished) | None => {}
             }
@@ -176,14 +212,26 @@ impl Agent {
         }
         let mut status = core.status();
         if status["operation"].is_null()
-            && let Some((_, call)) = &self.operation
+            && let Some(operation) = &self.operation
         {
-            status["operation"] = json!(call);
+            status["operation"] = json!(operation.call);
         }
         if status != self.status {
             context.event("state", status.clone());
             self.status = status;
         }
+    }
+}
+
+fn inference_result(result: Result) -> std::result::Result<String, AskError> {
+    let mut value = result.map_err(AskError::from)?;
+    if let Some(error) = value.get_mut("error") {
+        return Err(serde_json::from_value(error.take())
+            .unwrap_or_else(|_| "Invalid inference error".into()));
+    }
+    match value["text"].take() {
+        Value::String(text) => Ok(text),
+        _ => Err("Inference returned no result".into()),
     }
 }
 

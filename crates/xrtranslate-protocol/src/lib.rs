@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod image;
 pub mod tts;
 
 /// Configured text-model role for an inference request.
@@ -116,7 +117,9 @@ impl std::fmt::Display for AskError {
 }
 
 mod audio_preprocessing;
-pub use audio_preprocessing::{AudioPreprocessingAction, AudioPreprocessingModelState, AudioPreprocessingModels};
+pub use audio_preprocessing::{
+    AudioPreprocessingAction, AudioPreprocessingModelState, AudioPreprocessingModels,
+};
 
 use std::{error::Error, fmt};
 

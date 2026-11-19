@@ -47,9 +47,13 @@ impl Context {
     }
 
     pub fn remember(&mut self, note: Option<String>) {
+        self.remember_through(note, self.messages.len());
+    }
+
+    pub fn remember_through(&mut self, note: Option<String>, through: usize) {
         if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
             self.memory = note.chars().take(1200).collect();
-            self.summarized = self.messages.len();
+            self.summarized = through;
         }
     }
 
@@ -109,6 +113,26 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_note_confirmed_after_polling_only_summarizes_the_original_proposal() {
+        let mut context = Context::default();
+        context.begin("rules".into(), "goal".into(), 300).unwrap();
+        context.push(
+            PromptMessageRole::Assistant,
+            "Proposed operation. ".repeat(250),
+        );
+        let proposal_end = context.messages.len();
+        context.instruct("A correction received while the operation ran".into());
+        context.remember_through(Some("Earlier operation confirmed".into()), proposal_end);
+        context.feedback_index = Some(context.messages.len());
+        context.push(PromptMessageRole::User, "Final provider receipt".into());
+        let compacted = context.prepare().unwrap();
+        assert!(compacted[2].content.contains("Earlier operation confirmed"));
+        assert!(compacted[3].content.contains("correction"));
+        assert_eq!(compacted[4].content, "Final provider receipt");
+        assert_eq!(context.feedback_index, Some(4));
+    }
 
     #[test]
     fn append_across_executions_and_compact_only_summarized_history() {

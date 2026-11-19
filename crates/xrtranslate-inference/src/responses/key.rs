@@ -25,7 +25,7 @@ struct Connection {
 
 #[derive(Clone)]
 pub(crate) struct KeyResponses {
-    api: AgentApi,
+    pub(super) api: AgentApi,
     pub(super) endpoint: String,
     pub(super) authorization: HeaderValue,
     pub(super) http: ReqwestClient,

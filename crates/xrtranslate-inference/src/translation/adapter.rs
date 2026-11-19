@@ -158,6 +158,22 @@ impl<C> TranslationAdapter<C> {
 }
 
 impl<C: AsyncHttpClient> TranslationAdapter<C> {
+    pub async fn agent_image(
+        &self,
+        request: &xrtranslate_protocol::image::AgentImageRequest,
+    ) -> Result<String, InferenceError> {
+        let client = self
+            .agent
+            .as_ref()
+            .ok_or_else(|| InferenceError::InvalidConfiguration {
+                field: "agent.model",
+                message:
+                    "Image generation requires an OpenAI API-key Agent with Responses image tools"
+                        .into(),
+            })?;
+        client.image(&self.model, request).await
+    }
+
     pub async fn agent_turn(
         &self,
         messages: &[PromptMessage],

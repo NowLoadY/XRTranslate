@@ -375,8 +375,27 @@ impl crate::XRTranslateApp {
                     id,
                     name,
                     arguments,
-                } if name == "inference.request" => {
-                    let request = match serde_json::from_value(arguments) {
+                } if matches!(name.as_str(), "inference.request" | "inference.image") => {
+                    use crate::ask::InferenceInput;
+                    let request = if name == "inference.image" {
+                        if plugin != PluginId::AGENT.as_str()
+                            || !self.service_config.agent_image_generation()
+                        {
+                            self.plugin_host.reply(
+                                &plugin,
+                                id,
+                                Err(
+                                    "Image generation requires the configured OpenAI API-key Agent"
+                                        .into(),
+                                ),
+                            );
+                            continue;
+                        }
+                        serde_json::from_value(arguments).map(InferenceInput::Image)
+                    } else {
+                        serde_json::from_value(arguments).map(InferenceInput::Text)
+                    };
+                    let request = match request {
                         Ok(request) => request,
                         Err(error) => {
                             self.plugin_host.reply(&plugin, id, Err(error.to_string()));
@@ -619,6 +638,7 @@ impl crate::XRTranslateApp {
                 "input_budget": self.service_config.agent_input_budget(),
                 "native_tools": self.service_config.agent_native_tools(),
                 "image_input": self.service_config.agent_image_input(),
+                "image_generation": self.service_config.agent_image_generation(),
             },
         });
         let previous = self.plugin_host.context.get("host.context");

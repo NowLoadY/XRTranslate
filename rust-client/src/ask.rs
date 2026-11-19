@@ -10,8 +10,13 @@ use xrtranslate_protocol::{AskError, AskRequest, AskResponse};
 
 pub(crate) type Reply = Receiver<Result<String, AskError>>;
 
+pub(crate) enum InferenceInput {
+    Text(AskRequest),
+    Image(xrtranslate_protocol::image::AgentImageRequest),
+}
+
 struct Request {
-    input: AskRequest,
+    input: InferenceInput,
     reply: Sender<Result<String, AskError>>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -26,12 +31,16 @@ pub(crate) struct Ask {
 
 impl Ask {
     pub fn request(&mut self, prompt: String, ctx: &egui::Context) -> Reply {
-        self.request_with_cancel(AskRequest::Prompt { prompt }, None, ctx)
+        self.request_with_cancel(
+            InferenceInput::Text(AskRequest::Prompt { prompt }),
+            None,
+            ctx,
+        )
     }
 
     pub fn request_with_cancel(
         &mut self,
-        input: AskRequest,
+        input: InferenceInput,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         ctx: &egui::Context,
     ) -> Reply {
@@ -135,7 +144,7 @@ impl Ask {
     }
 }
 
-async fn send(server: &str, input: AskRequest) -> Result<String, AskError> {
+async fn send(server: &str, input: InferenceInput) -> Result<String, AskError> {
     let mut url = reqwest::Url::parse(server).map_err(|e| e.to_string())?;
     let scheme = if matches!(url.scheme(), "wss" | "https") {
         "https"
@@ -143,20 +152,33 @@ async fn send(server: &str, input: AskRequest) -> Result<String, AskError> {
         "http"
     };
     url.set_scheme(scheme).map_err(|_| "Invalid backend URL")?;
-    url.set_path("/ask");
+    let image = matches!(&input, InferenceInput::Image(_));
+    url.set_path(if image { "/agent/image" } else { "/ask" });
     url.set_query(None);
-    let response = reqwest::Client::new()
+    let request = reqwest::Client::new()
         .post(url)
-        .timeout(Duration::from_secs(180))
-        .json(&input)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .timeout(Duration::from_secs(if image { 320 } else { 180 }));
+    let response = match &input {
+        InferenceInput::Image(image) => request.json(image),
+        InferenceInput::Text(text) => request.json(text),
+    }
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
     let status = response.status();
     let body = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
         return Err(serde_json::from_str::<AskError>(&body)
             .unwrap_or_else(|_| format!("Ask failed ({status}): {body}").into()));
+    }
+    if image {
+        #[derive(serde::Deserialize)]
+        struct ImageReply {
+            png: String,
+        }
+        return serde_json::from_str::<ImageReply>(&body)
+            .map(|reply| reply.png)
+            .map_err(|_| "The image backend returned an invalid result".into());
     }
     let response: AskResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if response.text.trim().is_empty() {

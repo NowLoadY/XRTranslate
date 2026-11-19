@@ -84,7 +84,7 @@ pub trait AsyncHttpClient: Send + Sync {
 /// `reqwest` implementation used by the native backend.
 #[derive(Debug, Clone)]
 pub struct ReqwestClient {
-    client: reqwest::Client,
+    pub(crate) client: reqwest::Client,
 }
 
 impl ReqwestClient {

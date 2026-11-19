@@ -8,6 +8,7 @@ use xrtranslate_prompt::TranslationPromptProfile;
 struct TextModelContract {
     native_agent_tools: bool,
     agent_image_input: bool,
+    agent_image_generation: bool,
     profile: TranslationPromptProfile,
     history_percent: Option<u8>,
     supports_ask: bool,
@@ -24,6 +25,12 @@ impl TextModelContract {
         Some(Self {
             native_agent_tools: agent_api.is_some(),
             agent_image_input: agent_api.is_some() && provider.capabilities.agent_image_input,
+            agent_image_generation: agent_api
+                == Some(xrtranslate_assets::remote::AgentApi::OpenaiResponses)
+                && provider
+                    .api_key
+                    .as_deref()
+                    .is_some_and(|key| !key.trim().is_empty()),
             context_tokens: window,
             output_tokens: provider.runtime.max_tokens,
             history_percent: provider
@@ -143,7 +150,10 @@ impl ServiceConfigEditor {
         ]
         .into_iter()
         .all(|(section, capability)| {
-            let Some(category) = self.categories.iter().find(|category| category.key == section)
+            let Some(category) = self
+                .categories
+                .iter()
+                .find(|category| category.key == section)
             else {
                 return false;
             };
@@ -154,7 +164,10 @@ impl ServiceConfigEditor {
             else {
                 return false;
             };
-            let asset = provider.fields.iter().find(|field| field.name == "model_asset");
+            let asset = provider
+                .fields
+                .iter()
+                .find(|field| field.name == "model_asset");
             !provider_is_remote(provider)
                 && provider_model(
                     &provider.name,
@@ -388,6 +401,11 @@ impl ServiceConfigEditor {
     pub(crate) fn agent_image_input(&self) -> bool {
         self.agent_contract()
             .is_some_and(|contract| contract.agent_image_input)
+    }
+
+    pub(crate) fn agent_image_generation(&self) -> bool {
+        self.agent_contract()
+            .is_some_and(|contract| contract.agent_image_generation)
     }
 
     pub(crate) fn agent_input_budget(&self) -> usize {
@@ -688,13 +706,16 @@ impl ServiceConfigEditor {
                 .map(|field| field.value.clone())
                 .unwrap_or_default()
         };
-        let model = selection.as_ref().map(|s| s.model.clone()).unwrap_or_else(|| {
-            if is_agent && !provider_is_remote(selected) {
-                field("model_asset")
-            } else {
-                field("model")
-            }
-        });
+        let model = selection
+            .as_ref()
+            .map(|s| s.model.clone())
+            .unwrap_or_else(|| {
+                if is_agent && !provider_is_remote(selected) {
+                    field("model_asset")
+                } else {
+                    field("model")
+                }
+            });
         let agent_workspace = is_agent
             && xrtranslate_assets::remote::services(
                 &selected.name,
@@ -1700,6 +1721,7 @@ mod tests {
         assert_eq!(state.model, "qwen-plus");
         assert!(editor.agent_available());
         assert!(editor.agent_native_tools());
+        assert!(!editor.agent_image_generation());
         assert_eq!(editor.agent_input_budget(), 983_360);
         let controls = editor.model_contexts();
         assert_eq!(controls.len(), 3);
@@ -1723,9 +1745,11 @@ mod tests {
         );
         assert!(editor.agent_native_tools());
         assert_eq!(editor.agent_input_budget(), 922_000);
+        assert!(editor.agent_image_generation());
         assert_eq!(editor.document["translation"], expected);
         editor.select_agent_model("gpt-4o-mini".into());
         assert!(!editor.agent_native_tools());
+        assert!(!editor.agent_image_generation());
 
         editor.select_onboarding_provider("agent", "deepseek");
         let deepseek = editor.onboarding_provider_state("agent").unwrap();
@@ -1733,7 +1757,10 @@ mod tests {
         assert_eq!(deepseek.model, "deepseek-flash");
         assert_eq!(deepseek.workspace_id, None);
         editor.set_onboarding_remote_fields(
-            "agent", "deepseek-v4-pro".into(), "fixture-key".into(), None,
+            "agent",
+            "deepseek-v4-pro".into(),
+            "fixture-key".into(),
+            None,
         );
         ServiceConfigEditor::sync_categories(&mut editor.document, &editor.categories).unwrap();
         assert!(editor.agent_native_tools());

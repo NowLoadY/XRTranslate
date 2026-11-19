@@ -7354,6 +7354,7 @@ dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
  "env_logger",
+ "image",
  "log",
  "serde",
  "serde_json",

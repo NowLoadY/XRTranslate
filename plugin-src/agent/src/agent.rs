@@ -12,7 +12,8 @@ mod environment;
 
 // A planning target, not an automatic failure at an arbitrary tool count.
 const MAX_STEPS: usize = 64;
-const MAX_ERRORS: usize = 3;
+const MAX_SAME_FAILURE: usize = 3;
+const MAX_FAILURES_WITHOUT_SUCCESS: usize = 12;
 const MAX_REQUEST_RETRIES: usize = 2;
 pub(crate) const MAX_GOAL_BYTES: usize = 32_000;
 
@@ -24,6 +25,7 @@ pub(crate) struct AgentPlugin {
     supports_chat: bool,
     pub(crate) native_tools: bool,
     pub(crate) image_input: bool,
+    pub(crate) image_generation: bool,
     input_budget: usize,
     language: String,
     location: ui_director::Location,
@@ -48,11 +50,111 @@ struct Run {
     next_poll: Instant,
     started: Instant,
     steps: usize,
-    errors: usize,
+    failures: Failures,
+    // The note describes the proposed call. Only its final receipt can confirm it.
+    proposed_memory: Option<(String, usize)>,
     request_retries: usize,
     review_jpeg: Option<String>,
     previous_call: String,
     repeats: usize,
+}
+
+#[derive(Default)]
+struct Failures {
+    attempts: usize,
+    same_reason: usize,
+    last: String,
+}
+
+impl Failures {
+    fn record(&mut self, source: &str, reason: &str) {
+        // Revisions and parser column numbers may change on each retry of the same error.
+        let mut key = format!("{source}\n");
+        let mut in_number = false;
+        for ch in reason.chars().take(512) {
+            if ch.is_ascii_digit() {
+                if !in_number {
+                    key.push('#');
+                }
+                in_number = true;
+            } else {
+                key.push(ch);
+                in_number = false;
+            }
+        }
+        self.same_reason = if self.last == key {
+            self.same_reason + 1
+        } else {
+            1
+        };
+        self.last = key;
+        self.attempts += 1;
+    }
+
+    fn stop_reason(&self) -> Option<&'static str> {
+        if self.same_reason >= MAX_SAME_FAILURE {
+            Some("Stopped after the same operation repeatedly failed for the same reason")
+        } else if self.attempts >= MAX_FAILURES_WITHOUT_SUCCESS {
+            Some("Stopped after repeated attempts without a successful operation")
+        } else {
+            None
+        }
+    }
+}
+
+fn rejected_receipt(value: &Value) -> Option<&str> {
+    value
+        .get("tool_output")
+        .into_iter()
+        .chain(std::iter::once(value))
+        .find_map(|output| {
+            let status = output["status"].as_str().unwrap_or("");
+            if let Some(error) = output
+                .get("error")
+                .filter(|v| !v.is_null() && **v != false && **v != "")
+            {
+                return Some(
+                    error
+                        .as_str()
+                        .or_else(|| error["message"].as_str())
+                        .or_else(|| error["code"].as_str())
+                        .unwrap_or("tool error"),
+                );
+            }
+            let detail = output["reason"]
+                .as_str()
+                .or_else(|| output["message"].as_str())
+                .or_else(|| output["code"].as_str());
+            if [
+                "conflict",
+                "failed",
+                "error",
+                "rejected",
+                "cancelled",
+                "canceled",
+            ]
+            .iter()
+            .any(|s| status.eq_ignore_ascii_case(s))
+            {
+                return Some(detail.unwrap_or(status));
+            }
+            if output["conflict"] == true
+                || output["conflict_count"].as_u64().unwrap_or(0) > 0
+                || output["conflicts"]
+                    .as_array()
+                    .is_some_and(|items| !items.is_empty())
+            {
+                return Some("conflict");
+            }
+            if output["applied"] == false || output["ok"] == false || output["success"] == false {
+                return Some(
+                    detail
+                        .or_else(|| output["status"].as_str())
+                        .unwrap_or("not applied"),
+                );
+            }
+            (output["changed"] == false).then_some("unchanged")
+        })
 }
 
 #[derive(Deserialize)]
@@ -297,12 +399,15 @@ impl AgentPlugin {
         &mut self,
         supports_chat: bool,
         input_budget: usize,
-        tools: Vec<Tool>,
+        mut tools: Vec<Tool>,
         language: &str,
     ) {
         self.supports_chat = supports_chat;
         self.input_budget = input_budget;
         self.language = language.into();
+        if self.image_generation {
+            tools.extend([crate::skills::tool(), crate::imagegen::tool()]);
+        }
         if !supports_chat && self.active() {
             self.stop("The selected model does not support general chat");
         }
@@ -394,7 +499,9 @@ impl AgentPlugin {
         }
         let instruction = self.instruction("User instruction", &goal);
         let common = include_str!("instructions.md").trim();
-        let task = format!("{instruction}\nPlanning target: {MAX_STEPS} steps.");
+        let skill_inventory =
+            crate::skills::inventory(tools.iter().any(|tool| tool.name == crate::imagegen::TOOL));
+        let task = format!("{instruction}\nPlanning target: {MAX_STEPS} steps.\n{skill_inventory}");
         let (rules, task) = if self.native_tools {
             // Keep the developer prefix identical across goals. Scope remains enforced locally.
             (
@@ -438,7 +545,8 @@ impl AgentPlugin {
             next_poll: Instant::now(),
             started: Instant::now(),
             steps: 0,
-            errors: 0,
+            failures: Failures::default(),
+            proposed_memory: None,
             request_retries: 0,
             review_jpeg: None,
             previous_call: String::new(),
@@ -462,7 +570,7 @@ impl AgentPlugin {
         let run = self.run.as_mut().unwrap();
         self.context.instruct(instruction);
         // A human correction starts a new attempt, without resetting the task budget.
-        run.errors = 0;
+        run.failures = Failures::default();
         run.request_retries = 0;
         run.repeats = 0;
         run.previous_call.clear();
@@ -497,6 +605,15 @@ impl AgentPlugin {
         Some(result)
     }
     pub fn observe(&mut self, call: &ToolCall, result: ToolResult) {
+        self.observe_with_image(call, result, None)
+    }
+
+    pub(crate) fn observe_with_image(
+        &mut self,
+        call: &ToolCall,
+        result: ToolResult,
+        mut image: Option<String>,
+    ) {
         let Some(run) = &mut self.run else {
             return;
         };
@@ -504,9 +621,16 @@ impl AgentPlugin {
         let call = waiting.as_ref().map_or(call, |(requested, _)| requested);
         match result {
             Ok(value) => {
-                if let Some(pending) = value.get("pending") {
+                let rejected = rejected_receipt(&value);
+                let polling = value
+                    .get("tool_output")
+                    .filter(|output| output.get("pending").is_some())
+                    .unwrap_or(&value);
+                if rejected.is_none()
+                    && let Some(pending) = polling.get("pending")
+                {
                     let pending = serde_json::from_value::<ToolCall>(pending.clone());
-                    let cancel = serde_json::from_value::<ToolCall>(value["cancel"].clone());
+                    let cancel = serde_json::from_value::<ToolCall>(polling["cancel"].clone());
                     let (Ok(pending), Ok(cancel)) = (pending, cancel) else {
                         self.observe(
                             call,
@@ -531,14 +655,26 @@ impl AgentPlugin {
                     return;
                 }
                 run.cleanup = None;
-                if value.get("changed") == Some(&Value::Bool(false)) {
-                    run.errors += 1;
-                } else {
-                    run.errors = 0;
-                }
                 let mut receipt = json!({"tool":{"name":call.name},"result":value});
-                let mut image = None;
-                if call.name == "media.render" {
+                let proposed = run.proposed_memory.take();
+                if let Some(reason) = rejected {
+                    run.failures.record(&call.name, reason);
+                    if proposed.is_some() {
+                        receipt["memory"] = json!("discarded");
+                    }
+                } else {
+                    run.failures = Failures::default();
+                    if let Some((note, through)) = proposed {
+                        self.context.remember_through(Some(note), through);
+                    }
+                }
+                if call.name == crate::imagegen::TOOL {
+                    receipt["image_input"] = json!(if image.is_some() {
+                        "attached"
+                    } else {
+                        "text_only"
+                    });
+                } else if call.name == "media.render" {
                     let result = &receipt["result"];
                     let output = result.get("tool_output").unwrap_or(result);
                     if let Some(path) = output["contact_sheet"].as_str() {
@@ -560,11 +696,12 @@ impl AgentPlugin {
             }
             Err(error) => {
                 self.cleanup.extend(run.cleanup.take());
-                run.errors += 1;
-                run.feedback(
-                    &mut self.context,
-                    json!({"tool":{"name":call.name},"error":error}),
-                );
+                run.failures.record(&call.name, &error);
+                let mut receipt = json!({"tool":{"name":call.name},"error":error});
+                if run.proposed_memory.take().is_some() {
+                    receipt["memory"] = json!("discarded");
+                }
+                run.feedback(&mut self.context, receipt);
             }
         }
         self.checkpoint();
@@ -572,12 +709,10 @@ impl AgentPlugin {
 
     pub fn poll(&mut self, mut request: impl FnMut(Vec<PromptMessage>) -> Reply) -> Option<Action> {
         let run = self.run.as_mut()?;
-        let reason = if run.errors >= MAX_ERRORS {
-            Some("Stopped after repeated invalid or ineffective operations")
-        } else if run.started.elapsed() > Duration::from_secs(1200) {
+        let reason = if run.started.elapsed() > Duration::from_secs(1200) {
             Some("Time budget reached")
         } else {
-            None
+            run.failures.stop_reason()
         };
         if let Some(reason) = reason {
             return self.stop(reason).map(|_| Action::Finished);
@@ -618,7 +753,7 @@ impl AgentPlugin {
                     return None;
                 }
                 Err(error) if error.invalid_output => {
-                    run.errors += 1;
+                    run.failures.record("model output", &error.error);
                     run.feedback(&mut self.context, json!({"error":error.error,
                         "next":"Nothing ran. Retry with the smallest complete operation. Split a large edit into related batches and use each returned revision."}));
                     return None;
@@ -638,15 +773,16 @@ impl AgentPlugin {
             let decision = serde_json::from_str::<Decision>(answer);
             match decision {
                 Ok(decision) => {
-                    self.context.remember(decision.memory);
                     let message = decision.message.filter(|text| !text.trim().is_empty());
                     let call = match decision.action {
                         NextStep::Done(done) => {
                             if !self.document_notices.is_empty() {
                                 // Reconsider completion using edits that arrived
                                 // during inference, without cancelling useful tools.
+                                run.feedback(&mut self.context, json!({"accepted":false, "reason":"Newer document edits need review.","memory":"discarded"}));
                                 return None;
                             }
+                            self.context.remember(decision.memory);
                             self.message = Some(message.unwrap_or_else(|| done.clone()));
                             return self.finish(&done, true).map(|_| Action::Finished);
                         }
@@ -677,22 +813,28 @@ impl AgentPlugin {
                                 .stop("Stopped after repeated identical operations")
                                 .map(|_| Action::Finished);
                         }
+                        run.proposed_memory = decision
+                            .memory
+                            .filter(|note| !note.trim().is_empty())
+                            .map(|note| (note, self.context.messages.len()));
                         log::info!("Agent operation: step={}, tool={}", run.steps, call.name);
                         if catalog::handles(&call.name) {
                             let result = catalog::call(&run.tools, &call);
                             self.observe(&call, result);
                             return None;
                         }
+                        if call.name == crate::skills::READ {
+                            self.observe(&call, crate::skills::read(&call));
+                            return None;
+                        }
                         return Some(Action::Call(call));
                     }
-                    run.errors += 1;
-                    run.feedback(
-                        &mut self.context,
-                        json!({"error":"Choose an available operation. The executor supplies the exact supplied scope; a different target cannot be used."}),
-                    );
+                    run.failures
+                        .record(&call.name, "outside the available operations or scope");
+                    run.feedback(&mut self.context, json!({"error":"Choose an available operation. The executor supplies the exact supplied scope; a different target cannot be used.","memory":"discarded"}));
                 }
                 Err(error) => {
-                    run.errors += 1;
+                    run.failures.record("decision", &error.to_string());
                     run.feedback(&mut self.context, json!({"error":format!("No operation was executed. Invalid decision: {error}. Return one JSON object with action containing only tool or done. Put memory and optional message alongside action. Retry a large edit in smaller complete batches.")}));
                 }
             }
@@ -878,6 +1020,195 @@ mod tests {
         plugin
     }
 
+    fn propose(agent: &mut AgentPlugin, number: usize, note: &str) -> ToolCall {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        assert!(agent.poll(|_| rx.clone()).is_none());
+        tx.send(Ok(
+            json!({"action":{"tool":{"name":"test.read","arguments":{"page":number}}},
+            "memory":note})
+            .to_string(),
+        ))
+        .unwrap();
+        let Some(Action::Call(call)) = agent.poll(|_| panic!("consume the proposal")) else {
+            panic!("expected an issued operation")
+        };
+        call
+    }
+
+    #[test]
+    fn corrected_failures_keep_confirmed_memory_until_an_operation_succeeds() {
+        let mut agent = agent();
+        let read = propose(&mut agent, 1, "Verified first page");
+        assert!(agent.context.memory.is_empty());
+        agent.observe(&read, Ok(json!({"page":1})));
+        assert_eq!(agent.context.memory, "Verified first page");
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        agent.poll(|_| rx.clone());
+        tx.send(Err(xrtranslate_protocol::AskError {
+            error: "Malformed JSON: EOF at line 1 column 10004".into(),
+            invalid_output: true,
+            retryable: false,
+        }))
+        .unwrap();
+        assert!(agent.poll(|_| panic!()).is_none());
+        for (i, result) in [
+            Err("Definition: unknown field color".into()),
+            Err("A patch needs the revision from your read".into()),
+            Ok(json!({"tool_output":{"applied":false,"status":"CONFLICT","revision":4}})),
+            Ok(json!({"applied":false,"status":"LIVE_EDITING"})),
+            Ok(json!({"changed":false})),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let op = propose(&mut agent, i + 2, "Unconfirmed edit saved");
+            assert_eq!(agent.context.memory, "Verified first page");
+            agent.observe(&op, result);
+            assert_eq!(agent.environment()["memory"], "Verified first page");
+            assert!(
+                agent
+                    .context
+                    .messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("discarded")
+            );
+        }
+        assert_eq!(agent.run.as_ref().unwrap().failures.attempts, 6);
+        let op = propose(&mut agent, 9, "Confirmed revision five");
+        agent.observe(
+            &op,
+            Ok(json!({"tool_output":{"applied":true,"revision":5}})),
+        );
+        assert_eq!(agent.context.memory, "Confirmed revision five");
+        assert_eq!(agent.run.as_ref().unwrap().failures.attempts, 0);
+    }
+
+    #[test]
+    fn pending_receipts_preserve_one_proposal_through_polling_or_drop_it_on_failure() {
+        let mut agent = agent();
+        for success in [false, true] {
+            let op = propose(
+                &mut agent,
+                usize::from(success),
+                "Asynchronous output verified",
+            );
+            let polling = json!({"pending":{"name":"test.read","arguments":{"document":"one","page":3}},
+                "cancel":{"name":"test.cancel","arguments":{"document":"one"}}});
+            agent.observe(&op, Ok(json!({"tool_output":polling})));
+            assert!(agent.context.memory.is_empty());
+            agent.run.as_mut().unwrap().next_poll = Instant::now();
+            let Some(Action::Call(wait)) = agent.poll(|_| panic!("the operation is still running"))
+            else {
+                panic!()
+            };
+            agent.observe(&wait, Ok(polling));
+            assert!(agent.context.memory.is_empty());
+            agent.run.as_mut().unwrap().next_poll = Instant::now();
+            let Some(Action::Call(wait)) = agent.poll(|_| panic!()) else {
+                panic!()
+            };
+            if success {
+                agent
+                    .message("Keep the new user correction".into())
+                    .unwrap();
+                agent.observe(&wait, Ok(json!({"applied":true})));
+                assert_eq!(agent.context.memory, "Asynchronous output verified");
+            } else {
+                agent.observe(&wait, Err("operation failed".into()));
+                assert!(agent.context.memory.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_failure_and_a_bounded_series_of_distinct_failures_still_stop() {
+        for varied in [false, true] {
+            let mut agent = agent();
+            let attempts = if varied {
+                MAX_FAILURES_WITHOUT_SUCCESS
+            } else {
+                MAX_SAME_FAILURE
+            };
+            for n in 0..attempts {
+                let op = propose(&mut agent, n, "Unconfirmed");
+                let message = if varied {
+                    format!("Invalid field {}", char::from(b'a' + n as u8))
+                } else {
+                    format!("Unexpected argument at line 1 column {}", 11 + n)
+                };
+                agent.observe(&op, Err(message));
+            }
+            assert!(matches!(
+                agent.poll(|_| panic!("no new model request")),
+                Some(Action::Finished)
+            ));
+            assert_eq!(agent.last.as_ref().unwrap()["completed"], false);
+            assert!(agent.context.memory.is_empty());
+        }
+    }
+
+    #[test]
+    fn typed_rejections_use_the_reported_cause_and_accept_normal_read_results() {
+        for (receipt, reason) in [
+            (
+                json!({"tool_output":{"status":"REJECTED","reason":"Missing key"}}),
+                "Missing key",
+            ),
+            (
+                json!({"status":"REJECTED","reason":"Invalid range"}),
+                "Invalid range",
+            ),
+            (
+                json!({"success":false,"message":"Provider offline"}),
+                "Provider offline",
+            ),
+            (
+                json!({"error":{"code":"INVALID","message":"Missing target"}}),
+                "Missing target",
+            ),
+            (json!({"applied":true,"conflict":true}), "conflict"),
+            (json!({"status":"cancelled"}), "cancelled"),
+        ] {
+            assert_eq!(rejected_receipt(&receipt), Some(reason));
+        }
+        assert_eq!(
+            rejected_receipt(&json!({"revision":4,"tool_output":{"error":null,"conflicts":[]}})),
+            None
+        );
+    }
+
+    #[test]
+    fn identical_requests_and_wall_time_still_limit_successful_runs() {
+        let mut plugin = agent();
+        for _ in 0..3 {
+            let op = propose(&mut plugin, 1, "Last accepted call");
+            plugin.observe(&op, Ok(json!({"verified":true})));
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        plugin.poll(|_| rx.clone());
+        tx.send(Ok(
+            json!({"action":{"tool":{"name":"test.read","arguments":{"page":1}}},
+            "memory":"Rejected repeat"})
+            .to_string(),
+        ))
+        .unwrap();
+        assert!(matches!(plugin.poll(|_| panic!()), Some(Action::Finished)));
+        assert_eq!(plugin.context.memory, "Last accepted call");
+        assert_eq!(
+            plugin.last.as_ref().unwrap()["summary"],
+            "Stopped after repeated identical operations"
+        );
+        let mut plugin = agent();
+        plugin.run.as_mut().unwrap().started = Instant::now() - Duration::from_secs(1201);
+        assert!(matches!(plugin.poll(|_| panic!()), Some(Action::Finished)));
+        assert_eq!(
+            plugin.last.as_ref().unwrap()["summary"],
+            "Time budget reached"
+        );
+    }
+
     #[test]
     fn inference_failure_stops_after_its_retry_budget_or_when_permanent() {
         for retryable in [false, true] {
@@ -925,7 +1256,7 @@ mod tests {
         ))
         .unwrap();
         assert!(agent.poll(|_| panic!("await reply first")).is_none());
-        assert_eq!(agent.run.as_ref().unwrap().errors, 1);
+        assert_eq!(agent.run.as_ref().unwrap().failures.attempts, 1);
         assert!(
             agent
                 .poll(|messages| {
@@ -1010,8 +1341,9 @@ mod tests {
             rx.clone()
         });
         agent.document_changed(json!({"workspace":"video","revision":3,"changed_targets":["block:c"],"changed_count":1}));
+        let confirmed = agent.context.memory.clone();
         tx.send(Ok(
-            json!({"action":{"done":"finished before seeing the edit"}}).to_string(),
+            json!({"action":{"done":"finished before seeing the edit"},"memory":"Premature completion"}).to_string(),
         ))
         .unwrap();
         assert!(agent.poll(|_| panic!()).is_none());
@@ -1019,6 +1351,15 @@ mod tests {
             agent.active(),
             "new user changes must be considered before completion"
         );
+        assert_eq!(agent.context.memory, confirmed);
+        agent.poll(|_| rx.clone());
+        tx.send(Ok(
+            json!({"action":{"done":"Reviewed the latest edit"},"memory":"Latest edit verified"})
+                .to_string(),
+        ))
+        .unwrap();
+        assert!(matches!(agent.poll(|_| panic!()), Some(Action::Finished)));
+        assert_eq!(agent.context.memory, "Latest edit verified");
         agent.stop("end fixture");
         agent.document_changed(
             json!({"workspace":"video","revision":4,"changed_targets":["block:d"]}),

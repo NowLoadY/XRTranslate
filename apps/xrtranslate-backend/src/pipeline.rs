@@ -1027,6 +1027,13 @@ fn vad_is_active(probability: f32, threshold: f32) -> bool {
 }
 
 impl NativeInference {
+    pub(crate) async fn agent_image(
+        &self,
+        request: &xrtranslate_protocol::image::AgentImageRequest,
+    ) -> Result<String, InferenceError> {
+        self.translation.agent_image(request).await
+    }
+
     pub(crate) async fn ask(
         &self,
         messages: &[xrtranslate_prompt::PromptMessage],

@@ -578,6 +578,11 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
             axum::routing::post(ask).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route(
+            "/agent/image",
+            axum::routing::post(agent_image)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
             "/tts/synthesize",
             axum::routing::post(tts_session::synthesize),
         )
@@ -650,6 +655,38 @@ async fn model_request_history(
         xrtranslate_inference::diagnostics::clear_requests();
     }
     Json(xrtranslate_inference::diagnostics::requests()).into_response()
+}
+
+async fn agent_image(
+    State(state): State<BackendState>,
+    Json(request): Json<xrtranslate_protocol::image::AgentImageRequest>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    if let Err(error) = request.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(xrtranslate_protocol::AskError::from(error)),
+        )
+            .into_response();
+    }
+    let result = async {
+        let inference = state
+            .prepare_text(xrtranslate_protocol::AskTarget::Agent)
+            .await?;
+        inference
+            .agent_image(&request)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    match result {
+        Ok(png) => Json(serde_json::json!({"png":png})).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(xrtranslate_protocol::AskError::from(error)),
+        )
+            .into_response(),
+    }
 }
 
 async fn ask(
