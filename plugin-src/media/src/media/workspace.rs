@@ -189,7 +189,7 @@ pub(crate) fn tools() -> Vec<Tool> {
         ).read_only(),
         Tool::new(
             "media.open",
-            "Open or resume a subtitle working copy for an idle task. Rejects stale drafts before editing and returns their ID for inspection with media.read. Does not navigate: use UI tools to open the corresponding media project when the user should see the work. reset=true discards a previous working copy; use it only to restart after a conflict.",
+            "Open or resume a subtitle working copy for an idle task. Rejects stale drafts before editing and returns their ID for inspection with media.read. Shows the project in the editor. reset=true discards a previous working copy; use it only to restart after a conflict.",
             json!({"task":{"type":"string"},"reset":{"type":"boolean"}}),
             &["task"],
         ),
@@ -254,7 +254,39 @@ impl ToolProvider for MediaPlugin {
     fn tools(&self) -> Vec<Tool> {
         tools()
     }
+    /// Agent calls share the same project selection as the library. Reads and
+    /// rejected writes have no bearing on what the user is looking at.
     fn call(&mut self, call: &ToolCall) -> ToolResult {
+        let project = |plugin: &Self| {
+            let task = plugin.workspace_task(call.arguments["workspace"].as_str()?)?;
+            let ws = task.optimization.as_ref()?;
+            Some((
+                ws.revision,
+                task.recognition.clone(),
+                ws.trials.last().map(|t| t.id.clone()),
+            ))
+        };
+        let before = project(self);
+        let output = self.execute_tool(call)?;
+        let target = if call.name == "media.open" {
+            output["task"].as_str()
+        } else if before != project(self) {
+            call.arguments["workspace"]
+                .as_str()
+                .and_then(|id| self.workspace_task(id))
+                .map(|task| task.id.as_str())
+        } else {
+            None
+        };
+        if let Some(id) = target {
+            self.pending_page = Some(id.to_owned());
+        }
+        Ok(output)
+    }
+}
+
+impl MediaPlugin {
+    fn execute_tool(&mut self, call: &ToolCall) -> ToolResult {
         let task = call.arguments["workspace"]
             .as_str()
             .and_then(|id| self.workspace_task(id))
@@ -290,6 +322,40 @@ fn task_context(task: &super::task::MediaTask) -> Value {
 }
 
 impl MediaPlugin {
+    pub(crate) fn reveal_edited_task(&mut self) -> bool {
+        let Some(target) = self.pending_page.as_deref() else {
+            return false;
+        };
+        let controller = &mut self.controller;
+        if controller.active_task_id.as_deref() != Some(target) {
+            // Switching documents resets local controls. Let an in-progress
+            // subtitle edit or foreground recognition finish first.
+            if controller.subtitle_edit.is_some()
+                || controller.pending_subtitle_change.is_some()
+                || controller
+                    .active_task_id
+                    .as_deref()
+                    .and_then(|id| controller.store.get(id))
+                    .is_some_and(|task| task.is_task_running)
+            {
+                return false;
+            }
+            if controller.dirty {
+                controller.save_active();
+                if controller.dirty {
+                    self.pending_page = None;
+                    return false;
+                }
+            }
+            if let Err(error) = controller.open_task(target) {
+                controller.error = Some(error);
+            }
+        }
+        let selected = controller.active_task_id.as_deref() == Some(target);
+        self.pending_page = None;
+        selected
+    }
+
     pub(crate) fn prepare_optimization(&mut self, task: &str) -> Result<(Value, String), String> {
         let reset = self.controller.store.get(task).is_some_and(|task| {
             task.optimization.as_ref().is_some_and(|workspace| {
@@ -867,6 +933,67 @@ mod tests {
                 arguments,
             },
         )
+    }
+
+    #[test]
+    fn switching_projects_waits_for_the_open_subtitle_editor() {
+        let (mut plugin, _storage, ws) = fixture();
+        let original = plugin.workspace_task(&ws).unwrap().id.clone();
+        let mut other = plugin.workspace_task(&ws).unwrap().clone();
+        other.id = "another-project".into();
+        other.optimization = None;
+        plugin.controller.store.add_or_update(other);
+        let cue = plugin.controller.subtitles.cues()[0].id.clone();
+        plugin
+            .controller
+            .begin_subtitle_edit(&cue, super::super::controller::SubtitleField::Original);
+        call(&mut plugin, "media.open", json!({"task":"another-project"})).unwrap();
+        assert!(!plugin.reveal_edited_task());
+        assert_eq!(plugin.controller.active_task_id.as_ref(), Some(&original));
+        let draft = plugin.controller.subtitle_edit.as_mut().unwrap();
+        draft.cue.original_text = "Edited by the user".into();
+        plugin.controller.save_subtitle_edit();
+        assert!(plugin.reveal_edited_task());
+        assert_eq!(
+            plugin.controller.active_task_id.as_deref(),
+            Some("another-project")
+        );
+        assert_eq!(
+            plugin
+                .controller
+                .store
+                .get(&original)
+                .unwrap()
+                .subtitles
+                .cues()[0]
+                .original_text,
+            "Edited by the user"
+        );
+
+        plugin
+            .controller
+            .begin_subtitle_edit(&cue, super::super::controller::SubtitleField::Original);
+        // An independent project settings write brings the same page forward
+        // without reloading its controls or clearing the user's draft.
+        let ws = plugin
+            .controller
+            .store
+            .get("another-project")
+            .unwrap()
+            .optimization
+            .as_ref()
+            .unwrap()
+            .id
+            .clone();
+        call(
+            &mut plugin,
+            "media.settings",
+            json!({"workspace":ws,"background_noise":0.43}),
+        )
+        .unwrap();
+        assert!(plugin.reveal_edited_task());
+        assert!(plugin.controller.subtitle_edit.is_some());
+        assert!(!plugin.reveal_edited_task());
     }
 
     #[test]

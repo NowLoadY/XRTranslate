@@ -138,6 +138,7 @@ pub struct MediaPlugin {
     subtitle_job: Option<subtitle_job::SubtitleJob>,
     subtitle_retranslation: Option<edit_translation::SubtitleRetranslation>,
     stop_requested: bool,
+    pending_page: Option<String>,
     pub controller: MediaController,
     pub event_sink: events::MediaTranslationSink,
 }
@@ -154,6 +155,7 @@ impl MediaPlugin {
             subtitle_job: None,
             subtitle_retranslation: None,
             stop_requested: false,
+            pending_page: None,
             controller,
             event_sink: events::MediaTranslationSink::default(),
         }

@@ -232,6 +232,7 @@ impl crate::XRTranslateApp {
                     "audio.capture",
                     "text.compose",
                     "ui",
+                    "ui.show_page",
                     xrtranslate_plugin::guide::CAPABILITY,
                     "translation.start",
                     "translation.stop",
@@ -488,6 +489,22 @@ impl crate::XRTranslateApp {
                 Message::Event { name, value } if name == "message" => {
                     if let Some(message) = value.as_str() {
                         self.companion_inbox.post_text(&plugin, message.to_owned());
+                    }
+                }
+                Message::Event { name, .. } if name == "ui.show_page" => {
+                    if let Some(page) = self
+                        .plugin_pages
+                        .installed_pages
+                        .iter()
+                        .find(|p| p.id.as_str() == plugin)
+                    {
+                        let page = crate::ui::Page::Plugin(page.id);
+                        if self.first_run || self.navigation.page != page {
+                            self.navigation.open(page);
+                            self.first_run = false;
+                            self.save_settings();
+                            ctx.request_repaint();
+                        }
                     }
                 }
                 Message::Event { name, .. } if name == "ui.back" => {

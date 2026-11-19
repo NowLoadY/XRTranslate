@@ -26,6 +26,7 @@ pub struct Context {
     client: crate::Client,
     #[cfg(feature = "egui")]
     pub(crate) binary_surfaces: bool,
+    can_show_page: bool,
 }
 impl Drop for Context {
     fn drop(&mut self) {
@@ -56,6 +57,17 @@ impl Context {
             name: name.into(),
             value,
         });
+    }
+    /// Bring this provider's page into view after a tool opens or changes a document.
+    pub fn show_page(&mut self, provider: &str) {
+        if self.can_show_page {
+            self.event("ui.show_page", Value::Null);
+        } else {
+            self.call(
+                "ui.page",
+                serde_json::json!({"page": format!("plugin:{provider}")}),
+            );
+        }
     }
     pub fn view(&mut self, widgets: Vec<Widget>) {
         self.send(&Message::View { widgets });
@@ -136,6 +148,7 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
         client,
         #[cfg(feature = "egui")]
         binary_surfaces: false,
+        can_show_page: false,
     };
     let mut clock = Instant::now();
     let mut initialized = false;
@@ -149,6 +162,10 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
                         .iter()
                         .any(|name| name == crate::surface::wire::CAPABILITY);
                 }
+                context.can_show_page = environment
+                    .capabilities
+                    .iter()
+                    .any(|name| name == "ui.show_page");
                 plugin.initialize(environment, &mut context)?;
                 initialized = true;
             }

@@ -362,6 +362,9 @@ impl Plugin for App {
                 true
             }
         });
+        if media.reveal_edited_task() {
+            context.show_page(ID);
+        }
         media.controller.tick();
         media.controller.poll_speech(client, &self.context);
         media.poll_translation_events();
