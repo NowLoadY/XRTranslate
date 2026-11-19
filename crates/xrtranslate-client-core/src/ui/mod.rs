@@ -60,6 +60,14 @@ pub fn icon_source(name: &str) -> eframe::egui::ImageSource<'static> {
 
 /// Initialize a native page with the same presentation resources as the shell.
 pub fn configure_surface(ctx: &eframe::egui::Context, options: &serde_json::Value) {
+    configure_surface_with_fonts(ctx, options, fonts::configure_multilingual_fonts);
+}
+
+pub fn configure_surface_with_fonts(
+    ctx: &eframe::egui::Context,
+    options: &serde_json::Value,
+    configure_fonts: fn(&eframe::egui::Context),
+) {
     let first = ctx.data_mut(|data| {
         let id = eframe::egui::Id::unique("shared_ui_initialized");
         let first = !data.get_temp::<bool>(id).unwrap_or(false);
@@ -69,7 +77,7 @@ pub fn configure_surface(ctx: &eframe::egui::Context, options: &serde_json::Valu
     if first {
         crate::file_dialog::set_context(ctx.clone());
         notifications::Notifications::default().install(ctx);
-        fonts::configure_multilingual_fonts(ctx);
+        configure_fonts(ctx);
         egui_extras::install_image_loaders(ctx);
     }
     if let Ok(theme) = serde_json::from_value(options["theme"].clone()) {

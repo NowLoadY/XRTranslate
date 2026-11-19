@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
+mod video;
+pub use video::VideoFont;
 
 /// Installed family names for renderers that resolve fonts through the system.
 pub fn family_options() -> &'static [(String, String)] {
@@ -179,6 +181,14 @@ const FONTCONFIG_FONTS: &[(&str, &str)] = &[
 ];
 
 pub fn configure_multilingual_fonts(ctx: &egui::Context) {
+    configure_fonts(ctx, false);
+}
+
+pub fn configure_video_fonts(ctx: &egui::Context) {
+    configure_fonts(ctx, true);
+}
+
+fn configure_fonts(ctx: &egui::Context, editing: bool) {
     let mut definitions = egui::FontDefinitions::default();
     for bold in [false, true] {
         let mut loaded = Vec::new();
@@ -218,6 +228,9 @@ pub fn configure_multilingual_fonts(ctx: &egui::Context) {
                 fallbacks.splice(0..0, loaded.iter().cloned());
             }
         }
+    }
+    if editing {
+        video::install(&mut definitions, ctx);
     }
     ctx.set_fonts(definitions);
 }

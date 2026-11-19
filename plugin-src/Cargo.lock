@@ -7606,6 +7606,7 @@ dependencies = [
 name = "xrtranslate-client-core"
 version = "0.4.7"
 dependencies = [
+ "ab_glyph",
  "android-activity",
  "android_logger",
  "ash",

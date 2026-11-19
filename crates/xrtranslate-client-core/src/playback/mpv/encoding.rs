@@ -253,8 +253,12 @@ pub fn encode_material_picture(
     )
 }
 
-/// Normalize an individual material track for gapless concatenation across source formats.
-pub fn encode_material_audio(source: &str, output: &Path, track: i64) -> Result<(), String> {
+/// Normalize the selected material track, or its default track, to stereo 48 kHz PCM.
+pub fn encode_material_audio(
+    source: &str,
+    output: &Path,
+    track: impl Into<Option<i64>>,
+) -> Result<(), String> {
     let mpv = MpvHandle::create()?;
     for (key, value) in [
         ("config", "no"),
@@ -278,7 +282,7 @@ pub fn encode_material_audio(source: &str, output: &Path, track: i64) -> Result<
         mpv,
         source,
         output,
-        &VideoAudio::Original(Some(track)),
+        &VideoAudio::Original(track.into()),
         None,
         &AtomicBool::new(false),
         None,
@@ -464,6 +468,11 @@ fn encode_with_audio(
             }
         }
         selection => {
+            // Changing sample rates or channel layouts inside an EDL restarts mpv's
+            // mixing graph. Its flushed buffers can overlap the next buffer's PTS.
+            // The final filter stays alive across those restarts and preserves the
+            // edited clock in both the AAC export and the PCM review excerpt.
+            mpv.set_option_string("af", "lavfi=[aresample=async=1:min_hard_comp=0.001]")?;
             for source in selection.sources() {
                 if let VideoAudio::External(path) = source
                     && !path.is_file()
@@ -682,6 +691,146 @@ fn wait_for_encoding(
 mod tests {
     use super::*;
     use crate::playback::SubtitleStyle;
+
+    #[test]
+    #[ignore = "requires the installed video playback runtime and encoders"]
+    fn mixed_format_sound_edits_keep_contiguous_samples_and_source_time() {
+        use symphonia::core::{audio::SampleBuffer, io::MediaSourceStream, probe::Hint};
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let silence = dir.path().join("stereo.wav");
+        let tap = dir.path().join("mono.wav");
+        let progress = AtomicU32::new(0);
+        let cancel = AtomicBool::new(false);
+        let style = SubtitleStyle::default();
+        let encoding = |audio| VideoEncoding {
+            audio,
+            subtitles: None,
+            style: &style,
+        };
+        let input = concat!(
+            "av://lavfi:color=c=black:s=96x64:r=30:d=4[out0];",
+            "aevalsrc='0.35*sin(2*PI*420*t)*(between(t,2.58,2.78)+between(t,3.19,3.39))':s=48000:d=4[out1]"
+        );
+        encode_video(
+            Path::new(input),
+            &source,
+            encoding(VideoAudio::default()),
+            &progress,
+            &cancel,
+        )
+        .unwrap();
+        encode_material_audio("av://lavfi:anullsrc=r=48000:cl=stereo:d=4", &silence, 1).unwrap();
+        encode_audio(
+            Path::new("av://lavfi:sine=frequency=1200:sample_rate=44100:duration=0.24"),
+            &tap,
+            1.,
+            &cancel,
+        )
+        .unwrap();
+        let segment = |file: &Path, start: i64, length: i64| {
+            let file = file.to_str().unwrap();
+            format!(
+                "%{}%{file},{:.3},{:.3}",
+                file.len(),
+                start as f64 / 1000.,
+                length as f64 / 1000.
+            )
+        };
+        let picture = format!(
+            "edl://{};{}",
+            segment(&source, 250, 1250),
+            segment(&source, 1700, 1800)
+        );
+        let mut tracks = vec![VideoAudio::default()];
+        for at in [160, 410, 780, 1350, 1710] {
+            tracks.push(VideoAudio::ExternalStream(format!(
+                "edl://{};{};{}",
+                segment(&silence, 0, at),
+                segment(&tap, 0, 120),
+                segment(&silence, 0, 3050 - at - 120)
+            )));
+        }
+        let audio = VideoAudio::Mix(tracks);
+        let video = dir.path().join("mix.mp4");
+        let review = dir.path().join("passage.wav");
+        encode_video_edit(
+            &picture,
+            &video,
+            encoding(audio.clone()),
+            Some("lavfi=[fps=25]"),
+            &progress,
+            &cancel,
+        )
+        .unwrap();
+        encode_audio_review(&picture, &review, &audio, [1300, 3000], false, &cancel).unwrap();
+        for (file, origin_ms) in [(&video, 0), (&review, 1300)] {
+            // Decode consecutive packet contents, as a PCM or transcription consumer does.
+            let stream = MediaSourceStream::new(
+                Box::new(std::fs::File::open(file).unwrap()),
+                Default::default(),
+            );
+            let mut format = symphonia::default::get_probe()
+                .format(
+                    &Hint::new(),
+                    stream,
+                    &Default::default(),
+                    &Default::default(),
+                )
+                .unwrap()
+                .format;
+            let track = format
+                .tracks()
+                .iter()
+                .find(|t| t.codec_params.sample_rate.is_some())
+                .unwrap();
+            let id = track.id;
+            let rate = track.codec_params.sample_rate.unwrap() as usize;
+            let mut decoder = symphonia::default::get_codecs()
+                .make(&track.codec_params, &Default::default())
+                .unwrap();
+            let mut timestamps = Vec::new();
+            let mut pcm = Vec::new();
+            while let Ok(packet) = format.next_packet() {
+                if packet.track_id() != id {
+                    continue;
+                }
+                timestamps.push(packet.ts());
+                let frame = decoder.decode(&packet).unwrap();
+                let spec = *frame.spec();
+                let mut samples = SampleBuffer::<f32>::new(frame.capacity() as u64, spec);
+                samples.copy_interleaved_ref(frame);
+                pcm.extend(
+                    samples
+                        .samples()
+                        .chunks_exact(spec.channels.count())
+                        .map(|frame| frame[0]),
+                );
+            }
+            if file == &video {
+                assert!(timestamps.len() > 120);
+                assert!(
+                    timestamps.windows(2).all(|pair| pair[1] - pair[0] == 1024),
+                    "Every AAC frame must have one distinct 1024-sample interval"
+                );
+            }
+            // Source 2580 and 3190 map to edited 2130 and 2740 after the second cut.
+            for (ms, audible) in [
+                (2050, false),
+                (2210, true),
+                (2440, false),
+                (2820, true),
+                (2980, false),
+            ] {
+                let start = (ms - origin_ms) * rate / 1000;
+                let peak = pcm[start..start + rate / 100]
+                    .iter()
+                    .fold(0.0_f32, |v, x| v.max(x.abs()));
+                assert_eq!(peak > 0.1, audible, "{} at {ms} ms", file.display());
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires the installed video playback runtime and encoders"]
