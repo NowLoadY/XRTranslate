@@ -15,7 +15,7 @@ on:
         description: Include the compatibility ZIP for older clients
         required: false
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -176,7 +176,7 @@ jobs:
             Remove-Item $smoke -Recurse -Force
           }
 
-      - name: Build the registered Windows installer and compatibility ZIP
+      - name: Build the registered Windows installer
         run: |
           $compatibility = '${{ inputs.compatibility_zip }}' -eq 'true'
           & .\scripts\build-windows-distribution.ps1 -Package "dist\$env:PACKAGE_NAME" -Format Setup -CompatibilityZip:$compatibility
