@@ -13,48 +13,28 @@ pub mod virtual_list;
 
 #[macro_export]
 macro_rules! icon {
-    ($name:literal) => {{ $crate::ui::icon_source($name) }};
+    ($name:literal) => {{
+        const BYTES: &[u8] =
+            $crate::ui::icon_bytes($name).expect(concat!("Missing SDK icon: ", $name));
+        $crate::ui::embedded_icon($name, BYTES)
+    }};
 }
 pub use crate::icon;
 
-pub fn icon_source(name: &str) -> eframe::egui::ImageSource<'static> {
-    let bytes: &'static [u8] = match name {
-        "power.svg" => include_bytes!("../../resources/icons/power.svg"),
-        "record.svg" => include_bytes!("../../resources/icons/record.svg"),
-        "import.svg" => include_bytes!("../../resources/icons/import.svg"),
-        "image.svg" => include_bytes!("../../resources/icons/image.svg"),
-        "plus.svg" => include_bytes!("../../resources/icons/plus.svg"),
-        "scissors.svg" => include_bytes!("../../resources/icons/scissors.svg"),
-        "trash.svg" => include_bytes!("../../resources/icons/trash.svg"),
-        "more.svg" => include_bytes!("../../resources/icons/more.svg"),
-        "settings.svg" => include_bytes!("../../resources/icons/settings.svg"),
-        "example.svg" => include_bytes!("../../resources/icons/example.svg"),
-        "translation.svg" => include_bytes!("../../resources/icons/translation.svg"),
-        "media-pause.svg" => include_bytes!("../../resources/icons/media-pause.svg"),
-        "media-play.svg" => include_bytes!("../../resources/icons/media-play.svg"),
-        "star.svg" => include_bytes!("../../resources/icons/star.svg"),
-        "stop.svg" => include_bytes!("../../resources/icons/stop.svg"),
-        "pause.svg" => include_bytes!("../../resources/icons/pause.svg"),
-        "rabbit.svg" => include_bytes!("../../resources/icons/rabbit.svg"),
-        "turtle.svg" => include_bytes!("../../resources/icons/turtle.svg"),
-        "file-audio.svg" => include_bytes!("../../resources/icons/file-audio.svg"),
-        "file-video.svg" => include_bytes!("../../resources/icons/file-video.svg"),
-        "file-subtitles.svg" => include_bytes!("../../resources/icons/file-subtitles.svg"),
-        "stream.svg" => include_bytes!("../../resources/icons/stream.svg"),
-        "check.svg" => include_bytes!("../../resources/icons/check.svg"),
-        "x.svg" => include_bytes!("../../resources/icons/x.svg"),
-        "play.svg" => include_bytes!("../../resources/icons/play.svg"),
-        "music.svg" => include_bytes!("../../resources/icons/music.svg"),
-        "media-collapse.svg" => include_bytes!("../../resources/icons/media-collapse.svg"),
-        "media-expand.svg" => include_bytes!("../../resources/icons/media-expand.svg"),
-        "media-subtitles.svg" => include_bytes!("../../resources/icons/media-subtitles.svg"),
-        "media-audio-tracks.svg" => include_bytes!("../../resources/icons/media-audio-tracks.svg"),
-        "export.svg" => include_bytes!("../../resources/icons/export.svg"),
-        _ => panic!("Unknown SDK icon: {name}"),
-    };
+include!(concat!(env!("OUT_DIR"), "/sdk_icons.rs"));
+
+#[doc(hidden)]
+pub fn embedded_icon(name: &str, bytes: &'static [u8]) -> eframe::egui::ImageSource<'static> {
     eframe::egui::ImageSource::Bytes {
         uri: format!("bytes://xrt-icons/{name}").into(),
         bytes: bytes.into(),
+    }
+}
+
+pub fn icon_source(name: &str) -> eframe::egui::ImageSource<'static> {
+    match icon_bytes(name) {
+        Some(bytes) => embedded_icon(name, bytes),
+        None => eframe::egui::ImageSource::Uri(format!("bytes://xrt-icons/{name}").into()),
     }
 }
 
