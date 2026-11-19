@@ -1,27 +1,9 @@
 //! Optional build helper. Manual copies use exactly the same directory layout.
-use std::{fs, io, path::Path};
-#[path = "install.rs"]
-mod install;
+use std::{fs, path::Path};
 #[path = "sdk.rs"]
 mod sdk;
 
-fn copy(source: &Path, destination: &Path) -> io::Result<()> {
-    let kind = fs::symlink_metadata(source)?.file_type();
-    if kind.is_file() {
-        fs::copy(source, destination)?;
-    } else if kind.is_dir() {
-        fs::create_dir(destination)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            copy(&entry.path(), &destination.join(entry.file_name()))?;
-        }
-    } else {
-        return Err(io::Error::other(
-            "Plugin resources cannot be symbolic links",
-        ));
-    }
-    Ok(())
-}
+use xrtranslate_plugin::install::{self, copy_tree as copy};
 fn stage(
     source: &Path,
     binary: &Path,
@@ -58,10 +40,10 @@ fn stage(
             copy(&source.join(name), &root.join(name))?;
         }
     }
-    xrtranslate_plugin::directory::read(&root, None).map_err(io::Error::other)?;
+    xrtranslate_plugin::directory::read(&root, None).map_err(std::io::Error::other)?;
     if destination.exists() {
-        let installed =
-            xrtranslate_plugin::directory::read(destination, None).map_err(io::Error::other)?;
+        let installed = xrtranslate_plugin::directory::read(destination, None)
+            .map_err(std::io::Error::other)?;
         if installed.id != manifest.id || fs::symlink_metadata(destination)?.is_symlink() {
             return Err("Destination must be a directory for the same plugin".into());
         }

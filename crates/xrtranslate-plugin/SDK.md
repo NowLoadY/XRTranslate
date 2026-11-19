@@ -43,7 +43,9 @@ files are backed up before replacement and restored if publication fails.
 Errors identify the plugin and file operation; if rollback is also blocked,
 the backup location is reported and retained.
 
-Copy the completed package into the folder opened by Settings → Plugins.
+In Settings → Plugins, choose Import plugin and select the package ZIP or its
+`plugin.json`. You can also drop a built package folder onto the Plugins page.
+Imported packages are installed in the application's user data directory.
 The application does not compile plugins during startup.
 
 ### Agent feedback

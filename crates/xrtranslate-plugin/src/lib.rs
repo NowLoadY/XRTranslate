@@ -18,3 +18,5 @@ pub use server::{Context, Plugin, serve};
 pub mod directory;
 #[cfg(feature = "host")]
 pub mod host;
+#[cfg(feature = "host")]
+pub mod install;

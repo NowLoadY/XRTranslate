@@ -187,6 +187,9 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "가사를 사용할 수 없습니다. 설정에서 가사 플러그인을 확인하세요.",
         "Текст песни недоступен. Проверьте плагин в настройках.",
     ),
+    ("Import plugin", "导入插件", "プラグインをインポート", "플러그인 가져오기", "Импорт плагина"),
+    ("Plugin ZIP or plugin.json", "插件 ZIP 或 plugin.json", "プラグイン ZIP または plugin.json", "플러그인 ZIP 또는 plugin.json", "ZIP плагина или plugin.json"),
+    ("Imported", "已导入", "インポート済み", "가져옴", "Импортировано"),
     (
         "Plugin folder",
         "插件文件夹",

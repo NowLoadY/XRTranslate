@@ -99,7 +99,14 @@ impl Host {
         contributions
     }
     pub fn settings(&mut self, ui: &mut egui::Ui, language: UiLanguage) {
-        if components::button(ui, tr(language, "Plugin folder")).clicked() {
+        let open = ui
+            .horizontal(|ui| {
+                #[cfg(not(target_os = "android"))]
+                self.import_control(ui, language);
+                components::open_button(ui, tr(language, "Plugin folder")).clicked()
+            })
+            .inner;
+        if open {
             match std::fs::create_dir_all(&self.directory) {
                 Ok(()) => {
                     #[cfg(any(windows, target_os = "linux"))]

@@ -1,5 +1,7 @@
 //! Installed plugins contribute views and operations; this adapter supplies host services.
 mod datagram;
+#[cfg(not(target_os = "android"))]
+mod import;
 mod io;
 mod models;
 mod operations;
@@ -135,6 +137,8 @@ pub(crate) struct Host {
     packaged_directory: Option<PathBuf>,
     next_scan: std::time::Instant,
     scan: Option<std::sync::mpsc::Receiver<Scan>>,
+    #[cfg(not(target_os = "android"))]
+    import: import::Import,
     navigation_changed: bool,
     models_root: PathBuf,
     resources: Option<(String, BTreeMap<String, PathBuf>)>,
@@ -201,6 +205,8 @@ impl Host {
             executables: None,
             next_scan: std::time::Instant::now(),
             scan: None,
+            #[cfg(not(target_os = "android"))]
+            import: Default::default(),
             navigation_changed: true,
             io: io::Worker::new(),
             models_root,
@@ -219,6 +225,10 @@ impl Host {
         }
     }
     pub fn refresh(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_os = "android"))]
+        if self.poll_import(ctx) {
+            return;
+        }
         if self.scan.is_none() && std::time::Instant::now() >= self.next_scan {
             let directory = self.directory.clone();
             let packaged_directory = self.packaged_directory.clone();
