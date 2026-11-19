@@ -118,7 +118,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
         &mut clicks,
         &mut generic,
     );
-    let snapshot = call(&mut tools, "ui.read", json!({})).unwrap();
+    let snapshot = call(&mut tools, "ui.read", json!({"view": "controls"})).unwrap();
     assert_eq!(snapshot["location"], json!(driver.location()));
     assert_eq!(snapshot["location"]["path"][1]["id"], "one");
     assert!(
