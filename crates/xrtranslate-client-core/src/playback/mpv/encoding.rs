@@ -79,6 +79,27 @@ pub fn decode_rgb_samples(
     output: &Path,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    // A reel can end between two frame timestamps. Such a tail still displays a
+    // picture, while a new fps-filtered interval may have no frame to emit.
+    if fps > 0 && duration_ms > 0 && duration_ms.saturating_mul(i64::from(fps)) < 1000 {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Media encoding cancelled".into());
+        }
+        let file = tempfile::Builder::new()
+            .suffix(".png")
+            .tempfile()
+            .map_err(|e| e.to_string())?
+            .into_temp_path();
+        super::capture_displayed_frame(source, start_ms, &file)?;
+        let sample = image::open(&file).map_err(|e| e.to_string())?.into_rgb8();
+        let fitted = image::imageops::resize(
+            &sample,
+            size[0],
+            size[1],
+            image::imageops::FilterType::Triangle,
+        );
+        return std::fs::write(output, fitted.as_raw()).map_err(|e| e.to_string());
+    }
     decode_video_samples(
         source,
         start_ms,
@@ -138,7 +159,12 @@ pub fn decode_video_samples(
         duration_ms as f64 / 1000.0
     );
     mpv.command(&["loadfile", &edl])?;
-    wait_for_encoding(mpv, output, None, cancelled, None)
+    wait_for_encoding(mpv, output, None, cancelled, None).map_err(|e| {
+        format!(
+            "Cannot decode video samples at {start_ms}–{} ms ({fps} fps): {e}",
+            start_ms.saturating_add(duration_ms)
+        )
+    })
 }
 
 pub type VideoAudio = super::super::PlaybackAudio;
@@ -610,6 +636,7 @@ fn select_export_audio(
     }
     // A moved speech clip must not extend the original video's duration.
     if review.is_none()
+        && !inputs.is_empty()
         && let Some(duration) = mpv.get_property_f64("duration").filter(|d| *d > 0.0)
     {
         mpv.command(&["set", "end", &duration.to_string()])?;
