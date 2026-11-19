@@ -79,6 +79,28 @@ pub fn decode_rgb_samples(
     output: &Path,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    decode_video_samples(
+        source,
+        start_ms,
+        duration_ms,
+        size,
+        fps,
+        false,
+        output,
+        cancelled,
+    )
+}
+
+pub fn decode_video_samples(
+    source: &str,
+    start_ms: i64,
+    duration_ms: i64,
+    size: [u32; 2],
+    fps: u32,
+    alpha: bool,
+    output: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     if !super::is_mpv_dll_available() {
         return Err("Install the playback runtime".into());
     }
@@ -102,8 +124,10 @@ pub fn decode_rgb_samples(
     mpv.set_option_string(
         "vf",
         &format!(
-            "lavfi=[fps={fps},scale={}:{},format=rgb24]",
-            size[0], size[1]
+            "lavfi=[fps={fps},scale={}:{},format={}]",
+            size[0],
+            size[1],
+            if alpha { "rgba" } else { "rgb24" }
         ),
     )?;
     mpv.initialize()?;
