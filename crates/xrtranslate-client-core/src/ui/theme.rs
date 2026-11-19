@@ -270,6 +270,20 @@ pub fn content_backdrop(focused: bool) -> Color32 {
     Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
 }
 
+/// Opacity of painted surfaces in this UI context. Content and controls use their own ink.
+pub fn backdrop_opacity(ctx: &egui::Context) -> f32 {
+    ctx.data(|data| data.get_temp(Id::unique("backdrop_opacity")).unwrap_or(1.0))
+}
+
+pub fn set_backdrop_opacity(ctx: &egui::Context, opacity: f32) {
+    ctx.data_mut(|data| data.insert_temp(Id::unique("backdrop_opacity"), opacity.clamp(0.0, 1.0)));
+}
+
+/// A small local backing keeps action icons legible as the surrounding panel fades.
+pub fn control_backing(ctx: &egui::Context) -> Color32 {
+    Color32::from_white_alpha(220).gamma_multiply(1.0 - backdrop_opacity(ctx))
+}
+
 pub fn modal_backdrop() -> Color32 {
     Color32::from_rgb(255, 255, 255)
 }

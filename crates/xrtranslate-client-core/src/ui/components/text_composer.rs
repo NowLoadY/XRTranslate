@@ -108,19 +108,20 @@ impl TextComposer {
         let mut submit = false;
         let compact = ui.available_width() < 600.0;
         let radius = if compact { 22 } else { 10 };
+        let backdrop = theme::backdrop_opacity(ui.ctx());
         crate::ui::organic_border::show(
             ui,
             editor_id.with("island"),
             egui::Frame::new()
                 .fill(if compact {
-                    crate::ui::theme::content_backdrop(true)
+                    theme::content_backdrop(true).gamma_multiply(backdrop)
                 } else {
                     egui::Color32::TRANSPARENT
                 })
                 .corner_radius(egui::CornerRadius::same(radius))
                 .inner_margin(egui::Margin::symmetric(12, 6)),
             radius as f32,
-            crate::ui::theme::border(),
+            theme::border().gamma_multiply(backdrop),
             |ui| {
                 let input_budget = context
                     .input_budget

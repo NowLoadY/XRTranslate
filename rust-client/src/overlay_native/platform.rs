@@ -67,11 +67,10 @@ pub(super) fn validate_software_environment() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub(super) fn set_opacity(
-    title: &str,
-    opacity: crate::overlay_ipc::OverlayOpacity,
-) -> Result<(), String> {
-    Platform::for_viewport(title)?.set_opacity(opacity.percent())
+#[cfg(windows)]
+pub(super) fn prepare_transparent_viewport(title: &str) -> Result<(), String> {
+    Platform::for_viewport(title)?.enable_per_pixel();
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -277,33 +276,6 @@ impl Platform {
         find().map_err(|error| error.to_string())
     }
 
-    fn set_opacity(&self, percent: u8) -> Result<(), String> {
-        use x11rb::{
-            connection::Connection,
-            protocol::xproto::{AtomEnum, ConnectionExt, PropMode},
-            wrapper::ConnectionExt as _,
-        };
-        let atom = self
-            .connection
-            .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
-            .map_err(|e| e.to_string())?
-            .reply()
-            .map_err(|e| e.to_string())?
-            .atom;
-        let alpha = (u64::from(u32::MAX) * u64::from(percent) / 100) as u32;
-        self.connection
-            .change_property32(
-                PropMode::REPLACE,
-                self.window,
-                atom,
-                AtomEnum::CARDINAL,
-                &[alpha],
-            )
-            .map_err(|e| e.to_string())?
-            .check()
-            .map_err(|e| e.to_string())
-    }
-
     fn apply(&self, rectangles: &[InputRect]) -> Result<(), String> {
         use x11rb::{
             connection::Connection,
@@ -405,25 +377,6 @@ impl Platform {
                 GWL_EXSTYLE,
                 style | WS_EX_NOREDIRECTIONBITMAP.0 as isize,
             );
-        }
-    }
-
-    fn set_opacity(&self, percent: u8) -> Result<(), String> {
-        use windows::Win32::{
-            Foundation::COLORREF,
-            UI::WindowsAndMessaging::{
-                GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes,
-                SetWindowLongPtrW, WS_EX_LAYERED,
-            },
-        };
-        unsafe {
-            let style = GetWindowLongPtrW(self.0, GWL_EXSTYLE);
-            if style & WS_EX_LAYERED.0 as isize == 0 {
-                SetWindowLongPtrW(self.0, GWL_EXSTYLE, style | WS_EX_LAYERED.0 as isize);
-            }
-            let alpha = ((u16::from(percent) * 255 + 50) / 100) as u8;
-            SetLayeredWindowAttributes(self.0, COLORREF(0), alpha, LWA_ALPHA)
-                .map_err(|e| e.to_string())
         }
     }
 

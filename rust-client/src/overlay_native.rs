@@ -84,6 +84,10 @@ pub fn run_native_overlay() -> eframe::Result<()> {
             );
             crate::ui::fonts::configure_multilingual_fonts(&context.egui_ctx);
             theme::apply_theme(&context.egui_ctx);
+            context.egui_ctx.on_end_pass(
+                "floating text contrast",
+                std::sync::Arc::new(outline_floating_text),
+            );
             context.egui_ctx.all_styles_mut(|style| {
                 for widget in [
                     &mut style.visuals.widgets.hovered,
@@ -151,7 +155,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 recognition: ocr::OcrWindow::default(),
                 closing: false,
                 shown: false,
-                stacking: WindowPresentation::default(),
+                stacking: WindowStacking::default(),
                 result: ResultWindow::default(),
                 quick: None,
                 ready: false,
@@ -176,23 +180,19 @@ struct OverlayWindow {
     recognition: ocr::OcrWindow,
     closing: bool,
     shown: bool,
-    stacking: WindowPresentation,
+    stacking: WindowStacking,
     result: ResultWindow,
     quick: Option<quick::Capsule>,
     ready: bool,
 }
 
 #[derive(Default)]
-struct WindowPresentation {
+struct WindowStacking {
     state: Option<(bool, bool)>,
-    opacity: OverlayOpacity,
 }
 
-impl WindowPresentation {
-    fn update(&mut self, ctx: &egui::Context, title: &str, opacity: OverlayOpacity) {
-        if self.opacity != opacity && platform::set_opacity(title, opacity).is_ok() {
-            self.opacity = opacity;
-        }
+impl WindowStacking {
+    fn update(&mut self, ctx: &egui::Context) {
         let state = ctx.input(|input| {
             let viewport = input.viewport();
             (
@@ -219,7 +219,7 @@ struct ResultWindow {
     pending: Option<(OverlayRegion, Instant)>,
     reported: Option<OverlayRegion>,
     changing: bool,
-    stacking: WindowPresentation,
+    stacking: WindowStacking,
 }
 
 impl ResultWindow {
@@ -267,11 +267,19 @@ impl ResultWindow {
         self.pending = None;
         self.reported = None;
         self.changing = false;
-        self.stacking = WindowPresentation::default();
+        self.stacking = WindowStacking::default();
     }
 }
 
 impl OverlayWindow {
+    fn set_opacity(&mut self, ctx: &egui::Context, opacity: OverlayOpacity) {
+        if self.opacity != opacity {
+            self.opacity = opacity;
+            theme::set_backdrop_opacity(ctx, f32::from(opacity.percent()) / 100.0);
+            ctx.request_repaint();
+        }
+    }
+
     fn close(&mut self, ctx: &egui::Context) {
         if !self.closing {
             send_event(OverlayEvent::CloseRequested);
@@ -289,13 +297,13 @@ impl OverlayWindow {
             )
             .on_hover_text(tr(
                 self.language,
-                "Scroll to adjust floating window opacity",
+                "Scroll to adjust floating window background opacity",
             ));
         dial.widget_info(|| {
             egui::WidgetInfo::slider(
                 true,
                 f64::from(self.opacity.percent()),
-                tr(self.language, "Opacity"),
+                tr(self.language, "Background opacity"),
             )
         });
         if dial.hovered() {
@@ -321,7 +329,7 @@ impl OverlayWindow {
             self.wheel_remainder -= whole;
             let next = OverlayOpacity::from((f32::from(self.opacity.percent()) + whole) as u8);
             if self.opacity != next {
-                self.opacity = next;
+                self.set_opacity(ui.ctx(), next);
                 send_event(OverlayEvent::Opacity(next));
             }
         } else {
@@ -330,9 +338,11 @@ impl OverlayWindow {
         let ink = if dial.hovered() {
             theme::text_strong()
         } else {
-            theme::text_weak()
+            theme::text_normal()
         };
         let center = dial.rect.center();
+        ui.painter()
+            .circle_filled(center, 12.5, theme::control_backing(ui.ctx()));
         ui.painter()
             .circle_stroke(center, 12.5, Stroke::new(1.2, ink.gamma_multiply(0.7)));
         ui.painter().text(
@@ -367,7 +377,7 @@ impl OverlayWindow {
                 ui.painter().circle_filled(
                     logo.center(),
                     logo.width() * 0.5,
-                    theme::content_backdrop(true),
+                    theme::content_backdrop(true).gamma_multiply(theme::backdrop_opacity(ui.ctx())),
                 );
                 egui::Image::new(egui::include_image!(
                     "../resources/branding/xrtranslate-logo.png"
@@ -385,6 +395,7 @@ impl OverlayWindow {
             return rect;
         }
         panel(6)
+            .multiply_with_opacity(theme::backdrop_opacity(ui.ctx()))
             .show(ui, |ui| {
                 ui.spacing_mut().button_padding = Vec2::splat(4.0);
                 let (bar, _) = ui.allocate_exact_size(
@@ -404,6 +415,11 @@ impl OverlayWindow {
                         egui::Sense::drag(),
                     )
                     .on_hover_cursor(egui::CursorIcon::Grab);
+                ui.painter().rect_filled(
+                    drag.rect.shrink2(egui::vec2(3.0, 6.0)),
+                    7,
+                    theme::control_backing(ui.ctx()),
+                );
                 if drag.hovered() || drag.dragged() {
                     ui.painter().rect_filled(
                         drag.rect.shrink2(egui::vec2(1.0, 2.0)),
@@ -423,11 +439,14 @@ impl OverlayWindow {
                 if drag.drag_started() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
+                let collapse_rect = Rect::from_min_size(
+                    bar.min + egui::vec2(26.0, 0.0),
+                    egui::vec2(24.0, bar.height()),
+                );
+                ui.painter()
+                    .rect_filled(collapse_rect, 10, theme::control_backing(ui.ctx()));
                 let collapse = ui.put(
-                    Rect::from_min_size(
-                        bar.min + egui::vec2(26.0, 0.0),
-                        egui::vec2(24.0, bar.height()),
-                    ),
+                    collapse_rect,
                     egui::Button::new(
                         egui::Image::new(egui::include_image!(
                             "../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg"
@@ -647,7 +666,7 @@ impl OverlayWindow {
                 .with_inner_size([320.0, 240.0])
                 .with_min_inner_size([120.0, 80.0])
                 .with_decorations(false)
-                .with_transparent(false)
+                .with_transparent(true)
                 .with_resizable(true)
                 .with_always_on_top()
                 .with_active(false)
@@ -658,11 +677,20 @@ impl OverlayWindow {
                 let child_scale = ui.ctx().pixels_per_point();
                 let actual = ui.ctx().input(|input| input.viewport().inner_rect);
                 close_requested = ui.ctx().input(|input| input.viewport().close_requested());
+                #[cfg(windows)]
+                if !result.shown
+                    && platform::prepare_transparent_viewport(tr(language, "Translation")).is_err()
+                {
+                    return;
+                }
                 place_viewport(ui.ctx(), desired, &mut result.shown);
-                ui.painter()
-                    .rect_filled(ui.max_rect().expand(1.0), 0, Color32::from_gray(250));
                 egui::CentralPanel::default()
-                    .frame(panel(10).fill(Color32::from_gray(250)).corner_radius(0))
+                    .frame(
+                        panel(10)
+                            .fill(Color32::from_gray(250))
+                            .corner_radius(0)
+                            .multiply_with_opacity(theme::backdrop_opacity(ui.ctx())),
+                    )
                     .show(ui, |ui| {
                         let (handle, _) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), 12.0),
@@ -675,13 +703,16 @@ impl OverlayWindow {
                                 egui::Sense::drag(),
                             )
                             .on_hover_cursor(egui::CursorIcon::Grab);
-                        if drag.hovered() || drag.dragged() {
-                            ui.painter().rect_filled(
-                                Rect::from_center_size(handle.center(), egui::vec2(32.0, 12.0)),
-                                6,
-                                theme::text_strong().gamma_multiply(0.08),
-                            );
-                        }
+                        let backing = theme::control_backing(ui.ctx());
+                        ui.painter().rect_filled(
+                            Rect::from_center_size(handle.center(), egui::vec2(32.0, 12.0)),
+                            6,
+                            if drag.hovered() || drag.dragged() {
+                                backing.blend(theme::text_strong().gamma_multiply(0.08))
+                            } else {
+                                backing
+                            },
+                        );
                         for x in [-8.0, -4.0, 0.0, 4.0, 8.0] {
                             ui.painter().circle_filled(
                                 handle.center() + egui::vec2(x, 0.0),
@@ -718,6 +749,10 @@ impl OverlayWindow {
                         );
                         ui.painter().line_segment(
                             [corner.left_bottom(), corner.right_top()],
+                            Stroke::new(3.5, backing),
+                        );
+                        ui.painter().line_segment(
+                            [corner.left_bottom(), corner.right_top()],
                             Stroke::new(1.5, theme::text_weak()),
                         );
                         if resize(ui, corner, egui::viewport::ResizeDirection::SouthEast) {
@@ -727,9 +762,7 @@ impl OverlayWindow {
                 if result.shown
                     && let Some(actual) = actual
                 {
-                    result
-                        .stacking
-                        .update(ui.ctx(), tr(language, "Translation"), self.opacity);
+                    result.stacking.update(ui.ctx());
                     result.observe(actual * child_scale);
                 }
             },
@@ -751,7 +784,7 @@ impl eframe::App for OverlayWindow {
             self.ready = true;
             match command {
                 OverlayCommand::Language(language) => self.language = language,
-                OverlayCommand::Opacity(opacity) => self.opacity = opacity,
+                OverlayCommand::Opacity(opacity) => self.set_opacity(ui.ctx(), opacity),
                 OverlayCommand::Controls(controls) => {
                     if controls.ocr_enabled != self.controls.ocr_enabled {
                         self.recognition.invalidate();
@@ -780,8 +813,7 @@ impl eframe::App for OverlayWindow {
             return;
         }
         if let Some(quick) = &mut self.quick {
-            if let Err(error) = quick.show(ui, frame, &mut self.input, self.language, self.opacity)
-            {
+            if let Err(error) = quick.show(ui, frame, &mut self.input, self.language) {
                 send_event(OverlayEvent::Failed(error));
                 self.closing = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -856,7 +888,7 @@ impl eframe::App for OverlayWindow {
             window.set_visible(true);
             self.shown = true;
         }
-        self.stacking.update(ui.ctx(), TITLE, self.opacity);
+        self.stacking.update(ui.ctx());
         let Ok(position) = window.inner_position() else {
             return;
         };
@@ -883,7 +915,7 @@ impl eframe::App for OverlayWindow {
                 + origin
                 + egui::vec2(0.0, size.y * 0.5 + 8.0 * scale);
             let initial = fit_rect(size.min(work.size()), center, work);
-            if let Err(error) = self.recognition.show(ui.ctx(), initial, self.opacity) {
+            if let Err(error) = self.recognition.show(ui.ctx(), initial) {
                 send_event(OverlayEvent::Failed(error));
                 self.close(ui.ctx());
                 return;
@@ -941,6 +973,37 @@ fn panel(margin: i8) -> egui::Frame {
         .stroke(Stroke::new(1.0, theme::border().gamma_multiply(0.35)))
         .corner_radius(CORNER)
         .inner_margin(margin)
+}
+
+/// Keep glyph edges readable over arbitrary desktop content as their backing fades.
+/// Menus and tooltips have their own opaque surfaces.
+fn outline_floating_text(ui: &mut egui::Ui) {
+    let outline = Color32::WHITE.gamma_multiply(1.0 - theme::backdrop_opacity(ui.ctx()));
+    if outline.a() == 0 {
+        return;
+    }
+    let pixel = 1.0 / ui.ctx().pixels_per_point();
+    ui.ctx().graphics_mut(|layers| {
+        let Some(list) = layers.get_mut(ui.layer_id()) else {
+            return;
+        };
+        for index in 0..list.next_idx().0 {
+            list.mutate_shape(egui::layers::ShapeIdx(index), |item| {
+                let egui::Shape::Text(text) = &item.shape else {
+                    return;
+                };
+                let mut strokes = Vec::with_capacity(5);
+                for offset in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y] {
+                    let mut edge = text.clone();
+                    edge.pos += offset * pixel;
+                    edge.override_text_color = Some(outline);
+                    strokes.push(egui::Shape::Text(edge));
+                }
+                strokes.push(std::mem::replace(&mut item.shape, egui::Shape::Noop));
+                item.shape = egui::Shape::Vec(strokes);
+            });
+        }
+    });
 }
 
 fn icon_button(
@@ -1006,6 +1069,7 @@ fn card(
         theme::border()
     };
     panel(10)
+        .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, border.gamma_multiply(0.35)))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

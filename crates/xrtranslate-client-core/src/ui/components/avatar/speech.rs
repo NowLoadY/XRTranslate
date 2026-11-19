@@ -291,13 +291,14 @@ impl Speech {
         let rect = Rect::from_center_size(*position, self.size);
         let mut painter = painter.with_clip_rect(bounds);
         painter.multiply_opacity(self.opacity);
-        let fill = Color32::from_rgba_unmultiplied(252, 252, 253, 245);
+        let backdrop = theme::backdrop_opacity(painter.ctx());
+        let fill = Color32::from_rgba_unmultiplied(252, 252, 253, 245).gamma_multiply(backdrop);
         painter.add(
             egui::epaint::Shadow {
                 offset: [0, 3],
                 blur: 14,
                 spread: 0,
-                color: Color32::from_black_alpha(16),
+                color: Color32::from_black_alpha(16).gamma_multiply(backdrop),
             }
             .as_shape(rect, egui::CornerRadius::same(16)),
         );

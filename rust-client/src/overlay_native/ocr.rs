@@ -1,6 +1,6 @@
 //! Independently movable, click-through OCR selection.
-use super::{GAP, WindowPresentation, place_viewport, platform, resize, send_event, theme};
-use crate::overlay_ipc::{OverlayEvent, OverlayOpacity, OverlayRegion};
+use super::{GAP, WindowStacking, place_viewport, platform, resize, send_event, theme};
+use crate::overlay_ipc::{OverlayEvent, OverlayRegion};
 use eframe::egui::{self, Color32, Rect, Stroke, Vec2};
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ pub(super) struct OcrWindow {
     shown: bool,
     pending: Option<(OverlayRegion, Instant)>,
     reported: Option<OverlayRegion>,
-    stacking: WindowPresentation,
+    stacking: WindowStacking,
 }
 
 impl OcrWindow {
@@ -28,15 +28,10 @@ impl OcrWindow {
         self.invalidate();
         self.input = None;
         self.shown = false;
-        self.stacking = WindowPresentation::default();
+        self.stacking = WindowStacking::default();
     }
 
-    pub fn show(
-        &mut self,
-        ctx: &egui::Context,
-        initial: Rect,
-        opacity: OverlayOpacity,
-    ) -> Result<(), String> {
+    pub fn show(&mut self, ctx: &egui::Context, initial: Rect) -> Result<(), String> {
         let desired = self.geometry.unwrap_or(initial);
         let mut outcome = Ok(());
         ctx.show_viewport_immediate(
@@ -53,19 +48,14 @@ impl OcrWindow {
                 .with_taskbar(false)
                 .with_visible(false),
             |ui, _| {
-                outcome = self.ui(ui, desired, opacity);
+                outcome = self.ui(ui, desired);
             },
         );
         ctx.request_repaint_after(Duration::from_millis(100));
         outcome
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        desired: Rect,
-        opacity: OverlayOpacity,
-    ) -> Result<(), String> {
+    fn ui(&mut self, ui: &mut egui::Ui, desired: Rect) -> Result<(), String> {
         if ui.ctx().input(|input| input.viewport().close_requested()) {
             self.hide();
             send_event(OverlayEvent::OcrEnabled(false));
@@ -83,7 +73,7 @@ impl OcrWindow {
         if self.shown
             && let Some(actual) = actual
         {
-            self.stacking.update(ui.ctx(), TITLE, opacity);
+            self.stacking.update(ui.ctx());
             self.geometry = Some(actual * scale);
             if moving {
                 self.invalidate();
@@ -229,8 +219,11 @@ fn recognition_area(ui: &mut egui::Ui, regions: &mut Vec<(Rect, f32)>) -> (Rect,
             egui::Sense::drag(),
         )
         .on_hover_cursor(egui::CursorIcon::Grab);
-    ui.painter()
-        .rect_filled(handle, 10, theme::content_backdrop(true));
+    ui.painter().rect_filled(
+        handle,
+        10,
+        theme::control_backing(ui.ctx()).blend(theme::content_backdrop(true)),
+    );
     ui.painter().rect_stroke(
         handle,
         10,

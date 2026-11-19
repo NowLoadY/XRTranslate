@@ -3315,7 +3315,7 @@ pub fn compact_icon_button(
         ui.painter().rect(
             response.rect,
             CornerRadius::same(12),
-            fill,
+            theme::control_backing(ui.ctx()).blend(fill),
             Stroke::new(1.0, border),
             egui::StrokeKind::Inside,
         );

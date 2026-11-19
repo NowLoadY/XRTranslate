@@ -1,5 +1,5 @@
 //! Shortcut translation uses the floating window's renderer, input mask and placement.
-use super::{WindowPresentation, fit_rect, platform::InputRegion, send_event};
+use super::{WindowStacking, fit_rect, platform::InputRegion, send_event};
 use crate::{
     i18n::{UiLanguage, tr},
     overlay_ipc::{OverlayEvent, QuickTranslationAction as Action, QuickTranslationState},
@@ -33,7 +33,7 @@ pub(super) struct Capsule {
     copied: Option<Instant>,
     expanded_size: Vec2,
     expansion_ready: bool,
-    stacking: WindowPresentation,
+    stacking: WindowStacking,
 }
 impl Default for Capsule {
     fn default() -> Self {
@@ -87,7 +87,6 @@ impl Capsule {
         frame: &eframe::Frame,
         input: &mut InputRegion,
         language: UiLanguage,
-        opacity: crate::overlay_ipc::OverlayOpacity,
     ) -> Result<(), String> {
         let Some(window) = frame.winit_window() else {
             return Ok(());
@@ -252,18 +251,19 @@ impl Capsule {
             egui::vec2(width, height),
         );
         let painter = ui.painter();
+        let backdrop = crate::ui::theme::backdrop_opacity(&ctx);
         for (spread, alpha) in [(7.0, 4), (4.0, 7), (2.0, 10)] {
             painter.rect_filled(
                 body.expand(spread).translate(egui::vec2(0.0, 2.0)),
                 height * 0.5 + spread,
-                Color32::from_rgba_unmultiplied(30, 42, 60, alpha),
+                Color32::from_rgba_unmultiplied(30, 42, 60, alpha).gamma_multiply(backdrop),
             );
         }
-        painter.rect_filled(body, height * 0.5, Color32::WHITE);
+        painter.rect_filled(body, height * 0.5, Color32::WHITE.gamma_multiply(backdrop));
         painter.rect_stroke(
             body,
             height * 0.5,
-            Stroke::new(0.75, Color32::from_gray(231)),
+            Stroke::new(0.75, Color32::from_gray(231).gamma_multiply(backdrop)),
             egui::StrokeKind::Inside,
         );
         let mut regions = vec![(body.expand(9.0), height * 0.5 + 9.0)];
@@ -495,7 +495,7 @@ impl Capsule {
             window.focus_window();
             self.shown = true;
         }
-        self.stacking.update(&ctx, super::TITLE, opacity);
+        self.stacking.update(&ctx);
         if let Some(action) = action {
             if let Action::Save(folder) = &action {
                 self.saving_to = Some(*folder);
@@ -602,10 +602,12 @@ fn icon(
         .inner;
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let circle = Rect::from_center_size(rect.center(), Vec2::splat(34.0));
-    if active || response.hovered() {
-        ui.painter()
-            .circle_filled(circle.center(), 17.0, Color32::from_rgb(239, 244, 250));
-    }
+    let backing = if active || response.hovered() {
+        Color32::from_rgb(239, 244, 250)
+    } else {
+        crate::ui::theme::control_backing(ui.ctx())
+    };
+    ui.painter().circle_filled(circle.center(), 17.0, backing);
     egui::Image::new(svg)
         .tint(if active {
             ACCENT
