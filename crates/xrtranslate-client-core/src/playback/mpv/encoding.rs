@@ -488,6 +488,7 @@ fn encode_with_audio(
         }
     }
     mpv.initialize()?;
+    unsafe { libmpv_sys::mpv_request_log_messages(mpv.handle, c"error".as_ptr()) };
     if review.is_some() || !matches!(audio, VideoAudio::Original(_)) {
         let error = unsafe { libmpv_sys::mpv_hook_add(mpv.handle, 0, c"on_preloaded".as_ptr(), 0) };
         if error < 0 {
@@ -614,11 +615,20 @@ fn wait_for_encoding(
     cancelled: &AtomicBool,
     audio: Option<(&VideoAudio, Option<ReviewRange>)>,
 ) -> Result<(), String> {
+    let mut details = Vec::new();
     loop {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Media encoding cancelled".into());
         }
         let event = unsafe { &*libmpv_sys::mpv_wait_event(mpv.handle, 0.1) };
+        if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_LOG_MESSAGE && details.len() < 3 {
+            let message = unsafe { &*(event.data as *const libmpv_sys::mpv_event_log_message) };
+            let text = unsafe { std::ffi::CStr::from_ptr(message.text) }.to_string_lossy();
+            let line: String = text.trim().chars().take(200).collect();
+            if !line.is_empty() && !details.contains(&line) {
+                details.push(line);
+            }
+        }
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_HOOK {
             let hook = unsafe { &*(event.data as *const libmpv_sys::mpv_event_hook) };
             let result = audio.map_or(Ok(()), |(audio, end)| select_export_audio(&mpv, audio, end));
@@ -635,7 +645,12 @@ fn wait_for_encoding(
             {
                 break;
             }
-            return Err(format!("Media encoding failed ({})", end.error));
+            let detail = if details.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", details.join(" · "))
+            };
+            return Err(format!("Media encoding failed ({}){detail}", end.error));
         }
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_SHUTDOWN {
             return Err("Media encoding stopped before completion".into());
