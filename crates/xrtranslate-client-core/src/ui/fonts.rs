@@ -230,7 +230,7 @@ fn configure_fonts(ctx: &egui::Context, editing: bool) {
         }
     }
     if editing {
-        video::install(&mut definitions, ctx);
+        video::install(&mut definitions);
     }
     ctx.set_fonts(definitions);
 }

@@ -1,5 +1,4 @@
-//! The editor and libass resolve the same installed face. Oblique lettering
-//! uses a regular sans base and horizontal condensation on both renderers.
+//! The editor and libass resolve the same installed type family and display weight.
 use eframe::egui;
 use std::{
     path::PathBuf,
@@ -22,8 +21,11 @@ impl VideoFont {
             _ => Self::Sans,
         }
     }
+    /// ASS and the editor request the same display weight; static families use their real bold face.
+    pub const DISPLAY_WEIGHT: u16 = 800;
+    /// All video faces retain the font designer's natural advance.
     pub fn width_factor(self) -> f32 {
-        if self == Self::Italic { 0.84 } else { 1. }
+        1.0
     }
     pub fn family(self) -> egui::FontFamily {
         self.weighted_family(false)
@@ -54,6 +56,9 @@ impl VideoFont {
     pub fn ass_name(self, fallback: &str) -> &str {
         self.face().map_or(fallback, |face| face.name.as_str())
     }
+    pub fn source(self) -> Option<(&'static std::path::Path, u32)> {
+        self.face().map(|f| (f.path.as_path(), f.index))
+    }
 }
 
 struct Installed {
@@ -69,12 +74,17 @@ fn installed(serif: bool) -> Option<Installed> {
         super::windows_font_directory(),
         if serif {
             &[
-                ("SimSun", "simsun.ttc", 0),
                 ("Noto Serif SC", "NotoSerifSC-VF.ttf", 0),
-                ("MingLiU", "mingliu.ttc", 0),
+                ("Source Han Serif SC", "SourceHanSerifSC-VF.ttf", 0),
+                ("Source Han Serif SC", "SourceHanSerifSC-VF.otf", 0),
+                ("Source Han Serif SC", "SourceHanSerifSC-Regular.otf", 0),
             ]
         } else {
             &[
+                ("Noto Sans SC", "NotoSansSC-VF.ttf", 0),
+                ("Source Han Sans SC", "SourceHanSansSC-VF.ttf", 0),
+                ("Source Han Sans SC", "SourceHanSansSC-VF.otf", 0),
+                ("Source Han Sans SC", "SourceHanSansSC-Regular.otf", 0),
                 ("Microsoft YaHei", "msyh.ttc", 0),
                 ("Microsoft JhengHei", "msjh.ttc", 0),
                 ("Arial", "arial.ttf", 0),
@@ -94,13 +104,31 @@ fn installed(serif: bool) -> Option<Installed> {
             ]
         },
     );
+    #[cfg(windows)]
+    let user_fonts =
+        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Microsoft/Windows/Fonts"));
+    #[cfg(not(windows))]
+    let user_fonts: Option<PathBuf> = None;
     candidates.iter().find_map(|(name, file, index)| {
-        let path = directory.join(file);
-        path.is_file().then(|| Installed {
-            name: (*name).into(),
-            path,
-            index: *index,
-        })
+        [Some(&directory), user_fonts.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|dir| dir.join(file))
+            .find(|path| {
+                if !path.is_file() {
+                    return false;
+                }
+                #[cfg(windows)]
+                if let Some(family) = file.strip_suffix("-Regular.otf") {
+                    return path.with_file_name(format!("{family}-Bold.otf")).is_file();
+                }
+                true
+            })
+            .map(|path| Installed {
+                name: (*name).into(),
+                path,
+                index: *index,
+            })
     })
 }
 
@@ -124,7 +152,7 @@ fn installed(serif: bool) -> Option<Installed> {
     })
 }
 
-pub(super) fn install(definitions: &mut egui::FontDefinitions, ctx: &egui::Context) {
+pub(super) fn install(definitions: &mut egui::FontDefinitions) {
     for style in [VideoFont::Sans, VideoFont::Serif] {
         let mut fallbacks = definitions.families[&egui::FontFamily::Proportional].clone();
         let mut bold_fallbacks = definitions.families[&super::bold_family()].clone();
@@ -135,6 +163,13 @@ pub(super) fn install(definitions: &mut egui::FontDefinitions, ctx: &egui::Conte
             {
                 let mut data = egui::FontData::from_owned(bytes);
                 data.index = face.index;
+                if data
+                    .variation_axes()
+                    .iter()
+                    .any(|a| a.tag.to_string() == "wght")
+                {
+                    data.tweak.coords = egui::epaint::text::VariationCoords::new([(b"wght", 400.)]);
+                }
                 definitions.font_data.insert(key.clone(), Arc::new(data));
             }
             if let Some(regular) = definitions.font_data.get(&key).cloned() {
@@ -144,11 +179,6 @@ pub(super) fn install(definitions: &mut egui::FontDefinitions, ctx: &egui::Conte
                         .font_data
                         .insert(bold_key.clone(), Arc::new(data));
                     bold_fallbacks.insert(0, bold_key);
-                } else {
-                    // Retain this face's shaping metrics and use the expanded coverage
-                    // only for its otherwise unavailable bold glyphs.
-                    weight::install_synthetic(ctx, style.weighted_family(true), regular);
-                    bold_fallbacks.insert(0, key.clone());
                 }
                 fallbacks.insert(0, key);
             }
