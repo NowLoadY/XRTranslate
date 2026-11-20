@@ -23,6 +23,14 @@ impl VideoFont {
     }
     /// ASS and the editor request the same display weight; static families use their real bold face.
     pub const DISPLAY_WEIGHT: u16 = 800;
+    /// Weight coordinate shared by the preview and exported video fonts.
+    pub fn weight(self, bold: bool) -> u16 {
+        match (self, bold) {
+            (_, false) => 400,
+            (Self::Serif, true) => 900,
+            (_, true) => Self::DISPLAY_WEIGHT,
+        }
+    }
     /// All video faces retain the font designer's natural advance.
     pub fn width_factor(self) -> f32 {
         1.0
@@ -173,8 +181,9 @@ pub(super) fn install(definitions: &mut egui::FontDefinitions) {
                 definitions.font_data.insert(key.clone(), Arc::new(data));
             }
             if let Some(regular) = definitions.font_data.get(&key).cloned() {
-                let bold_key = format!("{key}:bold");
-                if let Some(data) = weight::real_face(face, &regular) {
+                let weight = style.weight(true);
+                let bold_key = format!("{key}:{weight}");
+                if let Some(data) = weight::real_face(face, &regular, weight) {
                     definitions
                         .font_data
                         .insert(bold_key.clone(), Arc::new(data));

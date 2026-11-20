@@ -1,8 +1,12 @@
-use super::{Installed, VideoFont};
+use super::Installed;
 use eframe::egui::{self, epaint::text::VariationCoords};
 use std::path::PathBuf;
 
-pub(super) fn real_face(face: &Installed, regular: &egui::FontData) -> Option<egui::FontData> {
+pub(super) fn real_face(
+    face: &Installed,
+    regular: &egui::FontData,
+    weight: u16,
+) -> Option<egui::FontData> {
     if let Some(axis) = regular
         .variation_axes()
         .into_iter()
@@ -11,7 +15,7 @@ pub(super) fn real_face(face: &Installed, regular: &egui::FontData) -> Option<eg
         let mut bold = regular.clone();
         bold.tweak.coords = VariationCoords::new([(
             b"wght",
-            f32::from(VideoFont::DISPLAY_WEIGHT).min(axis.range.max),
+            f32::from(weight).clamp(axis.range.min, axis.range.max),
         )]);
         return Some(bold);
     }
