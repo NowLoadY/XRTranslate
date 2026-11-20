@@ -505,7 +505,7 @@ impl AgentPlugin {
         let common = include_str!("instructions.md").trim();
         let skill_inventory =
             crate::skills::inventory(tools.iter().any(|tool| tool.name == crate::imagegen::TOOL));
-        let task = format!("{instruction}\nPlanning target: {MAX_STEPS} steps.\n{skill_inventory}");
+        let task = format!("{instruction}\n{skill_inventory}");
         let (rules, task) = if self.native_tools {
             // Keep the developer prefix identical across goals. Scope remains enforced locally.
             (

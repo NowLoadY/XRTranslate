@@ -14,6 +14,32 @@ pub(super) struct Catalogue {
     names: BTreeMap<String, String>,
 }
 
+fn sanitize_tool_schema(schema: &mut Value) {
+    match schema {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("object")
+                || map.contains_key("properties")
+            {
+                match map.get("required") {
+                    Some(Value::Array(_)) => {}
+                    _ => {
+                        map.insert("required".into(), json!([]));
+                    }
+                }
+            }
+            for value in map.values_mut() {
+                sanitize_tool_schema(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_tool_schema(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn identifier(name: &str) -> String {
     name.chars()
         .take(54)
@@ -38,6 +64,8 @@ impl Catalogue {
         let mut groups = BTreeMap::<String, Vec<Value>>::new();
         let mut definitions = Vec::new();
         for (index, tool) in tools.into_iter().enumerate() {
+            let mut input_schema = tool.input_schema.clone();
+            sanitize_tool_schema(&mut input_schema);
             let base = identifier(&tool.name);
             let mut name = base.clone();
             let mut suffix = index;
@@ -56,7 +84,7 @@ impl Catalogue {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "arguments": tool.input_schema,
+                        "arguments": input_schema,
                         "memory": {
                             "type": "string",
                             "description": "Brief cumulative progress note for local context compaction."

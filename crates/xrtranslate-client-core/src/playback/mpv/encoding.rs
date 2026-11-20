@@ -431,8 +431,8 @@ pub fn encode_audio_review(
     clock_only: bool,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
-    if start < 0 || end <= start || end - start > 15_000 {
-        return Err("Choose an audio review interval of up to 15 seconds".into());
+    if start < 0 || end <= start || end - start > 60_000 {
+        return Err("Choose an audio review interval of up to 60 seconds".into());
     }
     if !super::is_mpv_dll_available() {
         return Err("The media playback runtime is required for audio review".into());

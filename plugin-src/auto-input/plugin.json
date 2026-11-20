@@ -25,7 +25,8 @@
       "description": "Read automatic text input status.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {},
+        "required": []
       },
       "read_only": true
     }
