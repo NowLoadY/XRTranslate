@@ -58,7 +58,9 @@ impl XRTranslateApp {
         {
             ui_director::egui::feedback::tool_started(&call.name);
         }
-        let result = if let Some(result) = self.call_plugin_model_tool(call) {
+        let result = if ui_director::catalog::handles(&call.name) {
+            ui_director::catalog::call(&self.director_tools(), call)
+        } else if let Some(result) = self.call_plugin_model_tool(call) {
             result
         } else {
             ui_director::dispatch(&mut crate::plugins::tool_providers(self), call)
