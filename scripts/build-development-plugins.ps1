@@ -37,5 +37,6 @@ foreach ($directory in $sources) {
     $destination = Join-Path $dataRoot "plugins/$($built.id)"
     & $builder stage $package (Join-Path $package $built.executable) $destination --replace
     if ($LASTEXITCODE) { throw "Could not update the development plugin at $destination." }
+    [IO.File]::WriteAllText((Join-Path $destination '.dev-source'), $directory.FullName)
     Write-Host "Development plugin ready: $destination"
 }
